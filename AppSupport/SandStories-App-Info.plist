@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSCameraUsageDescription</key>
+	<string>SandStories uses the camera for augmented reality.</string>
+	<key>NSWorldSensingUsageDescription</key>
+	<string>SandStories uses LiDAR and scene reconstruction to understand your surroundings.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>SandStories uses your location to tag captured strokes with the GPS coordinate.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>SandStories records microphone audio during each capture session for sand storytelling research.</string>
+</dict>
+</plist>

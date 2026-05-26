@@ -23,6 +23,8 @@ final class RecordingCoordinator: ObservableObject {
     @Published var warningBanner: String?
     @Published var showingFolderPicker = false
     @Published private(set) var lastSessionFolderURL: URL?
+    @Published private(set) var isBenchmarkRunning = false
+    @Published private(set) var benchmarkSummary: String?
 
     private var externalScopedURL: URL?
     private var trayDetectionLocked = false
@@ -85,11 +87,46 @@ final class RecordingCoordinator: ObservableObject {
 
     /// Toggle packaged session recording (manifest + aligned modalities).
     func toggleRecording(locationCaptureManager: LocationCaptureManager) async {
+        guard !isBenchmarkRunning else { return }
         if isCaptureRecording {
             await stopCaptureSession(locationCaptureManager: locationCaptureManager)
         } else {
             await startCaptureSession(locationCaptureManager: locationCaptureManager)
         }
+    }
+
+    func runDepthBenchmark(locationCaptureManager: LocationCaptureManager) async {
+        guard !isCaptureRecording, !isBenchmarkRunning else { return }
+
+        isBenchmarkRunning = true
+        benchmarkSummary = "Benchmark running for 15 seconds..."
+        warningBanner = nil
+
+        await depthCaptureManager.resetBenchmarkMetrics()
+        let start = Date()
+        await startCaptureSession(locationCaptureManager: locationCaptureManager, recordAudio: false)
+
+        guard isCaptureRecording else {
+            isBenchmarkRunning = false
+            benchmarkSummary = "Benchmark could not start."
+            return
+        }
+
+        do {
+            try await Task.sleep(nanoseconds: 15_000_000_000)
+        } catch {
+            // If the task is cancelled, stop cleanly and still report what was captured.
+        }
+
+        await stopCaptureSession(locationCaptureManager: locationCaptureManager)
+
+        let elapsed = Date().timeIntervalSince(start)
+        let snapshot = await depthCaptureManager.benchmarkSnapshot()
+        let summary = snapshot.summary(elapsedSeconds: elapsed)
+        benchmarkSummary = summary
+        warningBanner = "Benchmark complete. \(summary)"
+        print(summary)
+        isBenchmarkRunning = false
     }
 
     func processAuxiliaryCaptureFrame(_ frame: ARFrame) async {
@@ -130,7 +167,7 @@ final class RecordingCoordinator: ObservableObject {
 
     // MARK: - Private
 
-    private func startCaptureSession(locationCaptureManager: LocationCaptureManager) async {
+    private func startCaptureSession(locationCaptureManager: LocationCaptureManager, recordAudio: Bool = true) async {
         warningBanner = nil
         let sessionId = UUID()
         let fm = FileManager.default
@@ -201,19 +238,21 @@ final class RecordingCoordinator: ObservableObject {
             pendingStrokeAlignment = true
 
             audioStartMonotonic = 0
-            let audioURL = sessionFolder.appendingPathComponent("audio.m4a")
-            let micOK = await audioRecorder.requestPermission()
-            if micOK {
-                audioStartMonotonic = await captureSession.monotonicElapsedSeconds()
-                do {
-                    try audioRecorder.startRecording(to: audioURL)
-                } catch {
-                    audioStartMonotonic = 0
-                    warningBanner = (warningBanner ?? "") + " Audio failed to start."
-                }
-            } else {
-                if audioRecorder.permissionDenied {
-                    warningBanner = (warningBanner ?? "") + " Microphone denied; session has no audio."
+            if recordAudio {
+                let audioURL = sessionFolder.appendingPathComponent("audio.m4a")
+                let micOK = await audioRecorder.requestPermission()
+                if micOK {
+                    audioStartMonotonic = await captureSession.monotonicElapsedSeconds()
+                    do {
+                        try audioRecorder.startRecording(to: audioURL)
+                    } catch {
+                        audioStartMonotonic = 0
+                        warningBanner = (warningBanner ?? "") + " Audio failed to start."
+                    }
+                } else {
+                    if audioRecorder.permissionDenied {
+                        warningBanner = (warningBanner ?? "") + " Microphone denied; session has no audio."
+                    }
                 }
             }
 

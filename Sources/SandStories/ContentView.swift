@@ -98,6 +98,19 @@ struct ContentView: View {
                     .padding(.horizontal, 16)
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
+
+            if let summary = recordingCoordinator.benchmarkSummary {
+                Text(summary)
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(Color(uiColor: .secondaryLabel))
+                    .multilineTextAlignment(.leading)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .glassPanel(cornerRadius: 14, blurStyle: .systemThinMaterial, shadowRadius: 10, shadowYOffset: 4)
+                    .padding(.horizontal, 16)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
         }
     }
 
@@ -208,6 +221,7 @@ struct ContentView: View {
 
             HStack(spacing: 12) {
                 clearToolbarButton
+                benchmarkToolbarButton
                 shareToolbarButton
             }
             .padding(.horizontal, 14)
@@ -260,6 +274,8 @@ struct ContentView: View {
         .buttonStyle(.plain)
         .frame(minWidth: 44, minHeight: 44)
         .accessibilityLabel(recordingCoordinator.isCaptureRecording ? "Stop session recording" : "Start session recording")
+        .disabled(recordingCoordinator.isBenchmarkRunning)
+        .opacity(recordingCoordinator.isBenchmarkRunning ? 0.5 : 1)
     }
 
     private var clearToolbarButton: some View {
@@ -277,6 +293,25 @@ struct ContentView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Clear strokes")
+    }
+
+    private var benchmarkToolbarButton: some View {
+        Button {
+            Task {
+                await recordingCoordinator.runDepthBenchmark(locationCaptureManager: locationCaptureManager)
+            }
+        } label: {
+            Label(recordingCoordinator.isBenchmarkRunning ? "Running" : "Benchmark", systemImage: "speedometer")
+                .font(.subheadline.weight(.semibold))
+                .labelStyle(.titleAndIcon)
+                .foregroundStyle(recordingCoordinator.isBenchmarkRunning ? Color(uiColor: .secondaryLabel) : Color.accentColor)
+                .frame(maxWidth: .infinity)
+                .frame(minHeight: 44)
+        }
+        .buttonStyle(.plain)
+        .disabled(recordingCoordinator.isCaptureRecording || recordingCoordinator.isBenchmarkRunning)
+        .opacity(recordingCoordinator.isCaptureRecording ? 0.45 : 1)
+        .accessibilityLabel("Run 15 second depth capture benchmark")
     }
 
     private var shareToolbarButton: some View {

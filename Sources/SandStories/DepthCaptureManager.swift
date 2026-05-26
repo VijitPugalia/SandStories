@@ -1,9 +1,38 @@
 import ARKit
 import CoreImage
 import CoreVideo
+import Dispatch
 import Foundation
 import ImageIO
 import UniformTypeIdentifiers
+
+struct DepthCaptureBenchmarkSnapshot: Sendable {
+    var arFramesReceived: Int = 0
+    var arFramesWithoutDepth: Int = 0
+    var writerCaptureCalls: Int = 0
+    var framesSkippedWriting: Int = 0
+    var framesSkippedMotion: Int = 0
+    var framesWritten: Int = 0
+    var depthBytes: Int64 = 0
+    var rgbBytes: Int64 = 0
+    var totalDepthEncodeMilliseconds: Double = 0
+    var totalRGBEncodeMilliseconds: Double = 0
+
+    func summary(elapsedSeconds: TimeInterval) -> String {
+        let seconds = max(elapsedSeconds, 0.001)
+        let savedFPS = Double(framesWritten) / seconds
+        let arFPS = Double(arFramesReceived) / seconds
+        let totalMB = Double(depthBytes + rgbBytes) / 1_000_000
+        let depthAvg = framesWritten > 0 ? totalDepthEncodeMilliseconds / Double(framesWritten) : 0
+        let rgbAvg = framesWritten > 0 ? totalRGBEncodeMilliseconds / Double(framesWritten) : 0
+
+        return "Benchmark \(Self.oneDecimal(seconds))s | AR \(Self.oneDecimal(arFPS)) fps | saved \(Self.oneDecimal(savedFPS)) fps (\(framesWritten) frames) | motion skips \(framesSkippedMotion) | no depth \(arFramesWithoutDepth) | depth \(Self.oneDecimal(depthAvg)) ms/frame | rgb \(Self.oneDecimal(rgbAvg)) ms/frame | \(Self.oneDecimal(totalMB)) MB"
+    }
+
+    private static func oneDecimal(_ value: Double) -> String {
+        String(format: "%.1f", value)
+    }
+}
 
 // Wraps a CVPixelBuffer so we can safely move it across Swift concurrency boundaries.
 // We rely on ARC by holding a strong reference until encoding/writing completes.
@@ -28,6 +57,7 @@ actor DepthCaptureWriter {
     private var lastDownsample: [UInt16]?
     private var deltaThresholdMeanU16: Float = 400
     private var onSaved: (@Sendable (TimeInterval, String, String) async -> Void)?
+    private var benchmarkMetrics = DepthCaptureBenchmarkSnapshot()
 
     func setRecording(_ isRecording: Bool) {
         self.isRecording = isRecording
@@ -47,13 +77,25 @@ actor DepthCaptureWriter {
         lastDownsample = nil
     }
 
+    func resetBenchmarkMetrics() {
+        benchmarkMetrics = DepthCaptureBenchmarkSnapshot()
+    }
+
+    func benchmarkSnapshot() -> DepthCaptureBenchmarkSnapshot {
+        benchmarkMetrics
+    }
+
     func capture(
         timestamp: TimeInterval,
         depthMap: PixelBufferBox?,
         capturedImage: PixelBufferBox
     ) async {
         guard isRecording else { return }
-        guard !isWriting else { return }
+        benchmarkMetrics.writerCaptureCalls += 1
+        guard !isWriting else {
+            benchmarkMetrics.framesSkippedWriting += 1
+            return
+        }
         guard let depthMap, let depthDirectory, let rgbDirectory, let onSaved else { return }
 
         isWriting = true
@@ -71,6 +113,7 @@ actor DepthCaptureWriter {
             if let prev = lastDownsample {
                 let meanAbs = Self.meanAbsoluteDifference(down, prev)
                 if meanAbs < deltaThresholdMeanU16 {
+                    benchmarkMetrics.framesSkippedMotion += 1
                     return
                 }
             }
@@ -83,8 +126,16 @@ actor DepthCaptureWriter {
             let depthURL = depthDirectory.appendingPathComponent(depthName)
             let rgbURL = rgbDirectory.appendingPathComponent(rgbName)
 
+            let depthStart = Self.nowMilliseconds()
             try writeDepthPNG(depthU16, width: width, height: height, to: depthURL)
+            benchmarkMetrics.totalDepthEncodeMilliseconds += Self.nowMilliseconds() - depthStart
+
+            let rgbStart = Self.nowMilliseconds()
             try writeRGBJPEG(from: capturedImage.pixelBuffer, to: rgbURL)
+            benchmarkMetrics.totalRGBEncodeMilliseconds += Self.nowMilliseconds() - rgbStart
+            benchmarkMetrics.framesWritten += 1
+            benchmarkMetrics.depthBytes += Self.fileSize(at: depthURL)
+            benchmarkMetrics.rgbBytes += Self.fileSize(at: rgbURL)
 
             let relDepth = "depth/\(depthName)"
             let relRgb = "rgb/\(rgbName)"
@@ -92,6 +143,15 @@ actor DepthCaptureWriter {
         } catch {
             print("DepthCaptureWriter error: \(error)")
         }
+    }
+
+    private static func nowMilliseconds() -> Double {
+        Double(DispatchTime.now().uptimeNanoseconds) / 1_000_000
+    }
+
+    private static func fileSize(at url: URL) -> Int64 {
+        let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.int64Value
+        return size ?? 0
     }
 
     private static func downsampleMean(_ src: [UInt16], width: Int, height: Int, outW: Int, outH: Int) -> [UInt16] {
@@ -246,11 +306,43 @@ final class DepthCaptureManager: NSObject, ARSessionDelegate {
     private let writer = DepthCaptureWriter()
     private let recordingLock = NSLock()
     private var isRecording: Bool = false
+    private var benchmarkFramesReceived: Int = 0
+    private var benchmarkFramesWithoutDepth: Int = 0
 
     var isCurrentlyRecording: Bool {
         recordingLock.lock()
         defer { recordingLock.unlock() }
         return isRecording
+    }
+
+    @MainActor
+    func resetBenchmarkMetrics() async {
+        resetBenchmarkFrameCounters()
+        await writer.resetBenchmarkMetrics()
+    }
+
+    @MainActor
+    func benchmarkSnapshot() async -> DepthCaptureBenchmarkSnapshot {
+        let writerSnapshot = await writer.benchmarkSnapshot()
+
+        let counters = benchmarkFrameCounters()
+        var snapshot = writerSnapshot
+        snapshot.arFramesReceived = counters.received
+        snapshot.arFramesWithoutDepth = counters.withoutDepth
+        return snapshot
+    }
+
+    private func resetBenchmarkFrameCounters() {
+        recordingLock.lock()
+        benchmarkFramesReceived = 0
+        benchmarkFramesWithoutDepth = 0
+        recordingLock.unlock()
+    }
+
+    private func benchmarkFrameCounters() -> (received: Int, withoutDepth: Int) {
+        recordingLock.lock()
+        defer { recordingLock.unlock() }
+        return (benchmarkFramesReceived, benchmarkFramesWithoutDepth)
     }
 
     func configureSessionCapture(
@@ -286,11 +378,19 @@ final class DepthCaptureManager: NSObject, ARSessionDelegate {
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
         recordingLock.lock()
         let shouldCapture = isRecording
+        if shouldCapture {
+            benchmarkFramesReceived += 1
+        }
         recordingLock.unlock()
 
         guard shouldCapture else { return }
 
-        guard let depthData = frame.sceneDepth else { return }
+        guard let depthData = frame.sceneDepth else {
+            recordingLock.lock()
+            benchmarkFramesWithoutDepth += 1
+            recordingLock.unlock()
+            return
+        }
 
         let writer = self.writer
         Task {

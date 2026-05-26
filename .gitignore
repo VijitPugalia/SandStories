@@ -8,3 +8,8 @@ DerivedData/
 .netrc
 
 /xtool
+
+# Local Python scratch work
+.venv*/
+/transcripts
+/transcribe_meetings.py

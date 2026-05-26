@@ -1,78 +1,73 @@
 # SandStories
 
-SandStories is an iOS AR capture app for recording sand storytelling sessions as synchronized multimodal data. It captures LiDAR depth, RGB camera frames, hand-drawn 3D strokes, microphone audio, object-detection hooks, tray boundary metadata, and location into a portable session folder that can be shared, visualized, and analyzed offline.
+Capture sand storytelling sessions as synchronized LiDAR depth, RGB video frames, audio, and 3D stroke data.
 
-The project is built with Swift Package Manager and `xtool`, targeting iOS 17+.
-
-## What The App Captures
-
-Each session is saved as a self-contained folder named `session_<UUID>`. The canonical entry point is `manifest.json`, which indexes every modality and timestamp.
-
-```mermaid
-flowchart TB
-  user["Storyteller uses sand tray"]
-  app["SandStories iOS app"]
-  arkit["ARKit session"]
-  hand["Hand pose and stroke recorder"]
-  depth["LiDAR depth writer"]
-  rgb["RGB frame writer"]
-  audio["Audio recorder"]
-  manifest["manifest.json"]
-  bundle["session_UUID folder or ZIP"]
-
-  user --> app
-  app --> arkit
-  arkit --> depth
-  arkit --> rgb
-  arkit --> hand
-  app --> audio
-  depth --> manifest
-  rgb --> manifest
-  hand --> manifest
-  audio --> manifest
-  manifest --> bundle
-```
-
-## Core Features
-
-- **ARKit + LiDAR capture**: records scene depth as 16-bit grayscale PNG files.
-- **RGB pairing**: saves JPEG camera frames paired with each persisted depth frame.
-- **Shared timing model**: aligns modalities with ARKit timestamps and monotonic session elapsed time.
-- **Stroke recording**: stores 3D hand stroke polylines in AR/world coordinates.
-- **Audio capture**: records AAC audio into `audio.m4a` for full session context.
-- **Tray and object hooks**: includes tray boundary metadata and append-friendly object detections.
-- **External storage support**: can save sessions internally or to a Files/USB-C external folder.
-- **Benchmark mode**: runs a timed depth-only capture benchmark and reports throughput/encoding metrics.
-- **Share/export flow**: packages the full session folder into an IPA-shareable ZIP.
-
-## Repository Layout
+SandStories is an iOS AR capture app for research-style recording of sand tray storytelling sessions. It uses ARKit, LiDAR scene depth, camera frames, hand pose input, microphone audio, and location metadata to produce a portable session folder that can be shared and analyzed offline.
 
 ```text
-SandStories/
-├── AppSupport/
-│   └── SandStories-App-Info.plist      # iOS privacy usage descriptions
-├── Sources/SandStories/
-│   ├── ContentView.swift               # Main SwiftUI surface
-│   ├── RecordingCoordinator.swift      # Capture session lifecycle
-│   ├── DepthCaptureManager.swift       # LiDAR/RGB persistence and benchmark metrics
-│   ├── CaptureSessionController.swift  # manifest.json and objects.jsonl writer
-│   ├── StrokeRecorder.swift            # 3D stroke persistence
-│   ├── SessionManifestModels.swift     # Canonical exported data schema
-│   └── ...
-├── docs/
-│   ├── INSTALL_IPA.md
-│   └── VISUALIZE_SESSION.md
-├── scripts/
-│   ├── build_release_ipa.sh
-│   ├── merge_privacy_into_app.sh
-│   └── visualize_sandstories_session.py
-├── Package.swift
-└── xtool.yml
+iPhone ARKit + LiDAR  ──▶  Session Writer  ──▶  manifest.json + depth/RGB/audio/strokes
+  scene depth frames          timestamp sync        Python / MATLAB / Fiji analysis
+  RGB camera frames           manifest index        ZIP export for sharing
+  hand stroke points          storage routing       benchmark data for format tests
 ```
 
-## Capture Flow
+## What Works Today
 
-The app uses an `ARSessionDelegate` multiplexer so depth capture, hand pose capture, and auxiliary frame processing can all receive AR frames.
+The app runs on a physical LiDAR-capable iPhone/iPad and records packaged sessions into app storage or an external Files/USB-C destination. Each session includes a `manifest.json` file, motion-gated 16-bit depth PNGs, paired RGB JPEGs, optional AAC audio, 3D stroke data, location metadata, and placeholder object-detection/tray-boundary hooks.
+
+There is also a **Benchmark** button that runs a 15-second depth-only capture test and reports AR frame rate, saved frame rate, motion skips, no-depth frames, PNG/JPEG encode time, and total depth/RGB size. This gives a baseline for comparing the current PNG format against future compressed depth storage.
+
+```mermaid
+flowchart LR
+  phone["LiDAR iPhone"]
+  capture["SandStories Capture"]
+  session["session_UUID"]
+  analysis["Offline Analysis"]
+
+  phone -->|"ARKit frames"| capture
+  capture -->|"manifest + media files"| session
+  session -->|"Python, MATLAB, Fiji"| analysis
+```
+
+## What Does Not Work Yet
+
+- Object detection is currently a stubbed pipeline hook rather than a trained/story-specific detector.
+- Tray boundary detection is heuristic and may remain `pending` for difficult scenes.
+- Depth is currently stored as individual PNG files; compressed depth chunks and lossless depth video are planned but not implemented.
+- The Python visualization script shows one selected frame at a time; full session reports/contact sheets are future tooling.
+- Simulator support is not a goal for real capture because ARKit scene depth requires physical hardware.
+
+## Hardware
+
+| Component | Notes |
+| --- | --- |
+| LiDAR-capable iPhone/iPad | Required for ARKit scene depth capture |
+| iOS 17+ device | Physical device only for real capture |
+| Sand tray / storytelling surface | Subject being captured |
+| Optional external SSD or Files folder | Used for longer sessions or easier transfer |
+| Mac/Linux/Windows machine | Used for Python visualization and offline analysis |
+
+## Build And Run
+
+This project is a Swift Package Manager app packaged with `xtool`.
+
+```bash
+./scripts/build_release_ipa.sh
+```
+
+The build script:
+
+1. Runs `xtool dev build -c release`.
+2. Merges iOS privacy usage descriptions from `AppSupport/SandStories-App-Info.plist`.
+3. Packages `xtool/SandStories.ipa`.
+
+The privacy merge step matters. iOS will terminate an app that accesses camera, LiDAR/world sensing, location, or microphone without the corresponding `Info.plist` usage descriptions.
+
+See [`docs/INSTALL_IPA.md`](docs/INSTALL_IPA.md) if the app crashes on launch after manual packaging.
+
+## Architecture
+
+SandStories is intentionally organized around the session lifecycle: AR frames enter through a delegate multiplexer, modality-specific components write their data, and `CaptureSessionController` keeps the manifest consistent.
 
 ```mermaid
 sequenceDiagram
@@ -88,20 +83,32 @@ sequenceDiagram
   Multiplexer->>DepthManager: sceneDepth + capturedImage
   DepthManager->>Disk: depth/d_NNNNNN.png
   DepthManager->>Disk: rgb/r_NNNNNN.jpg
-  DepthManager->>SessionController: append frame paths and timestamps
+  DepthManager->>SessionController: frame paths + timestamps
   Multiplexer->>HandManager: hand pose / stroke point
   HandManager->>Disk: strokes.json
-  Multiplexer->>Coordinator: tray and object hooks
-  Coordinator->>SessionController: tray, location, objects, audio metadata
+  Multiplexer->>Coordinator: tray, object, location hooks
+  Coordinator->>SessionController: session metadata
   SessionController->>Disk: manifest.json
 ```
 
-## Exported Data Format
+Key source files:
 
-The exported session is intentionally simple: standard files plus a JSON manifest. This makes the output easy to inspect in Python, MATLAB, ImageJ/Fiji, or custom tooling.
+- `SandStoriesApp.swift` — SwiftUI app entry point.
+- `ContentView.swift` — main AR UI, capture controls, benchmark button, export sheet.
+- `ARSessionDelegateMultiplexer.swift` — fans ARKit delegate callbacks out to capture subsystems.
+- `RecordingCoordinator.swift` — owns start/stop flow, storage destination, audio, location, tray/object hooks, and benchmark mode.
+- `DepthCaptureManager.swift` — converts ARKit scene depth to 16-bit PNG, writes paired RGB JPEGs, and records throughput metrics.
+- `CaptureSessionController.swift` — creates session folders, writes `manifest.json`, and appends `objects.jsonl`.
+- `HandPoseCaptureManager.swift` and `StrokeRecorder.swift` — convert hand pose events into 3D stroke polylines.
+- `SessionManifestModels.swift` — canonical schema for exported sessions.
+- `ShareExportManager.swift` and `SimpleZipWriter.swift` — package sessions for sharing.
+
+## Data Format
+
+Each recording is a self-contained folder named `session_<UUID>`. The canonical entry point is `manifest.json`; all other files are referenced relative to the session root.
 
 ```mermaid
-flowchart LR
+flowchart TB
   subgraph sessionFolder["session_UUID"]
     manifest["manifest.json"]
     depthDir["depth/d_000001.png"]
@@ -118,37 +125,34 @@ flowchart LR
   manifest --> objectsFile
 ```
 
-### `manifest.json`
+`manifest.json` contains:
 
-`manifest.json` is defined by `CaptureSessionManifest` and includes:
-
-- Session identity, app version, device model, and OS version.
-- Wall-clock start/end timestamps.
-- Monotonic session elapsed time for cross-modality alignment.
-- ARKit time reference.
+- Session ID, device model, app version, and OS version.
+- Wall-clock start/end time.
+- Monotonic elapsed session time for cross-modality alignment.
+- ARKit timestamp reference.
 - Storage destination metadata.
 - Depth encoding settings.
-- Depth/RGB frame entries with relative paths and timestamps.
+- Depth and RGB frame entries with relative paths and timestamps.
 - Optional audio metadata.
-- Stroke/object/tray/location references.
+- Stroke, object-detection, tray-boundary, and location metadata.
 
-### Depth Encoding
-
-Depth is stored as 16-bit PNG so the raw depth values remain lossless.
+Current depth format:
 
 ```text
+format = png16_grayscale_zlib
 meters = (uint16_value / 65535.0) * maxDepthMeters
 ```
 
-- `0` means invalid/no depth.
-- `maxDepthMeters` is stored in `manifest.json`.
-- The current format string is `png16_grayscale_zlib`.
+`0` means invalid/no depth. `maxDepthMeters` is stored in `manifest.json`.
 
-### Timing Model
+## Timing Model
+
+The app stores multiple time bases because different analysis tasks need different alignment guarantees.
 
 ```mermaid
 flowchart TB
-  wall["Wall clock time Unix seconds"]
+  wall["Wall clock Unix seconds"]
   mono["Monotonic elapsed seconds"]
   arkit["ARFrame.timestamp"]
   frames["Depth and RGB frames"]
@@ -164,68 +168,90 @@ flowchart TB
   arkit --> objects
 ```
 
-Use `monotonicElapsedSeconds` for session-local alignment. Use `arTimestamp` when correlating directly with ARKit frame timing.
+Use `monotonicElapsedSeconds` for session-local alignment across modalities. Use `arTimestamp` when correlating directly with ARKit frames.
 
-## Benchmark Mode
+## Visualize Session Data
 
-The app includes a **Benchmark** button in the bottom toolbar. It runs a 15-second depth-only capture session and reports:
-
-- AR frame rate.
-- Saved depth/RGB frame rate.
-- Number of saved frames.
-- Motion-gated skips.
-- Frames without depth.
-- Average depth PNG encode time.
-- Average RGB JPEG encode time.
-- Total depth/RGB storage size.
-
-This benchmark is designed to compare the current PNG-based capture path against future storage formats such as lossless depth video or compressed depth chunks.
-
-## Visualizing A Session
-
-Install dependencies and run the included script:
+The repository includes a Python script for opening a recorded session and viewing a selected depth/RGB frame.
 
 ```bash
 pip install numpy pillow matplotlib
 python scripts/visualize_sandstories_session.py "/path/to/session_UUID" --frame 0
 ```
 
-Save a visualization instead of opening a window:
+Save the visualization to disk:
 
 ```bash
 python scripts/visualize_sandstories_session.py "/path/to/session_UUID" --frame 0 --save frame_0.png
 ```
 
-See [`docs/VISUALIZE_SESSION.md`](docs/VISUALIZE_SESSION.md) for details on ImageJ/Fiji, MATLAB, and OpenCV workflows.
+See [`docs/VISUALIZE_SESSION.md`](docs/VISUALIZE_SESSION.md) for ImageJ/Fiji, MATLAB, and OpenCV workflows.
 
-## Building The App
+## Project Structure
 
-Build a release app and package an IPA:
-
-```bash
-./scripts/build_release_ipa.sh
+```text
+SandStories/
+  AppSupport/
+    SandStories-App-Info.plist          iOS privacy usage descriptions
+  Sources/SandStories/
+    SandStoriesApp.swift                App entry point
+    ContentView.swift                   Main SwiftUI capture UI
+    RecordingCoordinator.swift          Session lifecycle orchestration
+    DepthCaptureManager.swift           LiDAR/RGB persistence and benchmark metrics
+    CaptureSessionController.swift      manifest.json and objects.jsonl writer
+    HandPoseCaptureManager.swift        Hand pose integration
+    StrokeRecorder.swift                3D stroke persistence
+    SessionManifestModels.swift         Exported data schema
+    ShareExportManager.swift            Session export helpers
+  docs/
+    INSTALL_IPA.md                      IPA/privacy troubleshooting
+    VISUALIZE_SESSION.md                Offline visualization guide
+  scripts/
+    build_release_ipa.sh                Release app + IPA build
+    merge_privacy_into_app.sh           Info.plist privacy merge
+    visualize_sandstories_session.py    Depth/RGB visualization tool
+  Package.swift                         Swift package definition
+  xtool.yml                             iOS bundle identifier config
 ```
 
-The script:
+## Roadmap
 
-1. Runs `xtool dev build -c release`.
-2. Merges privacy usage descriptions from `AppSupport/SandStories-App-Info.plist`.
-3. Packages `xtool/SandStories.ipa`.
+- Phase 1: Stable packaged session capture with PNG depth, RGB, audio, strokes, and manifest metadata.
+- Phase 2: Session analysis tooling: summaries, contact sheets, depth quality metrics, and stroke timelines.
+- Phase 3: Storage benchmark: compare PNG depth against lossless depth video and compressed 16-bit depth chunks.
+- Phase 4: Stronger tray detection and story-object detection.
+- Phase 5: Dataset viewer/dashboard for reviewing many sessions side by side.
 
-The privacy merge step is required because iOS will terminate apps that access camera, LiDAR/world sensing, location, or microphone without the matching `Info.plist` usage descriptions.
+The biggest open technical question is the best storage format for high-rate, exact 16-bit depth. PNG is simple and reliable, but may be too slow or file-heavy for longer sessions. The next candidates are lossless depth video or an indexed compressed depth chunk stream.
 
-## Requirements
+## Dependencies
 
-- iOS 17+.
-- LiDAR-capable iPhone/iPad for depth capture.
+### iOS
+
+Apple frameworks only:
+
+- ARKit
+- RealityKit
+- SwiftUI
+- CoreLocation
+- Vision
+- AVFoundation
+
+### Tooling
+
 - Swift 6.2 toolchain.
-- `xtool` for iOS packaging from this Swift Package project.
-- Python 3 with `numpy`, `pillow`, and `matplotlib` for visualization tooling.
+- `xtool` for packaging the iOS app.
+- Python 3 with `numpy`, `pillow`, and `matplotlib` for visualization.
 
-## Development Notes
+## Repository Hygiene
 
-- Build products are ignored: `.build/`, `xtool/`, `DerivedData/`, and local Python virtual environments should not be committed.
-- The current canonical data schema is `schemaVersion: 1`.
-- Existing exported sessions remain readable as long as tools start from `manifest.json`.
-- Future storage experiments should preserve exact 16-bit depth semantics before replacing the PNG path.
+Build products and local scratch files are intentionally ignored:
+
+- `.build/`
+- `xtool/`
+- `DerivedData/`
+- `.venv*/`
+- local transcription scratch files
+
+The repository should contain source, scripts, docs, and lightweight configuration only.
 

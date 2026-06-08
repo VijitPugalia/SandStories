@@ -7,7 +7,7 @@ Workflow: [`.github/workflows/build-ipa.yml`](../.github/workflows/build-ipa.yml
 ## What runs on every push
 
 1. Use the runner’s **Xcode / iOS SDK** (preinstalled on `macos-15`)
-2. Install **xtool** via Homebrew ([`scripts/ci-setup-xtool-macos.sh`](../scripts/ci-setup-xtool-macos.sh))
+2. Install **xtool** from the pinned release zip ([`scripts/ci-setup-xtool-macos.sh`](../scripts/ci-setup-xtool-macos.sh))
 3. Run [`scripts/build_release_ipa.sh`](../scripts/build_release_ipa.sh)
 4. Upload `xtool/SandStories.ipa` as a workflow artifact
 
@@ -72,7 +72,7 @@ See [README Phase 3](../README.md) for storage-format benchmarks; CI here is ind
 
 | Failure | Fix |
 |---------|-----|
-| `brew install xtool` fails | Re-run workflow; check [xtool-org/tap](https://github.com/xtool-org/homebrew-tap) |
+| `xtool.app.zip` download fails | Check [xtool releases](https://github.com/xtool-org/xtool/releases) and `XTOOL_VERSION` in `.github/xtool-version.env` |
 | `missing Resources/AppIcon.png` | Commit the app icon under `Resources/` |
 | `xcrun -sdk iphoneos` fails | GitHub `macos-15` image issue — try `macos-14` in the workflow |
 | Build OK on WSL, CI fails | macOS CI uses Xcode SDK; WSL uses xtool cross-compile — both are supported |

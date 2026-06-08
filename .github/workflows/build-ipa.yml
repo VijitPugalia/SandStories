@@ -24,6 +24,9 @@ jobs:
       - name: Install xtool
         run: bash scripts/ci-setup-xtool-macos.sh
 
+      - name: Verify xtool on PATH
+        run: which xtool && xtool --version
+
       - name: Build release IPA
         run: bash scripts/build_release_ipa.sh
 

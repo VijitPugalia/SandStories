@@ -1,6 +1,7 @@
 import ARKit
 
 /// Forwards `ARSessionDelegate` callbacks to multiple delegates.
+@MainActor
 final class ARSessionDelegateMultiplexer: NSObject, ARSessionDelegate {
     private let delegates: [any ARSessionDelegate]
 

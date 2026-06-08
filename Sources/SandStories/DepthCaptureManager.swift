@@ -302,28 +302,23 @@ actor DepthCaptureWriter {
 }
 
 // ARSessionDelegate implementation that forwards frame data to an actor for safe encoding/writing.
+@MainActor
 final class DepthCaptureManager: NSObject, ARSessionDelegate {
     private let writer = DepthCaptureWriter()
-    private let recordingLock = NSLock()
-    private let captureQueue = DispatchQueue(label: "depth.capture")
     private var isRecording: Bool = false
     private var captureInFlight: Bool = false
     private var benchmarkFramesReceived: Int = 0
     private var benchmarkFramesWithoutDepth: Int = 0
 
     var isCurrentlyRecording: Bool {
-        recordingLock.lock()
-        defer { recordingLock.unlock() }
         return isRecording
     }
 
-    @MainActor
     func resetBenchmarkMetrics() async {
         resetBenchmarkFrameCounters()
         await writer.resetBenchmarkMetrics()
     }
 
-    @MainActor
     func benchmarkSnapshot() async -> DepthCaptureBenchmarkSnapshot {
         let writerSnapshot = await writer.benchmarkSnapshot()
 
@@ -335,15 +330,11 @@ final class DepthCaptureManager: NSObject, ARSessionDelegate {
     }
 
     private func resetBenchmarkFrameCounters() {
-        recordingLock.lock()
         benchmarkFramesReceived = 0
         benchmarkFramesWithoutDepth = 0
-        recordingLock.unlock()
     }
 
     private func benchmarkFrameCounters() -> (received: Int, withoutDepth: Int) {
-        recordingLock.lock()
-        defer { recordingLock.unlock() }
         return (benchmarkFramesReceived, benchmarkFramesWithoutDepth)
     }
 
@@ -353,7 +344,6 @@ final class DepthCaptureManager: NSObject, ARSessionDelegate {
         deltaThresholdMeanU16: Float,
         onSaved: (@Sendable (TimeInterval, String, String) async -> Void)?
     ) {
-        let writer = self.writer
         let dd = depthDirectory
         let rd = rgbDirectory
         let th = deltaThresholdMeanU16
@@ -369,51 +359,39 @@ final class DepthCaptureManager: NSObject, ARSessionDelegate {
     }
 
     func setRecording(_ isRecording: Bool) {
-        recordingLock.lock()
         self.isRecording = isRecording
-        recordingLock.unlock()
-
         let writer = self.writer
         Task { await writer.setRecording(isRecording) }
     }
 
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
-        recordingLock.lock()
         let shouldCapture = isRecording
         if shouldCapture {
             benchmarkFramesReceived += 1
         }
-        recordingLock.unlock()
 
         guard shouldCapture else { return }
 
         guard let depthData = frame.sceneDepth else {
-            recordingLock.lock()
             benchmarkFramesWithoutDepth += 1
-            recordingLock.unlock()
             return
         }
+
+        guard !captureInFlight else { return }
+        captureInFlight = true
 
         let writer = self.writer
         let timestamp = frame.timestamp
         let depthMap = PixelBufferBox(depthData.depthMap)
         let capturedImage = PixelBufferBox(frame.capturedImage)
 
-        captureQueue.async { [weak self] in
-            guard let self else { return }
-            guard !captureInFlight else { return }
-            captureInFlight = true
-
-            Task {
-                await writer.capture(
-                    timestamp: timestamp,
-                    depthMap: depthMap,
-                    capturedImage: capturedImage
-                )
-                captureQueue.async { [weak self] in
-                    self?.captureInFlight = false
-                }
-            }
+        Task {
+            await writer.capture(
+                timestamp: timestamp,
+                depthMap: depthMap,
+                capturedImage: capturedImage
+            )
+            self.captureInFlight = false
         }
     }
 }

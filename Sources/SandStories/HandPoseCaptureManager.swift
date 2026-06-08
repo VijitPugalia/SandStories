@@ -312,150 +312,127 @@ final class HandPoseSceneRenderer: @unchecked Sendable {
     }
 }
 
+@MainActor
 final class HandPoseCaptureManager: NSObject, ARSessionDelegate {
     private let processor = HandPoseVisionProcessor()
     private let renderer = HandPoseSceneRenderer()
     private let strokeRecorder = StrokeRecorder()
-    private let processingQueue = DispatchQueue(label: "handpose.capture")
     private var isProcessing = false
     private var isPaused = false
 
     var onGestureCommand: (@MainActor @Sendable (UIGestureCommand) -> Void)?
 
-    @MainActor
     func setPaused(_ paused: Bool) async {
         self.isPaused = paused
     }
 
-    @MainActor
     func clearActiveStroke() async {
         await strokeRecorder.clearActiveStroke()
     }
 
-    @MainActor
     func clearStrokes() async {
         await renderer.clearStrokes()
         await strokeRecorder.clearActiveStroke()
     }
 
     /// Packaged sessions: write strokes to `session_…/strokes.json`. Pass `nil` for legacy Documents file.
-    @MainActor
     func setStrokeOutputURL(_ url: URL?) async {
         await strokeRecorder.setCaptureOutputURL(url)
     }
 
     /// Align stroke timestamps with ARKit time base when recording starts (first AR frame).
-    @MainActor
     func alignStrokeSessionStart(arTimestamp: TimeInterval) async {
         await strokeRecorder.beginSession(startedAt: arTimestamp)
     }
 
-    @MainActor
     func setARView(_ arView: ARView) {
         renderer.setARView(arView)
     }
 
-    @MainActor
     func getSessionStrokes() async -> [StrokeRecorder.Stroke] {
         await strokeRecorder.getSessionStrokes()
     }
 
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
+        guard !isProcessing else { return }
+        isProcessing = true
+
         let pixelBuffer = PixelBufferBox(frame.capturedImage)
         let orientation: CGImagePropertyOrientation = .right
         let frameTimestamp = frame.timestamp
-        let processor = self.processor
-        let renderer = self.renderer
-        let strokeRecorder = self.strokeRecorder
         let viewportSize = renderer.currentViewportSize()
 
-        processingQueue.async { [weak self] in
-            guard let self else { return }
-            guard !isProcessing else { return }
-            isProcessing = true
+        Task(priority: .userInitiated) {
+            let result = await processor.processFrameForFingertipAndGestures(
+                pixelBufferBox: pixelBuffer,
+                orientation: orientation,
+                timestamp: frameTimestamp
+            )
 
-            Task(priority: .userInitiated) {
-                let result = await processor.processFrameForFingertipAndGestures(
-                    pixelBufferBox: pixelBuffer,
-                    orientation: orientation,
-                    timestamp: frameTimestamp
-                )
+            if let command = result.command {
+                self.onGestureCommand?(command)
+            }
 
-                if let command = result.command {
-                    await MainActor.run {
-                        self.onGestureCommand?(command)
-                    }
-                }
-
-                let isPaused = await MainActor.run { self.isPaused }
-
-                guard !isPaused else {
-                    // Paused: Render tracker only, no stroke capture.
-                    if let fingertip = result.fingertip {
-                        let screenPoint = CGPoint(
-                            x: fingertip.x * viewportSize.width,
-                            y: (1 - fingertip.y) * viewportSize.height
-                        )
-                        if let worldTransform = await renderer.raycastWorldTransform(from: screenPoint) {
-                            await renderer.renderFingertip(worldTransform: worldTransform)
-                        }
-                    }
-                    let missingEvent = await strokeRecorder.ingestMissing(timestamp: frameTimestamp)
-                    if case .finished = missingEvent {
-                        await renderer.endStroke()
-                    }
-                    processingQueue.async { [weak self] in
-                        self?.isProcessing = false
-                    }
-                    return
-                }
-
+            guard !self.isPaused else {
+                // Paused: Render tracker only, no stroke capture.
                 if let fingertip = result.fingertip {
                     let screenPoint = CGPoint(
                         x: fingertip.x * viewportSize.width,
                         y: (1 - fingertip.y) * viewportSize.height
                     )
-
-                    guard let worldTransform = await renderer.raycastWorldTransform(from: screenPoint) else {
-                        let missingEvent = await strokeRecorder.ingestMissing(timestamp: frameTimestamp)
-                        if case .finished = missingEvent {
-                            await renderer.endStroke()
-                        }
-                        processingQueue.async { [weak self] in
-                            self?.isProcessing = false
-                        }
-                        return
+                    if let worldTransform = await renderer.raycastWorldTransform(from: screenPoint) {
+                        await renderer.renderFingertip(worldTransform: worldTransform)
                     }
+                }
+                let missingEvent = await strokeRecorder.ingestMissing(timestamp: frameTimestamp)
+                if case .finished = missingEvent {
+                    await renderer.endStroke()
+                }
+                self.isProcessing = false
+                return
+            }
 
-                    await renderer.renderFingertip(worldTransform: worldTransform)
+            if let fingertip = result.fingertip {
+                let screenPoint = CGPoint(
+                    x: fingertip.x * viewportSize.width,
+                    y: (1 - fingertip.y) * viewportSize.height
+                )
 
-                    let worldPosition = simd_float3(
-                        worldTransform.columns.3.x,
-                        worldTransform.columns.3.y,
-                        worldTransform.columns.3.z
-                    )
-
-                    let detectedEvent = await strokeRecorder.ingestDetected(position: worldPosition, timestamp: frameTimestamp)
-                    switch detectedEvent {
-                    case .started(let point):
-                        await renderer.startStroke()
-                        await renderer.appendStrokePoint(point.position)
-                    case .appended(let point):
-                        await renderer.appendStrokePoint(point.position)
-                    case .none:
-                        break
-                    }
-                } else {
+                guard let worldTransform = await renderer.raycastWorldTransform(from: screenPoint) else {
                     let missingEvent = await strokeRecorder.ingestMissing(timestamp: frameTimestamp)
                     if case .finished = missingEvent {
                         await renderer.endStroke()
                     }
+                    self.isProcessing = false
+                    return
                 }
 
-                processingQueue.async { [weak self] in
-                    self?.isProcessing = false
+                await renderer.renderFingertip(worldTransform: worldTransform)
+
+                let worldPosition = simd_float3(
+                    worldTransform.columns.3.x,
+                    worldTransform.columns.3.y,
+                    worldTransform.columns.3.z
+                )
+
+                let detectedEvent = await strokeRecorder.ingestDetected(position: worldPosition, timestamp: frameTimestamp)
+                switch detectedEvent {
+                case .started(let point):
+                    await renderer.startStroke()
+                    await renderer.appendStrokePoint(point.position)
+                case .appended(let point):
+                    await renderer.appendStrokePoint(point.position)
+                case .none:
+                    break
+                }
+            } else {
+                let missingEvent = await strokeRecorder.ingestMissing(timestamp: frameTimestamp)
+                if case .finished = missingEvent {
+                    await renderer.endStroke()
                 }
             }
+
+            self.isProcessing = false
         }
     }
 }

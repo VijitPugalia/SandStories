@@ -15,7 +15,6 @@ enum UIGestureCommand: Sendable {
 // Serializes Vision hand pose requests so we never build up a backlog.
 actor HandPoseVisionProcessor {
     private let request = VNDetectHumanHandPoseRequest()
-    private var isProcessing = false
 
     // State for gesture detection
     private var openPalmConsecutiveFrames = 0
@@ -32,6 +31,15 @@ actor HandPoseVisionProcessor {
         request.maximumHandCount = 1
     }
 
+    /// Reset all gesture-recognition state so no stale commands fire.
+    func reset() {
+        openPalmConsecutiveFrames = 0
+        gestureCooldownFrames = 60  // block gestures for ~2 s after reset
+        wristXHistory.removeAll()
+        lastPinchActive = false
+        lastPinchTime = 0
+    }
+
     struct DetectionResult: Sendable {
         let fingertip: CGPoint?
         let command: UIGestureCommand?
@@ -42,12 +50,7 @@ actor HandPoseVisionProcessor {
         orientation: CGImagePropertyOrientation,
         timestamp: TimeInterval
     ) async -> DetectionResult {
-        guard !isProcessing else {
-            return DetectionResult(fingertip: nil, command: nil)
-        }
-        isProcessing = true
-        defer { isProcessing = false }
-
+        // Process every frame — actor already serializes concurrent requests.
         let handler = VNImageRequestHandler(cvPixelBuffer: pixelBufferBox.pixelBuffer, orientation: orientation)
         do {
             try handler.perform([request])
@@ -62,6 +65,7 @@ actor HandPoseVisionProcessor {
 
         let observations = request.results ?? []
         guard let obs = observations.first else {
+            print("🖐️ No hand in frame")
             openPalmConsecutiveFrames = 0
             if !wristXHistory.isEmpty {
                 wristXHistory.removeFirst()
@@ -69,18 +73,26 @@ actor HandPoseVisionProcessor {
             return DetectionResult(fingertip: nil, command: nil)
         }
 
-        guard let wrist = try? obs.recognizedPoint(.wrist), wrist.confidence >= 0.3,
-              let thumbTip = try? obs.recognizedPoint(.thumbTip), thumbTip.confidence >= 0.3,
-              let thumbIP = try? obs.recognizedPoint(.thumbIP), thumbIP.confidence >= 0.3,
-              let indexTip = try? obs.recognizedPoint(.indexTip), indexTip.confidence >= 0.3,
-              let indexMCP = try? obs.recognizedPoint(.indexMCP), indexMCP.confidence >= 0.3,
-              let middleTip = try? obs.recognizedPoint(.middleTip), middleTip.confidence >= 0.3,
-              let middleMCP = try? obs.recognizedPoint(.middleMCP), middleMCP.confidence >= 0.3,
-              let ringTip = try? obs.recognizedPoint(.ringTip), ringTip.confidence >= 0.3,
-              let ringMCP = try? obs.recognizedPoint(.ringMCP), ringMCP.confidence >= 0.3,
-              let littleTip = try? obs.recognizedPoint(.littleTip), littleTip.confidence >= 0.3,
-              let littleMCP = try? obs.recognizedPoint(.littleMCP), littleMCP.confidence >= 0.3
+        guard let wrist = try? obs.recognizedPoint(.wrist), wrist.confidence >= 0.15,
+              let thumbTip = try? obs.recognizedPoint(.thumbTip), thumbTip.confidence >= 0.15,
+              let thumbIP = try? obs.recognizedPoint(.thumbIP), thumbIP.confidence >= 0.15,
+              let indexTip = try? obs.recognizedPoint(.indexTip), indexTip.confidence >= 0.15,
+              let indexMCP = try? obs.recognizedPoint(.indexMCP), indexMCP.confidence >= 0.15,
+              let middleTip = try? obs.recognizedPoint(.middleTip), middleTip.confidence >= 0.15,
+              let middleMCP = try? obs.recognizedPoint(.middleMCP), middleMCP.confidence >= 0.15,
+              let ringTip = try? obs.recognizedPoint(.ringTip), ringTip.confidence >= 0.15,
+              let ringMCP = try? obs.recognizedPoint(.ringMCP), ringMCP.confidence >= 0.15,
+              let littleTip = try? obs.recognizedPoint(.littleTip), littleTip.confidence >= 0.15,
+              let littleMCP = try? obs.recognizedPoint(.littleMCP), littleMCP.confidence >= 0.15
         else {
+            // Log which landmarks are failing for debugging
+            let wC = (try? obs.recognizedPoint(.wrist))?.confidence ?? 0
+            let tC = (try? obs.recognizedPoint(.thumbTip))?.confidence ?? 0
+            let iC = (try? obs.recognizedPoint(.indexTip))?.confidence ?? 0
+            let mC = (try? obs.recognizedPoint(.middleTip))?.confidence ?? 0
+            let rC = (try? obs.recognizedPoint(.ringTip))?.confidence ?? 0
+            let lC = (try? obs.recognizedPoint(.littleTip))?.confidence ?? 0
+            print("🖐️ Landmarks below threshold: wrist=\(String(format: "%.2f", wC)) thumb=\(String(format: "%.2f", tC)) index=\(String(format: "%.2f", iC)) mid=\(String(format: "%.2f", mC)) ring=\(String(format: "%.2f", rC)) little=\(String(format: "%.2f", lC))")
             openPalmConsecutiveFrames = 0
             if !wristXHistory.isEmpty {
                 wristXHistory.removeFirst()
@@ -324,6 +336,11 @@ final class HandPoseCaptureManager: NSObject, @preconcurrency ARSessionDelegate 
 
     func setPaused(_ paused: Bool) async {
         self.isPaused = paused
+    }
+
+    /// Reset gesture state so pre-existing hand in frame doesn't immediately trigger a command.
+    func resetGestureState() async {
+        await processor.reset()
     }
 
     func clearActiveStroke() async {

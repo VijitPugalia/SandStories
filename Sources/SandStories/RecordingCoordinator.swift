@@ -325,6 +325,7 @@ final class RecordingCoordinator: ObservableObject {
 
             trayDetectionLocked = false
             auxiliaryFrameCounter = 0
+            await handPoseManager.resetGestureState()
             isCaptureRecording = true
             isCapturePaused = false
             depthCaptureManager.setRecording(true)

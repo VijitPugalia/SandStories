@@ -4,30 +4,47 @@ import Foundation
 import RealityKit
 import Vision
 
+enum UIGestureCommand: Sendable {
+    case start
+    case stop
+    case pause
+    case resume
+    case markSegment
+}
+
 // Serializes Vision hand pose requests so we never build up a backlog.
 actor HandPoseVisionProcessor {
     private let request = VNDetectHumanHandPoseRequest()
     private var isProcessing = false
 
+    // State for gesture detection
+    private var openPalmConsecutiveFrames = 0
+    private var gestureCooldownFrames = 0
+    
+    // Wave state
+    private var wristXHistory: [CGFloat] = []
+    
+    // Tap / Pinch state
+    private var lastPinchActive = false
+    private var lastPinchTime: TimeInterval = 0
+
     init() {
         request.maximumHandCount = 1
-        // The default revision is fine for iOS 17+, but explicitly setting makes intent clear.
-        if #available(iOS 14.0, *) {
-            // No-op: revision handled by VNDetectHumanHandPoseRequest internally across iOS versions.
-        }
     }
 
-    enum FingertipDetection: Sendable {
-        case detected(CGPoint)
-        case notDetected
-        case busy
+    struct DetectionResult: Sendable {
+        let fingertip: CGPoint?
+        let command: UIGestureCommand?
     }
 
-    func detectIndexFingerTip(
+    func processFrameForFingertipAndGestures(
         pixelBufferBox: PixelBufferBox,
-        orientation: CGImagePropertyOrientation
-    ) async -> FingertipDetection {
-        guard !isProcessing else { return .busy }
+        orientation: CGImagePropertyOrientation,
+        timestamp: TimeInterval
+    ) async -> DetectionResult {
+        guard !isProcessing else {
+            return DetectionResult(fingertip: nil, command: nil)
+        }
         isProcessing = true
         defer { isProcessing = false }
 
@@ -36,28 +53,142 @@ actor HandPoseVisionProcessor {
             try handler.perform([request])
         } catch {
             print("HandPoseVisionProcessor perform error: \(error)")
-            return .notDetected
+            return DetectionResult(fingertip: nil, command: nil)
+        }
+
+        if gestureCooldownFrames > 0 {
+            gestureCooldownFrames -= 1
         }
 
         let observations = request.results ?? []
+        guard let obs = observations.first else {
+            openPalmConsecutiveFrames = 0
+            if !wristXHistory.isEmpty {
+                wristXHistory.removeFirst()
+            }
+            return DetectionResult(fingertip: nil, command: nil)
+        }
 
-        var bestPoint: CGPoint?
-        var bestConfidence: Float = 0
+        guard let wrist = try? obs.recognizedPoint(.wrist), wrist.confidence >= 0.3,
+              let thumbTip = try? obs.recognizedPoint(.thumbTip), thumbTip.confidence >= 0.3,
+              let thumbIP = try? obs.recognizedPoint(.thumbIP), thumbIP.confidence >= 0.3,
+              let indexTip = try? obs.recognizedPoint(.indexTip), indexTip.confidence >= 0.3,
+              let indexMCP = try? obs.recognizedPoint(.indexMCP), indexMCP.confidence >= 0.3,
+              let middleTip = try? obs.recognizedPoint(.middleTip), middleTip.confidence >= 0.3,
+              let middleMCP = try? obs.recognizedPoint(.middleMCP), middleMCP.confidence >= 0.3,
+              let ringTip = try? obs.recognizedPoint(.ringTip), ringTip.confidence >= 0.3,
+              let ringMCP = try? obs.recognizedPoint(.ringMCP), ringMCP.confidence >= 0.3,
+              let littleTip = try? obs.recognizedPoint(.littleTip), littleTip.confidence >= 0.3,
+              let littleMCP = try? obs.recognizedPoint(.littleMCP), littleMCP.confidence >= 0.3
+        else {
+            openPalmConsecutiveFrames = 0
+            if !wristXHistory.isEmpty {
+                wristXHistory.removeFirst()
+            }
+            return DetectionResult(fingertip: nil, command: nil)
+        }
 
-        for obs in observations {
-            guard let tip = try? obs.recognizedPoint(.indexTip) else { continue }
-            // Some observations may return a point with low confidence.
-            if tip.confidence > bestConfidence {
-                bestConfidence = tip.confidence
-                bestPoint = tip.location
+        let wLoc = wrist.location
+        let tTip = thumbTip.location
+        let tIP = thumbIP.location
+        let iTip = indexTip.location
+        let iMCP = indexMCP.location
+        let mTip = middleTip.location
+        let mMCP = middleMCP.location
+        let rTip = ringTip.location
+        let rMCP = ringMCP.location
+        let lTip = littleTip.location
+        let lMCP = littleMCP.location
+
+        let isThumbExtended = distance(tTip, wLoc) > distance(tIP, wLoc) * 1.1
+        let isIndexExtended = distance(iTip, wLoc) > distance(iMCP, wLoc) * 1.2
+        let isMiddleExtended = distance(mTip, wLoc) > distance(mMCP, wLoc) * 1.2
+        let isRingExtended = distance(rTip, wLoc) > distance(rMCP, wLoc) * 1.2
+        let isLittleExtended = distance(lTip, wLoc) > distance(lMCP, wLoc) * 1.2
+
+        let isOpenPalm = isThumbExtended && isIndexExtended && isMiddleExtended && isRingExtended && isLittleExtended
+
+        var command: UIGestureCommand? = nil
+
+        // Heuristic 1: Open Palm (Hold 1.0 second = 30 frames)
+        if isOpenPalm {
+            openPalmConsecutiveFrames += 1
+            if gestureCooldownFrames == 0 && openPalmConsecutiveFrames >= 30 {
+                openPalmConsecutiveFrames = 0
+                gestureCooldownFrames = 60
+                wristXHistory.removeAll()
+                command = .pause
+            }
+        } else {
+            openPalmConsecutiveFrames = 0
+        }
+
+        // Heuristic 2: Open Hand Wave (moving side-to-side)
+        if isOpenPalm {
+            wristXHistory.append(wLoc.x)
+            if wristXHistory.count > 30 {
+                wristXHistory.removeFirst()
+            }
+
+            if command == nil && gestureCooldownFrames == 0 && wristXHistory.count == 30 {
+                let minX = wristXHistory.min() ?? 0
+                let maxX = wristXHistory.max() ?? 0
+                if (maxX - minX) > 0.18 {
+                    var directionChanges = 0
+                    var lastDelta: CGFloat = 0
+                    for i in 1..<wristXHistory.count {
+                        let delta = wristXHistory[i] - wristXHistory[i-1]
+                        if abs(delta) > 0.005 {
+                            if (delta > 0 && lastDelta < 0) || (delta < 0 && lastDelta > 0) {
+                                directionChanges += 1
+                            }
+                            lastDelta = delta
+                        }
+                    }
+                    if directionChanges >= 3 {
+                        wristXHistory.removeAll()
+                        gestureCooldownFrames = 60
+                        openPalmConsecutiveFrames = 0
+                        command = .start
+                    }
+                }
+            }
+        } else {
+            if !wristXHistory.isEmpty {
+                wristXHistory.removeFirst()
             }
         }
 
-        // A small confidence threshold helps reduce jitter.
-        if let bestPoint, bestConfidence >= 0.3 {
-            return .detected(bestPoint)
+        // Heuristic 3: Two-Finger Double Tap
+        let isTwoFingersExtended = isIndexExtended && isMiddleExtended && !isRingExtended && !isLittleExtended
+        let pinchActive = distance(iTip, tTip) < 0.05 && distance(mTip, tTip) < 0.05
+
+        if isTwoFingersExtended {
+            if pinchActive && !lastPinchActive {
+                let deltaT = timestamp - lastPinchTime
+                if deltaT < 1.2 && lastPinchTime > 0 {
+                    lastPinchTime = 0
+                    lastPinchActive = false
+                    if command == nil && gestureCooldownFrames == 0 {
+                        command = .markSegment
+                        gestureCooldownFrames = 60
+                    }
+                } else {
+                    lastPinchTime = timestamp
+                }
+            }
+            lastPinchActive = pinchActive
+        } else {
+            lastPinchActive = false
         }
-        return .notDetected
+
+        return DetectionResult(fingertip: iTip, command: command)
+    }
+
+    private func distance(_ p1: CGPoint, _ p2: CGPoint) -> CGFloat {
+        let dx = p1.x - p2.x
+        let dy = p1.y - p2.y
+        return sqrt(dx*dx + dy*dy)
     }
 }
 
@@ -187,6 +318,19 @@ final class HandPoseCaptureManager: NSObject, ARSessionDelegate {
     private let strokeRecorder = StrokeRecorder()
     private let processingQueue = DispatchQueue(label: "handpose.capture")
     private var isProcessing = false
+    private var isPaused = false
+
+    var onGestureCommand: (@MainActor @Sendable (UIGestureCommand) -> Void)?
+
+    @MainActor
+    func setPaused(_ paused: Bool) async {
+        self.isPaused = paused
+    }
+
+    @MainActor
+    func clearActiveStroke() async {
+        await strokeRecorder.clearActiveStroke()
+    }
 
     @MainActor
     func clearStrokes() async {
@@ -231,22 +375,42 @@ final class HandPoseCaptureManager: NSObject, ARSessionDelegate {
             isProcessing = true
 
             Task(priority: .userInitiated) {
-                let detection = await processor.detectIndexFingerTip(
+                let result = await processor.processFrameForFingertipAndGestures(
                     pixelBufferBox: pixelBuffer,
-                    orientation: orientation
+                    orientation: orientation,
+                    timestamp: frameTimestamp
                 )
 
-                switch detection {
-                case .busy:
-                    break
+                if let command = result.command {
+                    await MainActor.run {
+                        self.onGestureCommand?(command)
+                    }
+                }
 
-                case .notDetected:
+                let isPaused = await MainActor.run { self.isPaused }
+
+                guard !isPaused else {
+                    // Paused: Render tracker only, no stroke capture.
+                    if let fingertip = result.fingertip {
+                        let screenPoint = CGPoint(
+                            x: fingertip.x * viewportSize.width,
+                            y: (1 - fingertip.y) * viewportSize.height
+                        )
+                        if let worldTransform = await renderer.raycastWorldTransform(from: screenPoint) {
+                            await renderer.renderFingertip(worldTransform: worldTransform)
+                        }
+                    }
                     let missingEvent = await strokeRecorder.ingestMissing(timestamp: frameTimestamp)
                     if case .finished = missingEvent {
                         await renderer.endStroke()
                     }
+                    processingQueue.async { [weak self] in
+                        self?.isProcessing = false
+                    }
+                    return
+                }
 
-                case .detected(let fingertip):
+                if let fingertip = result.fingertip {
                     let screenPoint = CGPoint(
                         x: fingertip.x * viewportSize.width,
                         y: (1 - fingertip.y) * viewportSize.height
@@ -257,7 +421,10 @@ final class HandPoseCaptureManager: NSObject, ARSessionDelegate {
                         if case .finished = missingEvent {
                             await renderer.endStroke()
                         }
-                        break
+                        processingQueue.async { [weak self] in
+                            self?.isProcessing = false
+                        }
+                        return
                     }
 
                     await renderer.renderFingertip(worldTransform: worldTransform)
@@ -277,6 +444,11 @@ final class HandPoseCaptureManager: NSObject, ARSessionDelegate {
                         await renderer.appendStrokePoint(point.position)
                     case .none:
                         break
+                    }
+                } else {
+                    let missingEvent = await strokeRecorder.ingestMissing(timestamp: frameTimestamp)
+                    if case .finished = missingEvent {
+                        await renderer.endStroke()
                     }
                 }
 

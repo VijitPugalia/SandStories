@@ -27,8 +27,10 @@ struct CaptureSessionManifest: Codable, Sendable {
     var strokesFile: String
     var trayBoundary: TrayBoundaryEntry
     var objectDetectionsFile: String
+    var objectDetectionProvenance: String?
     var boundarySamplesFile: String
     var location: SessionLocationEntry?
+    var segments: [SegmentMarkEntry]?
 
     struct MonotonicAnchor: Codable, Sendable {
         /// Nanoseconds from an arbitrary monotonic origin at session start (for debugging).
@@ -86,6 +88,11 @@ struct CaptureSessionManifest: Codable, Sendable {
         var latitude: Double
         var longitude: Double
         var altitude: Double?
+    }
+
+    struct SegmentMarkEntry: Codable, Sendable {
+        var monotonicElapsedSeconds: Double
+        var timestampUnix: TimeInterval
     }
 }
 

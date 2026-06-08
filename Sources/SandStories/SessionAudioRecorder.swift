@@ -48,6 +48,14 @@ final class SessionAudioRecorder: NSObject {
         self.recorder = recorder
     }
 
+    func pauseRecording() {
+        recorder?.pause()
+    }
+
+    func resumeRecording() {
+        recorder?.record()
+    }
+
     func stopRecording() -> (duration: TimeInterval, sampleRate: Double, channels: Int)? {
         guard let recorder else { return nil }
         recorder.stop()

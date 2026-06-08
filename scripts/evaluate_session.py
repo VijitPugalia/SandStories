@@ -1,0 +1,322 @@
+#!/usr/bin/env python3
+"""
+Evaluate SandStories captured session folder against the 5 research proposal metrics:
+1. Depth retention
+2. Object detection confidence
+3. Gesture continuity
+4. Boundary detection
+5. Audio continuity
+
+Also outputs a dropouts.jsonl file logging gaps >= 2 seconds.
+
+Usage:
+  python scripts/evaluate_session.py /path/to/session_folder
+  python scripts/evaluate_session.py --batch /path/to/sessions_root/ --csv field_validation.csv
+"""
+
+import argparse
+import csv
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Evaluate SandStories session metrics")
+    parser.add_argument("session_dir", type=Path, nargs="?", help="Session folder to evaluate")
+    parser.add_argument("--batch", type=Path, help="Directory containing multiple session folders")
+    parser.add_argument("--csv", type=Path, help="Output summary CSV file (requires --batch)")
+    return parser.parse_args()
+
+def load_json_lines(path: Path) -> list:
+    if not path.is_file():
+        return []
+    records = []
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                records.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass
+    return records
+
+def load_strokes(path: Path) -> list:
+    if not path.is_file():
+        return []
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return []
+
+def get_audio_silence_duration(audio_path: Path, total_duration: float):
+    if not audio_path.is_file():
+        return 0.0, []
+    
+    cmd = [
+        "ffmpeg", "-i", str(audio_path),
+        "-af", "silencedetect=noise=-30dB:d=2",
+        "-f", "null", "-"
+    ]
+    try:
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+        output = res.stderr
+    except FileNotFoundError:
+        # ffmpeg not installed, assume no dropouts
+        return 0.0, []
+    
+    start_matches = [float(x) for x in re.findall(r"silence_start:\s*([\d\.]+)", output)]
+    end_matches = re.findall(r"silence_end:\s*([\d\.]+)\s*\|\s*silence_duration:\s*([\d\.]+)", output)
+    
+    total_silence = 0.0
+    silences = []
+    for i in range(min(len(start_matches), len(end_matches))):
+        start = start_matches[i]
+        end = float(end_matches[i][0])
+        dur = float(end_matches[i][1])
+        silences.append({"start": start, "end": end, "duration": dur})
+        total_silence += dur
+        
+    if len(start_matches) > len(end_matches):
+        start = start_matches[-1]
+        if total_duration > start:
+            dur = total_duration - start
+            silences.append({"start": start, "end": total_duration, "duration": dur})
+            total_silence += dur
+            
+    return total_silence, silences
+
+def evaluate_session(session_dir: Path) -> dict:
+    session_dir = session_dir.resolve()
+    manifest_path = session_dir / "manifest.json"
+    if not manifest_path.is_file():
+        raise FileNotFoundError(f"manifest.json not found in {session_dir}")
+        
+    with manifest_path.open("r", encoding="utf-8") as f:
+        manifest = json.load(f)
+        
+    # Get session duration
+    duration = manifest.get("monotonicSessionEndElapsedSeconds")
+    if duration is None:
+        start_unix = manifest.get("wallClockStartUnix", 0)
+        end_unix = manifest.get("wallClockEndUnix")
+        if end_unix is not None:
+            duration = end_unix - start_unix
+        else:
+            duration = 0.0
+            
+    dropouts = []
+    
+    # 1. Depth Retention
+    depth_frames = manifest.get("depthFrames", [])
+    expected_depth = duration * 15.0
+    actual_depth = len(depth_frames)
+    depth_retention = min(1.0, actual_depth / expected_depth) if expected_depth > 0 else 0.0
+    
+    # Find depth dropouts (gaps >= 2s)
+    last_t = 0.0
+    for idx, frame in enumerate(depth_frames):
+        t = frame.get("monotonicElapsedSeconds", 0.0)
+        if idx > 0 and (t - last_t) >= 2.0:
+            dropouts.append({
+                "stream": "depth",
+                "start": last_t,
+                "end": t,
+                "duration": t - last_t
+            })
+        last_t = t
+        
+    # 2. Object Detection Confidence
+    obj_file = manifest.get("objectDetectionsFile", "objects.jsonl")
+    obj_path = session_dir / obj_file
+    obj_records = load_json_lines(obj_path)
+    if obj_records:
+        obj_conf = sum(r.get("confidence", 0.0) for r in obj_records) / len(obj_records)
+    else:
+        obj_conf = 0.0
+        
+    # 3. Gesture Continuity
+    strokes_file = manifest.get("strokesFile", "strokes.json")
+    strokes_path = session_dir / strokes_file
+    strokes = load_strokes(strokes_path)
+    
+    total_stroke_dur = 0.0
+    valid_stroke_dur = 0.0
+    for s in strokes:
+        started = s.get("startedAt", 0.0)
+        finished = s.get("finishedAt", 0.0)
+        points = s.get("points", [])
+        sdur = finished - started
+        if sdur <= 0:
+            continue
+            
+        total_stroke_dur += sdur
+        # Filter fragmented: < 3 points or < 0.1s
+        if len(points) >= 3 and sdur >= 0.1:
+            valid_stroke_dur += sdur
+            
+        # Check gaps >= 2s within a single stroke
+        last_pt_t = started
+        for pt in points:
+            pt_t = pt.get("timestamp", started)
+            if (pt_t - last_pt_t) >= 2.0:
+                dropouts.append({
+                    "stream": "gesture",
+                    "start": last_pt_t,
+                    "end": pt_t,
+                    "duration": pt_t - last_pt_t
+                })
+            last_pt_t = pt_t
+            
+    gesture_continuity = (valid_stroke_dur / total_stroke_dur) if total_stroke_dur > 0 else 1.0
+    
+    # 4. Boundary Detection Confidence
+    boundary_file = manifest.get("boundarySamplesFile", "boundary_samples.jsonl")
+    boundary_path = session_dir / boundary_file
+    boundary_records = load_json_lines(boundary_path)
+    if boundary_records:
+        boundary_conf = sum(r.get("confidence", 0.0) for r in boundary_records) / len(boundary_records)
+        
+        # Find boundary dropouts (gaps >= 2s between checks)
+        last_b_t = 0.0
+        for idx, r in enumerate(boundary_records):
+            b_t = r.get("monotonicElapsedSeconds", 0.0)
+            if idx > 0 and (b_t - last_b_t) >= 2.0:
+                dropouts.append({
+                    "stream": "boundary",
+                    "start": last_b_t,
+                    "end": b_t,
+                    "duration": b_t - last_b_t
+                })
+            last_b_t = b_t
+    else:
+        # Fall back to manifest static trayBoundary confidence
+        tb = manifest.get("trayBoundary", {})
+        if tb.get("status") == "detected":
+            boundary_conf = 1.0  # Heuristic fallback if file is missing
+        else:
+            boundary_conf = 0.0
+            
+    # 5. Audio Continuity
+    audio_info = manifest.get("audio")
+    audio_continuity = 0.0
+    if audio_info:
+        audio_rel = audio_info.get("relativePath", "audio.m4a")
+        audio_path = session_dir / audio_rel
+        audio_dur = audio_info.get("durationSeconds", 0.0)
+        
+        silence_dur, audio_silences = get_audio_silence_duration(audio_path, audio_dur)
+        audio_continuity = max(0.0, (audio_dur - silence_dur) / audio_dur) if audio_dur > 0 else 0.0
+        
+        # Log audio silences as dropouts
+        for s in audio_silences:
+            dropouts.append({
+                "stream": "audio",
+                "start": s["start"],
+                "end": s["end"],
+                "duration": s["duration"]
+            })
+            
+    # Write dropouts.jsonl
+    dropouts_path = session_dir / "dropouts.jsonl"
+    with dropouts_path.open("w", encoding="utf-8") as df:
+        for d in dropouts:
+            df.write(json.dumps(d) + "\n")
+            
+    # Write evaluation_report.json
+    report = {
+        "sessionId": manifest.get("sessionId"),
+        "durationSeconds": duration,
+        "metrics": {
+            "depthRetention": depth_retention,
+            "objectDetectionConfidence": obj_conf,
+            "gestureContinuity": gesture_continuity,
+            "boundaryDetection": boundary_conf,
+            "audioContinuity": audio_continuity
+        },
+        "dropoutCount": len(dropouts)
+    }
+    
+    report_path = session_dir / "evaluation_report.json"
+    with report_path.open("w", encoding="utf-8") as rf:
+        json.dump(report, rf, indent=2)
+        
+    return report
+
+def main():
+    args = parse_args()
+    
+    if args.batch:
+        if not args.batch.is_dir():
+            print(f"Error: {args.batch} is not a directory", file=sys.stderr)
+            return 1
+            
+        sessions = []
+        for root, dirs, files in os.walk(args.batch):
+            if "manifest.json" in files:
+                sessions.append(Path(root))
+                
+        if not sessions:
+            print(f"No session folders (with manifest.json) found under {args.batch}")
+            return 0
+            
+        print(f"Evaluating {len(sessions)} sessions...")
+        
+        results = []
+        for s_dir in sessions:
+            try:
+                rep = evaluate_session(s_dir)
+                results.append((s_dir, rep))
+                print(f"  Passed: {s_dir.name}")
+            except Exception as e:
+                print(f"  Failed {s_dir.name}: {e}", file=sys.stderr)
+                
+        if args.csv and results:
+            with args.csv.open("w", newline="", encoding="utf-8") as csvfile:
+                writer = csv.writer(csvfile)
+                writer.writerow([
+                    "sessionName",
+                    "sessionId",
+                    "durationSeconds",
+                    "depthRetention",
+                    "objectDetectionConfidence",
+                    "gestureContinuity",
+                    "boundaryDetection",
+                    "audioContinuity",
+                    "dropoutCount"
+                ])
+                for s_dir, rep in results:
+                    metrics = rep["metrics"]
+                    writer.writerow([
+                        s_dir.name,
+                        rep["sessionId"],
+                        rep["durationSeconds"],
+                        metrics["depthRetention"],
+                        metrics["objectDetectionConfidence"],
+                        metrics["gestureContinuity"],
+                        metrics["boundaryDetection"],
+                        metrics["audioContinuity"],
+                        rep["dropoutCount"]
+                    ])
+            print(f"Wrote summary CSV to {args.csv}")
+            
+    elif args.session_dir:
+        try:
+            rep = evaluate_session(args.session_dir)
+            print(json.dumps(rep, indent=2))
+        except Exception as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 1
+    else:
+        print("Error: Specify a session folder or use --batch", file=sys.stderr)
+        return 1
+        
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())

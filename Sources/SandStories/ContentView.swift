@@ -4,20 +4,19 @@ import SwiftUI
 
 struct ContentView: View {
     @StateObject private var recordingCoordinator = RecordingCoordinator()
-    @StateObject private var locationCaptureManager = LocationCaptureManager()
     @State private var shareItems: [Any] = []
     @State private var isShowingShareSheet = false
     @State private var showStorageSheet = false
     @State private var showExportSheet = false
     @State private var exportFolderURL: URL?
     @State private var recordingStartDate: Date?
+    @State private var showGestureGuide = false
     private let shareExportManager = ShareExportManager()
 
     var body: some View {
         ZStack {
             ARViewContainer(
-                recordingCoordinator: recordingCoordinator,
-                locationCaptureManager: locationCaptureManager
+                recordingCoordinator: recordingCoordinator
             )
             .ignoresSafeArea()
 
@@ -28,6 +27,81 @@ struct ContentView: View {
                 bottomChrome
             }
             .padding(.top, 8)
+
+            if showGestureGuide {
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack {
+                        Text("Tripod Gestures")
+                            .font(.headline.weight(.bold))
+                        Spacer()
+                        Button {
+                            withAnimation(.spring(duration: 0.3, bounce: 0.15)) { showGestureGuide = false }
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.title2)
+                                .foregroundStyle(Color(uiColor: .secondaryLabel))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    
+                    Divider()
+                    
+                    VStack(alignment: .leading, spacing: 12) {
+                        GestureGuideRow(icon: "hand.raised.fill", gestureName: "Open Palm (hold 1s)", actionDescription: "Pause / Resume Recording")
+                        GestureGuideRow(icon: "hand.wave.fill", gestureName: "Wave Hand", actionDescription: "Start / Stop Session")
+                        GestureGuideRow(icon: "hand.point.up.left.fill", gestureName: "Two-Finger Double Tap", actionDescription: "Mark Segment")
+                    }
+                }
+                .padding(16)
+                .background {
+                    VisualEffectBlur(style: .systemMaterial)
+                        .clipShape(RoundedRectangle(cornerRadius: 20))
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: 20)
+                        .stroke(Color(uiColor: .label).opacity(0.15), lineWidth: 1)
+                }
+                .shadow(color: Color.black.opacity(0.15), radius: 15, y: 5)
+                .frame(maxWidth: 290)
+                .padding(.horizontal, 16)
+                .padding(.top, 80) // Below top HUD
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+
+            if recordingCoordinator.isCapturePaused {
+                ZStack {
+                    Color.black.opacity(0.35)
+                        .ignoresSafeArea()
+                    
+                    VStack(spacing: 16) {
+                        Image(systemName: "pause.circle.fill")
+                            .font(.system(size: 64))
+                            .foregroundStyle(Color.accentColor)
+                        
+                        Text("SESSION PAUSED")
+                            .font(.title2.weight(.bold))
+                            .foregroundStyle(Color.white)
+                            .tracking(2.0)
+                        
+                        Text("Raise open palm to resume recording")
+                            .font(.subheadline)
+                            .foregroundStyle(Color.white.opacity(0.8))
+                    }
+                    .padding(.horizontal, 28)
+                    .padding(.vertical, 24)
+                    .background {
+                        VisualEffectBlur(style: .systemUltraThinMaterial)
+                            .clipShape(RoundedRectangle(cornerRadius: 24))
+                    }
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 24)
+                            .stroke(Color.white.opacity(0.25), lineWidth: 1)
+                    }
+                    .shadow(color: Color.black.opacity(0.3), radius: 25, y: 10)
+                }
+                .transition(.opacity.combined(with: .scale(scale: 0.95)))
+            }
         }
         .sheet(isPresented: $showStorageSheet) {
             StorageDestinationSheet(
@@ -79,6 +153,7 @@ struct ContentView: View {
             HStack(alignment: .top, spacing: 12) {
                 destinationPill
                 Spacer(minLength: 8)
+                gestureGuideButton
                 sessionStatusHUD
             }
             .padding(.horizontal, 16)
@@ -203,7 +278,7 @@ struct ContentView: View {
     }
 
     private var locationOverlay: some View {
-        Text(locationCaptureManager.coordinateDisplay)
+        Text(recordingCoordinator.locationCaptureManager.coordinateDisplay)
             .font(.caption)
             .foregroundStyle(Color(uiColor: .secondaryLabel))
             .padding(.horizontal, 12)
@@ -236,7 +311,7 @@ struct ContentView: View {
     private var recordFloatingButton: some View {
         Button {
             Task {
-                await recordingCoordinator.toggleRecording(locationCaptureManager: locationCaptureManager)
+                await recordingCoordinator.toggleRecording()
             }
         } label: {
             ZStack {
@@ -298,7 +373,7 @@ struct ContentView: View {
     private var benchmarkToolbarButton: some View {
         Button {
             Task {
-                await recordingCoordinator.runDepthBenchmark(locationCaptureManager: locationCaptureManager)
+                await recordingCoordinator.runDepthBenchmark()
             }
         } label: {
             Label(recordingCoordinator.isBenchmarkRunning ? "Running" : "Benchmark", systemImage: "speedometer")
@@ -362,7 +437,6 @@ struct ContentView: View {
 
 struct ARViewContainer: UIViewRepresentable {
     @ObservedObject var recordingCoordinator: RecordingCoordinator
-    let locationCaptureManager: LocationCaptureManager
 
     final class Coordinator {
         let multiplexer: ARSessionDelegateMultiplexer
@@ -398,7 +472,7 @@ struct ARViewContainer: UIViewRepresentable {
         configureAndRunSession(for: arView)
         recordingCoordinator.depthCaptureManager.setRecording(recordingCoordinator.isCaptureRecording)
 
-        Task { await locationCaptureManager.startCapture() }
+        Task { await recordingCoordinator.locationCaptureManager.startCapture() }
         return arView
     }
 
@@ -428,5 +502,55 @@ struct ARViewContainer: UIViewRepresentable {
         }
 
         arView.session.run(configuration, options: [.resetTracking, .removeExistingAnchors])
+    }
+}
+
+// MARK: - Gesture UI Helpers
+
+extension ContentView {
+    private var gestureGuideButton: some View {
+        Button {
+            withAnimation(.spring(duration: 0.35, bounce: 0.2)) {
+                showGestureGuide.toggle()
+            }
+        } label: {
+            Image(systemName: "hand.raised.fill")
+                .font(.body.weight(.semibold))
+                .foregroundStyle(showGestureGuide ? Color.white : Color.accentColor)
+                .frame(width: 44, height: 44)
+                .background {
+                    VisualEffectBlur(style: showGestureGuide ? .systemMaterial : .systemThinMaterial)
+                        .clipShape(Circle())
+                }
+                .overlay {
+                    Circle()
+                        .stroke(Color(uiColor: .label).opacity(0.15), lineWidth: 1)
+                }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Show tripod gestures guide")
+    }
+}
+
+struct GestureGuideRow: View {
+    let icon: String
+    let gestureName: String
+    let actionDescription: String
+    
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: icon)
+                .font(.title3)
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 28)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(gestureName)
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(Color(uiColor: .label))
+                Text(actionDescription)
+                    .font(.caption2)
+                    .foregroundStyle(Color(uiColor: .secondaryLabel))
+            }
+        }
     }
 }

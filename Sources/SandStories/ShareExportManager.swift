@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 actor ShareExportManager {
     struct GeoJSONFeatureCollection: Codable, Sendable {
@@ -116,6 +117,9 @@ actor ShareExportManager {
 
     /// Zips a packaged session folder (`manifest.json`, depth/, rgb/, etc.) for sharing.
     func zipSessionFolder(_ sessionFolder: URL) async throws -> URL {
+        // Generate RO-Crate metadata inside the session folder before zipping
+        try? await writeROCrateMetadata(for: sessionFolder)
+
         let fm = FileManager.default
         let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first!
         let zipName = sessionFolder.lastPathComponent + ".zip"
@@ -126,6 +130,134 @@ actor ShareExportManager {
         let writer = SimpleZipWriter()
         try writer.writeZip(storingDirectoryTree: sessionFolder, to: zipURL)
         return zipURL
+    }
+
+    private func sha256(for fileURL: URL) -> String {
+        do {
+            let handle = try FileHandle(forReadingFrom: fileURL)
+            defer { try? handle.close() }
+            var hasher = SHA256()
+            while let chunk = try handle.read(upToCount: 64 * 1024), !chunk.isEmpty {
+                hasher.update(data: chunk)
+            }
+            let digest = hasher.finalize()
+            return digest.map { String(format: "%02hhx", $0) }.joined()
+        } catch {
+            return ""
+        }
+    }
+
+    private func writeROCrateMetadata(for sessionFolder: URL) async throws {
+        let fm = FileManager.default
+        let relativePaths = try fm.subpathsOfDirectory(atPath: sessionFolder.path)
+        
+        var filesMetadata: [[String: Any]] = []
+        var hasPartIds: [[String: String]] = []
+        
+        let df = ISO8601DateFormatter()
+        let currentDateStr = df.string(from: Date())
+        
+        var sessionName = "SandStories Session - " + sessionFolder.lastPathComponent
+        var sessionId = sessionFolder.lastPathComponent
+        var schemaVersion = 1
+        var modalities: [String] = ["strokes"]
+        
+        let manifestURL = sessionFolder.appendingPathComponent("manifest.json")
+        if let manifestData = try? Data(contentsOf: manifestURL),
+           let manifestJson = try? JSONSerialization.jsonObject(with: manifestData) as? [String: Any] {
+            if let id = manifestJson["sessionId"] as? String {
+                sessionId = id
+            }
+            if let sv = manifestJson["schemaVersion"] as? Int {
+                schemaVersion = sv
+            }
+            if let depthFrames = manifestJson["depthFrames"] as? [[String: Any]], !depthFrames.isEmpty {
+                modalities.append("depth")
+            }
+            if let rgbFrames = manifestJson["rgbFrames"] as? [[String: Any]], !rgbFrames.isEmpty {
+                modalities.append("rgb")
+            }
+            if manifestJson["audio"] != nil {
+                modalities.append("audio")
+            }
+            if manifestJson["trayBoundary"] != nil {
+                modalities.append("boundary")
+            }
+            if manifestJson["objectDetectionsFile"] != nil {
+                modalities.append("objects")
+            }
+            sessionName = "SandStories Session - \(sessionId)"
+        }
+        
+        for relPath in relativePaths.sorted() {
+            let fileURL = sessionFolder.appendingPathComponent(relPath)
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: fileURL.path, isDirectory: &isDir), !isDir.boolValue else {
+                continue
+            }
+            
+            if relPath == "ro-crate-metadata.json" {
+                continue
+            }
+            
+            let fileHash = sha256(for: fileURL)
+            let ext = fileURL.pathExtension.lowercased()
+            let mimeType: String
+            switch ext {
+            case "json": mimeType = "application/json"
+            case "jsonl": mimeType = "application/x-ndjson"
+            case "png": mimeType = "image/png"
+            case "jpg", "jpeg": mimeType = "image/jpeg"
+            case "m4a": mimeType = "audio/x-m4a"
+            default: mimeType = "application/octet-stream"
+            }
+            
+            let fileMeta: [String: Any] = [
+                "@id": relPath,
+                "@type": "File",
+                "name": fileURL.lastPathComponent,
+                "encodingFormat": mimeType,
+                "sha256": fileHash
+            ]
+            filesMetadata.append(fileMeta)
+            hasPartIds.append(["@id": relPath])
+        }
+        
+        let rootDataset: [String: Any] = [
+            "@id": "./",
+            "@type": "Dataset",
+            "name": sessionName,
+            "description": "Multimodal capture session data package for SandStories.",
+            "creator": [
+                "@type": "Person",
+                "name": "SandStories Operator"
+            ],
+            "datePublished": currentDateStr,
+            "license": "https://creativecommons.org/licenses/by/4.0/",
+            "schemaVersion": schemaVersion,
+            "modalities": modalities,
+            "timestampSemantics": "ContinuousClock",
+            "hasPart": hasPartIds
+        ]
+        
+        let descriptor: [String: Any] = [
+            "@id": "ro-crate-metadata.json",
+            "@type": "CreativeWork",
+            "conformsTo": ["@id": "https://w3id.org/ro/crate/1.1"],
+            "about": ["@id": "./"]
+        ]
+        
+        var graph: [[String: Any]] = [descriptor, rootDataset]
+        graph.append(contentsOf: filesMetadata)
+        
+        let roCrate: [String: Any] = [
+            "@context": "https://w3id.org/ro/crate/1.1/context",
+            "@graph": graph
+        ]
+        
+        let roCrateURL = sessionFolder.appendingPathComponent("ro-crate-metadata.json")
+        let roCrateData = try JSONSerialization.data(withJSONObject: roCrate, options: [.prettyPrinted, .sortedKeys])
+        try roCrateData.write(to: roCrateURL, options: [.atomic])
     }
 }
 

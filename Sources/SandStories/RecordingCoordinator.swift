@@ -12,6 +12,7 @@ final class RecordingCoordinator: ObservableObject {
     let storageStore = StorageDestinationStore()
     let audioRecorder = SessionAudioRecorder()
     let captureSession = CaptureSessionController()
+    let locationCaptureManager = LocationCaptureManager()
 
     private let objectDetector: any StoryObjectDetecting = StubStoryObjectDetector()
 
@@ -19,6 +20,7 @@ final class RecordingCoordinator: ObservableObject {
     var depthDeltaThresholdMeanU16: Float = 400
 
     @Published private(set) var isCaptureRecording = false
+    @Published private(set) var isCapturePaused = false
     @Published var destinationLabel: String = "Saving to: Internal"
     @Published var warningBanner: String?
     @Published var showingFolderPicker = false
@@ -36,6 +38,28 @@ final class RecordingCoordinator: ObservableObject {
     init() {
         framePipeline.coordinator = self
         refreshDestinationLabel()
+        
+        handPoseManager.onGestureCommand = { [weak self] command in
+            guard let self else { return }
+            Task {
+                switch command {
+                case .start:
+                    if !self.isCaptureRecording {
+                        await self.startCaptureSession(recordAudio: true)
+                    }
+                case .stop:
+                    if self.isCaptureRecording {
+                        await self.stopCaptureSession()
+                    }
+                case .pause:
+                    await self.pauseCaptureSession()
+                case .resume:
+                    await self.resumeCaptureSession()
+                case .markSegment:
+                    await self.markSegment()
+                }
+            }
+        }
     }
 
     func refreshDestinationLabel() {
@@ -86,16 +110,16 @@ final class RecordingCoordinator: ObservableObject {
     }
 
     /// Toggle packaged session recording (manifest + aligned modalities).
-    func toggleRecording(locationCaptureManager: LocationCaptureManager) async {
+    func toggleRecording() async {
         guard !isBenchmarkRunning else { return }
         if isCaptureRecording {
-            await stopCaptureSession(locationCaptureManager: locationCaptureManager)
+            await stopCaptureSession()
         } else {
-            await startCaptureSession(locationCaptureManager: locationCaptureManager)
+            await startCaptureSession()
         }
     }
 
-    func runDepthBenchmark(locationCaptureManager: LocationCaptureManager) async {
+    func runDepthBenchmark() async {
         guard !isCaptureRecording, !isBenchmarkRunning else { return }
 
         isBenchmarkRunning = true
@@ -104,7 +128,7 @@ final class RecordingCoordinator: ObservableObject {
 
         await depthCaptureManager.resetBenchmarkMetrics()
         let start = Date()
-        await startCaptureSession(locationCaptureManager: locationCaptureManager, recordAudio: false)
+        await startCaptureSession(recordAudio: false)
 
         guard isCaptureRecording else {
             isBenchmarkRunning = false
@@ -118,7 +142,7 @@ final class RecordingCoordinator: ObservableObject {
             // If the task is cancelled, stop cleanly and still report what was captured.
         }
 
-        await stopCaptureSession(locationCaptureManager: locationCaptureManager)
+        await stopCaptureSession()
 
         let elapsed = Date().timeIntervalSince(start)
         let snapshot = await depthCaptureManager.benchmarkSnapshot()
@@ -129,8 +153,30 @@ final class RecordingCoordinator: ObservableObject {
         isBenchmarkRunning = false
     }
 
-    func processAuxiliaryCaptureFrame(arTimestamp: TimeInterval, capturedImage: PixelBufferBox) async {
+    func pauseCaptureSession() async {
+        guard isCaptureRecording, !isCapturePaused else { return }
+        isCapturePaused = true
+        audioRecorder.pauseRecording()
+        depthCaptureManager.setRecording(false)
+        await handPoseManager.setPaused(true)
+        await handPoseManager.clearStrokes()
+    }
+
+    func resumeCaptureSession() async {
+        guard isCaptureRecording, isCapturePaused else { return }
+        isCapturePaused = false
+        audioRecorder.resumeRecording()
+        depthCaptureManager.setRecording(true)
+        await handPoseManager.setPaused(false)
+    }
+
+    func markSegment() async {
         guard isCaptureRecording else { return }
+        try? await captureSession.markSegment()
+    }
+
+    func processAuxiliaryCaptureFrame(arTimestamp: TimeInterval, capturedImage: PixelBufferBox) async {
+        guard isCaptureRecording, !isCapturePaused else { return }
         await captureSession.noteFirstARFrameIfNeeded(arTimestamp)
         auxiliaryFrameCounter += 1
 
@@ -187,7 +233,7 @@ final class RecordingCoordinator: ObservableObject {
 
     // MARK: - Private
 
-    private func startCaptureSession(locationCaptureManager: LocationCaptureManager, recordAudio: Bool = true) async {
+    private func startCaptureSession(recordAudio: Bool = true) async {
         warningBanner = nil
         let sessionId = UUID()
         let fm = FileManager.default
@@ -255,6 +301,7 @@ final class RecordingCoordinator: ObservableObject {
 
             let strokesURL = sessionFolder.appendingPathComponent("strokes.json")
             await handPoseManager.setStrokeOutputURL(strokesURL)
+            await handPoseManager.setPaused(false)
             pendingStrokeAlignment = true
 
             audioStartMonotonic = 0
@@ -279,6 +326,7 @@ final class RecordingCoordinator: ObservableObject {
             trayDetectionLocked = false
             auxiliaryFrameCounter = 0
             isCaptureRecording = true
+            isCapturePaused = false
             depthCaptureManager.setRecording(true)
         } catch {
             warningBanner = "Could not start session: \(error.localizedDescription)"
@@ -289,9 +337,10 @@ final class RecordingCoordinator: ObservableObject {
         }
     }
 
-    private func stopCaptureSession(locationCaptureManager: LocationCaptureManager) async {
+    private func stopCaptureSession() async {
         depthCaptureManager.setRecording(false)
         isCaptureRecording = false
+        isCapturePaused = false
 
         let audioInfo = audioRecorder.stopRecording()
         if let info = audioInfo {
@@ -319,6 +368,7 @@ final class RecordingCoordinator: ObservableObject {
         lastSessionFolderURL = folder
 
         await handPoseManager.setStrokeOutputURL(nil)
+        await handPoseManager.setPaused(false)
 
         depthCaptureManager.configureSessionCapture(
             depthDirectory: nil as URL?,

@@ -98,6 +98,7 @@ actor CaptureSessionController {
             strokesFile: "strokes.json",
             trayBoundary: .init(status: "pending", cornersNormalized: nil, note: nil),
             objectDetectionsFile: "objects.jsonl",
+            objectDetectionProvenance: "postprocessed_yolo_world_v1",
             boundarySamplesFile: "boundary_samples.jsonl",
             location: nil
         )
@@ -175,6 +176,17 @@ actor CaptureSessionController {
     func setLocation(latitude: Double, longitude: Double, altitude: Double?) async throws {
         guard var m = manifest else { return }
         m.location = .init(latitude: latitude, longitude: longitude, altitude: altitude)
+        manifest = m
+        try await flushManifest()
+    }
+
+    func markSegment() async throws {
+        guard var m = manifest else { return }
+        let mono = monotonicElapsedSeconds()
+        let unix = Date().timeIntervalSince1970
+        var currentSegments = m.segments ?? []
+        currentSegments.append(.init(monotonicElapsedSeconds: mono, timestampUnix: unix))
+        m.segments = currentSegments
         manifest = m
         try await flushManifest()
     }

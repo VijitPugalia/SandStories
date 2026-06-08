@@ -15,3 +15,18 @@ DerivedData/
 /transcribe_meetings.py
 # Added by code-review-graph
 .code-review-graph/
+/test_sessions/
+
+# Agent & IDE directories/files
+.claude/
+.cursor/
+.gemini/
+.kiro/
+.qoder/
+.mcp.json
+.opencode.json
+.windsurfrules
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+QODER.md

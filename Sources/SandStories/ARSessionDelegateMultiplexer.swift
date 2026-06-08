@@ -2,7 +2,7 @@ import ARKit
 
 /// Forwards `ARSessionDelegate` callbacks to multiple delegates.
 @MainActor
-final class ARSessionDelegateMultiplexer: NSObject, ARSessionDelegate {
+final class ARSessionDelegateMultiplexer: NSObject, @preconcurrency ARSessionDelegate {
     private let delegates: [any ARSessionDelegate]
 
     init(_ delegates: [any ARSessionDelegate]) {

@@ -303,7 +303,7 @@ actor DepthCaptureWriter {
 
 // ARSessionDelegate implementation that forwards frame data to an actor for safe encoding/writing.
 @MainActor
-final class DepthCaptureManager: NSObject, ARSessionDelegate {
+final class DepthCaptureManager: NSObject, @preconcurrency ARSessionDelegate {
     private let writer = DepthCaptureWriter()
     private var isRecording: Bool = false
     private var captureInFlight: Bool = false

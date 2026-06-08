@@ -313,7 +313,7 @@ final class HandPoseSceneRenderer: @unchecked Sendable {
 }
 
 @MainActor
-final class HandPoseCaptureManager: NSObject, ARSessionDelegate {
+final class HandPoseCaptureManager: NSObject, @preconcurrency ARSessionDelegate {
     private let processor = HandPoseVisionProcessor()
     private let renderer = HandPoseSceneRenderer()
     private let strokeRecorder = StrokeRecorder()

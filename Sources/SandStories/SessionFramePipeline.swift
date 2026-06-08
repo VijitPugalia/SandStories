@@ -3,7 +3,7 @@ import Foundation
 
 /// AR frame hook for tray boundary + object detection while capture recording is active.
 @MainActor
-final class SessionFramePipeline: NSObject, ARSessionDelegate {
+final class SessionFramePipeline: NSObject, @preconcurrency ARSessionDelegate {
     weak var coordinator: RecordingCoordinator?
     private var isProcessing = false
 

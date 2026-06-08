@@ -28,6 +28,8 @@ actor CaptureSessionController {
     }()
 
     private var objectsFileHandle: FileHandle?
+    private var framesSinceLastManifestWrite: Int = 0
+    private let manifestWriteBatchSize: Int = 5
 
     /// Elapsed seconds on monotonic session clock (shared time base).
     func monotonicElapsedSeconds() -> Double {
@@ -130,21 +132,21 @@ actor CaptureSessionController {
             .init(frameIndex: rgbFrameIndex, arTimestamp: arTimestamp, monotonicElapsedSeconds: mono, relativePath: rgbRelativePath)
         )
         manifest = m
-        try await writeManifest()
+        try await scheduleManifestWrite()
     }
 
     func setAudioEntry(_ entry: CaptureSessionManifest.AudioEntry) async throws {
         guard var m = manifest else { return }
         m.audio = entry
         manifest = m
-        try await writeManifest()
+        try await flushManifest()
     }
 
     func setTrayBoundary(_ entry: CaptureSessionManifest.TrayBoundaryEntry) async throws {
         guard var m = manifest else { return }
         m.trayBoundary = entry
         manifest = m
-        try await writeManifest()
+        try await flushManifest()
     }
 
     func appendObjectLine(_ record: StoryObjectDetectionRecord) async throws {
@@ -159,7 +161,7 @@ actor CaptureSessionController {
         guard var m = manifest else { return }
         m.location = .init(latitude: latitude, longitude: longitude, altitude: altitude)
         manifest = m
-        try await writeManifest()
+        try await flushManifest()
     }
 
     func stopSession() async throws -> URL? {
@@ -172,9 +174,21 @@ actor CaptureSessionController {
         }
         try objectsFileHandle?.close()
         objectsFileHandle = nil
-        try await writeManifest()
+        try await flushManifest()
         sessionStartMach = 0
         return folder
+    }
+
+    private func scheduleManifestWrite() async throws {
+        framesSinceLastManifestWrite += 1
+        if framesSinceLastManifestWrite >= manifestWriteBatchSize {
+            try await flushManifest()
+        }
+    }
+
+    private func flushManifest() async throws {
+        framesSinceLastManifestWrite = 0
+        try await writeManifest()
     }
 
     private func writeManifest() async throws {
@@ -193,5 +207,6 @@ actor CaptureSessionController {
         sessionStartMach = 0
         depthFrameIndex = 0
         rgbFrameIndex = 0
+        framesSinceLastManifestWrite = 0
     }
 }

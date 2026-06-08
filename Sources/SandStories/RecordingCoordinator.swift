@@ -129,19 +129,19 @@ final class RecordingCoordinator: ObservableObject {
         isBenchmarkRunning = false
     }
 
-    func processAuxiliaryCaptureFrame(_ frame: ARFrame) async {
+    func processAuxiliaryCaptureFrame(arTimestamp: TimeInterval, capturedImage: PixelBufferBox) async {
         guard isCaptureRecording else { return }
-        await captureSession.noteFirstARFrameIfNeeded(frame.timestamp)
+        await captureSession.noteFirstARFrameIfNeeded(arTimestamp)
         auxiliaryFrameCounter += 1
 
         if pendingStrokeAlignment {
             pendingStrokeAlignment = false
-            await handPoseManager.alignStrokeSessionStart(arTimestamp: frame.timestamp)
+            await handPoseManager.alignStrokeSessionStart(arTimestamp: arTimestamp)
         }
 
         if auxiliaryFrameCounter % 45 == 0, !trayDetectionLocked {
             if let tray = TrayBoundaryDetector.detectCorners(
-                pixelBuffer: frame.capturedImage,
+                pixelBuffer: capturedImage.pixelBuffer,
                 orientation: CGImagePropertyOrientation.right
             ) {
                 trayDetectionLocked = true
@@ -154,9 +154,9 @@ final class RecordingCoordinator: ObservableObject {
         if auxiliaryFrameCounter % 28 == 0 {
             let mono = await captureSession.monotonicElapsedSeconds()
             let recs = await objectDetector.detect(
-                pixelBuffer: frame.capturedImage,
+                pixelBuffer: capturedImage.pixelBuffer,
                 orientation: .right,
-                arTimestamp: frame.timestamp,
+                arTimestamp: arTimestamp,
                 monotonicElapsedSeconds: mono
             )
             for r in recs {

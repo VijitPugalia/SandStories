@@ -389,7 +389,7 @@ struct ARViewContainer: UIViewRepresentable {
     func makeUIView(context: Context) -> ARView {
         let arView = ARView(frame: .zero, cameraMode: .ar, automaticallyConfigureSession: false)
 
-        arView.debugOptions.insert(.showWorldOrigin)
+        // LiDAR scene mesh overlay: colored triangle mesh that visualizes scanned geometry.
         arView.debugOptions.insert(.showSceneUnderstanding)
 
         arView.session.delegate = context.coordinator.multiplexer
@@ -417,15 +417,12 @@ struct ARViewContainer: UIViewRepresentable {
         guard ARWorldTrackingConfiguration.isSupported else { return }
 
         let configuration = ARWorldTrackingConfiguration()
-        configuration.environmentTexturing = .automatic
 
         if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) {
             configuration.frameSemantics.insert(.sceneDepth)
         }
-        if ARWorldTrackingConfiguration.supportsFrameSemantics(.smoothedSceneDepth) {
-            configuration.frameSemantics.insert(.smoothedSceneDepth)
-        }
 
+        // Build the LiDAR scene mesh so the colored mesh overlay has geometry to draw.
         if ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh) {
             configuration.sceneReconstruction = .mesh
         }

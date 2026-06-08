@@ -65,6 +65,10 @@ The privacy merge step matters. iOS will terminate an app that accesses camera, 
 
 See [`docs/INSTALL_IPA.md`](docs/INSTALL_IPA.md) if the app crashes on launch after manual packaging.
 
+### CI (no Mac)
+
+GitHub Actions builds a downloadable IPA on Ubuntu. See [`docs/CI.md`](docs/CI.md) for setup (one-time Darwin SDK bootstrap) and how to install the artifact on your iPhone.
+
 ## Architecture
 
 SandStories is intentionally organized around the session lifecycle: AR frames enter through a delegate multiplexer, modality-specific components write their data, and `CaptureSessionController` keeps the manifest consistent.

@@ -305,7 +305,9 @@ actor DepthCaptureWriter {
 final class DepthCaptureManager: NSObject, ARSessionDelegate {
     private let writer = DepthCaptureWriter()
     private let recordingLock = NSLock()
+    private let captureQueue = DispatchQueue(label: "depth.capture")
     private var isRecording: Bool = false
+    private var captureInFlight: Bool = false
     private var benchmarkFramesReceived: Int = 0
     private var benchmarkFramesWithoutDepth: Int = 0
 
@@ -393,12 +395,25 @@ final class DepthCaptureManager: NSObject, ARSessionDelegate {
         }
 
         let writer = self.writer
-        Task {
-            await writer.capture(
-                timestamp: frame.timestamp,
-                depthMap: PixelBufferBox(depthData.depthMap),
-                capturedImage: PixelBufferBox(frame.capturedImage)
-            )
+        let timestamp = frame.timestamp
+        let depthMap = PixelBufferBox(depthData.depthMap)
+        let capturedImage = PixelBufferBox(frame.capturedImage)
+
+        captureQueue.async { [weak self] in
+            guard let self else { return }
+            guard !captureInFlight else { return }
+            captureInFlight = true
+
+            Task {
+                await writer.capture(
+                    timestamp: timestamp,
+                    depthMap: depthMap,
+                    capturedImage: capturedImage
+                )
+                captureQueue.async { [weak self] in
+                    self?.captureInFlight = false
+                }
+            }
         }
     }
 }

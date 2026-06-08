@@ -126,27 +126,38 @@ final class HandPoseSceneRenderer: @unchecked Sendable {
 
     func startStroke() async {
         await MainActor.run { [weak self] in
-            guard let self else { return }
-            guard let arView else { return }
-            let anchor = AnchorEntity(world: matrix_identity_float4x4)
-            arView.scene.addAnchor(anchor)
-            strokeAnchors.append(anchor)
-            currentStrokeAnchor = anchor
+            self?.currentStrokeAnchor = AnchorEntity(world: matrix_identity_float4x4)
         }
     }
 
     func appendStrokePoint(_ position: simd_float3) async {
+        // Stroke points are persisted in strokes.json; avoid spawning a RealityKit entity per point.
+        await renderFingertip(at: position)
+    }
+
+    private func renderFingertip(at position: simd_float3) async {
         await MainActor.run { [weak self] in
-            guard let self else { return }
-            guard let currentStrokeAnchor else { return }
+            guard let self, let arView else { return }
 
-            // Small sphere at each recorded point.
-            let mesh = MeshResource.generateSphere(radius: 0.006)
-            let material = SimpleMaterial(color: .cyan, roughness: 0.25, isMetallic: false)
-            let sphere = ModelEntity(mesh: mesh, materials: [material])
+            if let fingertipAnchor {
+                fingertipAnchor.transform.translation = position
+                return
+            }
 
-            sphere.transform.translation = position
-            currentStrokeAnchor.addChild(sphere)
+            let anchor = AnchorEntity(world: matrix_identity_float4x4)
+            anchor.transform.translation = position
+
+            if sphereEntity == nil {
+                let mesh = MeshResource.generateSphere(radius: 0.01)
+                let material = SimpleMaterial(color: .yellow, roughness: 0.35, isMetallic: false)
+                sphereEntity = ModelEntity(mesh: mesh, materials: [material])
+            }
+            if let sphereEntity {
+                anchor.addChild(sphereEntity)
+            }
+
+            arView.scene.addAnchor(anchor)
+            fingertipAnchor = anchor
         }
     }
 
@@ -174,6 +185,8 @@ final class HandPoseCaptureManager: NSObject, ARSessionDelegate {
     private let processor = HandPoseVisionProcessor()
     private let renderer = HandPoseSceneRenderer()
     private let strokeRecorder = StrokeRecorder()
+    private let processingQueue = DispatchQueue(label: "handpose.capture")
+    private var isProcessing = false
 
     @MainActor
     func clearStrokes() async {
@@ -204,65 +217,71 @@ final class HandPoseCaptureManager: NSObject, ARSessionDelegate {
     }
 
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
-        // Captured images always exist when the session is running.
-        let pixelBuffer = frame.capturedImage
+        let pixelBuffer = PixelBufferBox(frame.capturedImage)
         let orientation: CGImagePropertyOrientation = .right
-
-        let pixelBufferBox = PixelBufferBox(pixelBuffer)
+        let frameTimestamp = frame.timestamp
         let processor = self.processor
         let renderer = self.renderer
         let strokeRecorder = self.strokeRecorder
         let viewportSize = renderer.currentViewportSize()
 
-        Task(priority: .userInitiated) { [processor, renderer, strokeRecorder, viewportSize, frameTimestamp = frame.timestamp] in
-            let detection = await processor.detectIndexFingerTip(
-                pixelBufferBox: pixelBufferBox,
-                orientation: orientation
-            )
+        processingQueue.async { [weak self] in
+            guard let self else { return }
+            guard !isProcessing else { return }
+            isProcessing = true
 
-            switch detection {
-            case .busy:
-                return
-
-            case .notDetected:
-                let missingEvent = await strokeRecorder.ingestMissing(timestamp: frameTimestamp)
-                if case .finished = missingEvent {
-                    await renderer.endStroke()
-                }
-                return
-
-            case .detected(let fingertip):
-                // Vision normalized points have origin at bottom-left; convert to UIKit coords.
-                let screenPoint = CGPoint(
-                    x: fingertip.x * viewportSize.width,
-                    y: (1 - fingertip.y) * viewportSize.height
+            Task(priority: .userInitiated) {
+                let detection = await processor.detectIndexFingerTip(
+                    pixelBufferBox: pixelBuffer,
+                    orientation: orientation
                 )
 
-                guard let worldTransform = await renderer.raycastWorldTransform(from: screenPoint) else {
+                switch detection {
+                case .busy:
+                    break
+
+                case .notDetected:
                     let missingEvent = await strokeRecorder.ingestMissing(timestamp: frameTimestamp)
                     if case .finished = missingEvent {
                         await renderer.endStroke()
                     }
-                    return
+
+                case .detected(let fingertip):
+                    let screenPoint = CGPoint(
+                        x: fingertip.x * viewportSize.width,
+                        y: (1 - fingertip.y) * viewportSize.height
+                    )
+
+                    guard let worldTransform = await renderer.raycastWorldTransform(from: screenPoint) else {
+                        let missingEvent = await strokeRecorder.ingestMissing(timestamp: frameTimestamp)
+                        if case .finished = missingEvent {
+                            await renderer.endStroke()
+                        }
+                        break
+                    }
+
+                    await renderer.renderFingertip(worldTransform: worldTransform)
+
+                    let worldPosition = simd_float3(
+                        worldTransform.columns.3.x,
+                        worldTransform.columns.3.y,
+                        worldTransform.columns.3.z
+                    )
+
+                    let detectedEvent = await strokeRecorder.ingestDetected(position: worldPosition, timestamp: frameTimestamp)
+                    switch detectedEvent {
+                    case .started(let point):
+                        await renderer.startStroke()
+                        await renderer.appendStrokePoint(point.position)
+                    case .appended(let point):
+                        await renderer.appendStrokePoint(point.position)
+                    case .none:
+                        break
+                    }
                 }
 
-                await renderer.renderFingertip(worldTransform: worldTransform)
-
-                let worldPosition = simd_float3(
-                    worldTransform.columns.3.x,
-                    worldTransform.columns.3.y,
-                    worldTransform.columns.3.z
-                )
-
-                let detectedEvent = await strokeRecorder.ingestDetected(position: worldPosition, timestamp: frameTimestamp)
-                switch detectedEvent {
-                case .started(let point):
-                    await renderer.startStroke()
-                    await renderer.appendStrokePoint(point.position)
-                case .appended(let point):
-                    await renderer.appendStrokePoint(point.position)
-                case .none:
-                    break
+                processingQueue.async { [weak self] in
+                    self?.isProcessing = false
                 }
             }
         }

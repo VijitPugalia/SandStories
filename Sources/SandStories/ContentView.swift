@@ -438,6 +438,7 @@ struct ContentView: View {
 struct ARViewContainer: UIViewRepresentable {
     @ObservedObject var recordingCoordinator: RecordingCoordinator
 
+    @MainActor
     final class Coordinator {
         let multiplexer: ARSessionDelegateMultiplexer
 

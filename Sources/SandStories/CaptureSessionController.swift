@@ -28,6 +28,7 @@ actor CaptureSessionController {
     }()
 
     private var objectsFileHandle: FileHandle?
+    private var boundarySamplesFileHandle: FileHandle?
     private var framesSinceLastManifestWrite: Int = 0
     private let manifestWriteBatchSize: Int = 5
 
@@ -97,6 +98,7 @@ actor CaptureSessionController {
             strokesFile: "strokes.json",
             trayBoundary: .init(status: "pending", cornersNormalized: nil, note: nil),
             objectDetectionsFile: "objects.jsonl",
+            boundarySamplesFile: "boundary_samples.jsonl",
             location: nil
         )
 
@@ -104,6 +106,11 @@ actor CaptureSessionController {
         fm.createFile(atPath: objectsURL.path, contents: nil)
         objectsFileHandle = try FileHandle(forWritingTo: objectsURL)
         try objectsFileHandle?.seekToEnd()
+
+        let boundaryURL = folderURL.appendingPathComponent("boundary_samples.jsonl")
+        fm.createFile(atPath: boundaryURL.path, contents: nil)
+        boundarySamplesFileHandle = try FileHandle(forWritingTo: boundaryURL)
+        try boundarySamplesFileHandle?.seekToEnd()
 
         try await writeManifest()
     }
@@ -157,6 +164,14 @@ actor CaptureSessionController {
         try handle.write(contentsOf: line)
     }
 
+    func appendBoundarySample(_ sample: TrayBoundarySample) async throws {
+        guard let handle = boundarySamplesFileHandle else { return }
+        let data = try jsonLinesEncoder.encode(sample)
+        var line = data
+        line.append(0x0A) // newline
+        try handle.write(contentsOf: line)
+    }
+
     func setLocation(latitude: Double, longitude: Double, altitude: Double?) async throws {
         guard var m = manifest else { return }
         m.location = .init(latitude: latitude, longitude: longitude, altitude: altitude)
@@ -174,6 +189,8 @@ actor CaptureSessionController {
         }
         try objectsFileHandle?.close()
         objectsFileHandle = nil
+        try boundarySamplesFileHandle?.close()
+        boundarySamplesFileHandle = nil
         try await flushManifest()
         sessionStartMach = 0
         return folder
@@ -201,6 +218,8 @@ actor CaptureSessionController {
     func reset() async {
         try? objectsFileHandle?.close()
         objectsFileHandle = nil
+        try? boundarySamplesFileHandle?.close()
+        boundarySamplesFileHandle = nil
         sessionFolderURL = nil
         sessionId = nil
         manifest = nil

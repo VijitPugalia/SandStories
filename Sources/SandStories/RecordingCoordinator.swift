@@ -139,14 +139,34 @@ final class RecordingCoordinator: ObservableObject {
             await handPoseManager.alignStrokeSessionStart(arTimestamp: arTimestamp)
         }
 
-        if auxiliaryFrameCounter % 45 == 0, !trayDetectionLocked {
+        if auxiliaryFrameCounter % 45 == 0 {
+            let mono = await captureSession.monotonicElapsedSeconds()
             if let tray = TrayBoundaryDetector.detectCorners(
                 pixelBuffer: capturedImage.pixelBuffer,
                 orientation: CGImagePropertyOrientation.right
             ) {
-                trayDetectionLocked = true
-                try? await captureSession.setTrayBoundary(
-                    .init(status: "detected", cornersNormalized: tray.corners, note: "saturation corner heuristic; Vision-style normalized coords")
+                try? await captureSession.appendBoundarySample(
+                    .init(
+                        arTimestamp: arTimestamp,
+                        monotonicElapsedSeconds: mono,
+                        confidence: tray.confidence,
+                        cornersNormalized: tray.corners
+                    )
+                )
+                if !trayDetectionLocked {
+                    trayDetectionLocked = true
+                    try? await captureSession.setTrayBoundary(
+                        .init(status: "detected", cornersNormalized: tray.corners, note: "saturation corner heuristic; Vision-style normalized coords")
+                    )
+                }
+            } else {
+                try? await captureSession.appendBoundarySample(
+                    .init(
+                        arTimestamp: arTimestamp,
+                        monotonicElapsedSeconds: mono,
+                        confidence: 0.0,
+                        cornersNormalized: nil
+                    )
                 )
             }
         }

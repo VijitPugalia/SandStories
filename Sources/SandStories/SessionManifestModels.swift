@@ -27,6 +27,7 @@ struct CaptureSessionManifest: Codable, Sendable {
     var strokesFile: String
     var trayBoundary: TrayBoundaryEntry
     var objectDetectionsFile: String
+    var boundarySamplesFile: String
     var location: SessionLocationEntry?
 
     struct MonotonicAnchor: Codable, Sendable {
@@ -96,4 +97,12 @@ struct StoryObjectDetectionRecord: Codable, Sendable {
     var confidence: Float
     /// Normalized image coordinates [0,1]: x, y, width, height (origin top-left of Vision space mapped to image).
     var boundingBoxNormalized: [Double]
+}
+
+/// One line in `boundary_samples.jsonl` (append-friendly).
+struct TrayBoundarySample: Codable, Sendable {
+    var arTimestamp: TimeInterval
+    var monotonicElapsedSeconds: Double
+    var confidence: Double
+    var cornersNormalized: [[Double]]?
 }

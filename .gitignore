@@ -13,3 +13,5 @@ DerivedData/
 .venv*/
 /transcripts
 /transcribe_meetings.py
+# Added by code-review-graph
+.code-review-graph/

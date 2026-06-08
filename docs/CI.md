@@ -47,7 +47,7 @@ Edit [`.github/xtool-version.env`](../.github/xtool-version.env):
 | Variable | Current | Purpose |
 |----------|---------|---------|
 | `XTOOL_VERSION` | 1.17.0 | [xtool release](https://github.com/xtool-org/xtool/releases) AppImage |
-| `SWIFT_VERSION` | 6.2 | Host Swift (matches [`Package.swift`](../Package.swift)) |
+| `SWIFT_VERSION` | 6.0 | Host Swift (matches [`Package.swift`](../Package.swift)) |
 
 After bumping `XTOOL_VERSION`, clear or update the Actions cache for `darwin-sdk-*` if SDK install fails.
 

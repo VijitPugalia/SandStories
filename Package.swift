@@ -1,5 +1,5 @@
 
-// swift-tools-version: 6.2
+// swift-tools-version: 6.0
 
 import PackageDescription
 

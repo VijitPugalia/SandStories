@@ -243,7 +243,7 @@ Apple frameworks only:
 
 ### Tooling
 
-- Swift 6.2 toolchain.
+- Swift 6.0 toolchain.
 - `xtool` for packaging the iOS app.
 - Python 3 with `numpy`, `pillow`, and `matplotlib` for visualization.
 

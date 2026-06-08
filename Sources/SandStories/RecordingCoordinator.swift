@@ -44,7 +44,9 @@ final class RecordingCoordinator: ObservableObject {
             Task {
                 switch command {
                 case .start:
-                    if !self.isCaptureRecording {
+                    if self.isCaptureRecording {
+                        await self.stopCaptureSession()
+                    } else {
                         await self.startCaptureSession(recordAudio: true)
                     }
                 case .stop:
@@ -52,7 +54,11 @@ final class RecordingCoordinator: ObservableObject {
                         await self.stopCaptureSession()
                     }
                 case .pause:
-                    await self.pauseCaptureSession()
+                    if self.isCapturePaused {
+                        await self.resumeCaptureSession()
+                    } else {
+                        await self.pauseCaptureSession()
+                    }
                 case .resume:
                     await self.resumeCaptureSession()
                 case .markSegment:

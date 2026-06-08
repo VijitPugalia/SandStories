@@ -329,7 +329,6 @@ final class HandPoseCaptureManager: NSObject, @preconcurrency ARSessionDelegate 
     private let processor = HandPoseVisionProcessor()
     private let renderer = HandPoseSceneRenderer()
     private let strokeRecorder = StrokeRecorder()
-    private var isProcessing = false
     private var isPaused = false
 
     var onGestureCommand: (@MainActor @Sendable (UIGestureCommand) -> Void)?
@@ -371,9 +370,6 @@ final class HandPoseCaptureManager: NSObject, @preconcurrency ARSessionDelegate 
     }
 
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
-        guard !isProcessing else { return }
-        isProcessing = true
-
         let pixelBuffer = PixelBufferBox(frame.capturedImage)
         let orientation: CGImagePropertyOrientation = .right
         let frameTimestamp = frame.timestamp
@@ -405,7 +401,6 @@ final class HandPoseCaptureManager: NSObject, @preconcurrency ARSessionDelegate 
                 if case .finished = missingEvent {
                     await renderer.endStroke()
                 }
-                self.isProcessing = false
                 return
             }
 
@@ -420,7 +415,6 @@ final class HandPoseCaptureManager: NSObject, @preconcurrency ARSessionDelegate 
                     if case .finished = missingEvent {
                         await renderer.endStroke()
                     }
-                    self.isProcessing = false
                     return
                 }
 
@@ -448,8 +442,6 @@ final class HandPoseCaptureManager: NSObject, @preconcurrency ARSessionDelegate 
                     await renderer.endStroke()
                 }
             }
-
-            self.isProcessing = false
         }
     }
 }

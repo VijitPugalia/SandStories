@@ -11,43 +11,18 @@ concurrency:
   group: build-ipa-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  APPIMAGE_EXTRACT_AND_RUN: "1"
-
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    runs-on: macos-15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Load pinned toolchain versions
-        run: cat .github/xtool-version.env >> "$GITHUB_ENV"
+      - name: Show Xcode SDK
+        run: xcrun -sdk iphoneos -show-sdk-path
 
-      - name: Setup Swift
-        uses: swift-actions/setup-swift@v2
-        with:
-          swift-version: ${{ env.SWIFT_VERSION }}
-
-      - name: Cache Darwin Swift SDK
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.swiftpm/swift-sdks
-          key: darwin-sdk-${{ env.XTOOL_VERSION }}-${{ env.SWIFT_VERSION }}-v1
-          restore-keys: |
-            darwin-sdk-${{ env.XTOOL_VERSION }}-${{ env.SWIFT_VERSION }}-
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends curl python3 zip
-
-      - name: Install xtool and Darwin SDK
-        env:
-          DARWIN_SDK_TARBALL_URL: ${{ secrets.DARWIN_SDK_TARBALL_URL }}
-          XCODE_XIP_PATH: ${{ secrets.XCODE_XIP_PATH }}
-        run: bash scripts/ci-setup-xtool.sh
+      - name: Install xtool
+        run: bash scripts/ci-setup-xtool-macos.sh
 
       - name: Build release IPA
         run: bash scripts/build_release_ipa.sh

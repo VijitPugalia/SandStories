@@ -1,15 +1,17 @@
 # Continuous integration (GitHub Actions)
 
-Build SandStories on **Ubuntu** without a Mac. Each successful run on `main` produces a downloadable **`SandStories.ipa`** artifact.
+Build SandStories on **GitHub-hosted macOS** (no local Mac required). Each successful run on `main` produces a downloadable **`SandStories.ipa`** artifact.
 
 Workflow: [`.github/workflows/build-ipa.yml`](../.github/workflows/build-ipa.yml)
 
 ## What runs on every push
 
-1. Install **Swift** and **xtool** (pinned in [`.github/xtool-version.env`](../.github/xtool-version.env))
-2. Restore or install the **Darwin Swift SDK** (iOS cross-compile toolchain)
+1. Use the runner’s **Xcode / iOS SDK** (preinstalled on `macos-15`)
+2. Install **xtool** via Homebrew ([`scripts/ci-setup-xtool-macos.sh`](../scripts/ci-setup-xtool-macos.sh))
 3. Run [`scripts/build_release_ipa.sh`](../scripts/build_release_ipa.sh)
 4. Upload `xtool/SandStories.ipa` as a workflow artifact
+
+No `DARWIN_SDK_TARBALL_URL` secret is required for this workflow.
 
 **Pull requests** also build and upload a short-lived IPA artifact (7 days).  
 **Pushes to `main`** and **manual runs** keep artifacts for 30 days.
@@ -23,38 +25,16 @@ Workflow: [`.github/workflows/build-ipa.yml`](../.github/workflows/build-ipa.yml
 
 No Mac required for this step.
 
-## One-time bootstrap: Darwin Swift SDK
+## Alternative: Ubuntu + xtool (advanced)
 
-GitHub-hosted runners do not include Apple’s iOS SDK. You must provide it **once** using one of these options.
+To use cheaper Linux runners instead of `macos-15`, you must supply Apple’s iOS SDK yourself:
 
-### Option A — SDK tarball secret (recommended)
+1. On WSL after `xtool setup` with `Xcode_16.3.xip`: `bash scripts/ci-pack-darwin-sdk.sh ~/darwin-sdk.tar.gz`
+2. Host the tarball at a private URL
+3. Change the workflow `runs-on` to `ubuntu-24.04` and use [`scripts/ci-setup-xtool.sh`](../scripts/ci-setup-xtool.sh)
+4. Add secret `DARWIN_SDK_TARBALL_URL`
 
-On your **WSL/Linux** machine (after you have run `xtool setup` with `Xcode_16.3.xip`):
-
-```bash
-cd ~/SandStories
-bash scripts/ci-pack-darwin-sdk.sh ~/darwin-sdk.tar.gz
-```
-
-Upload `darwin-sdk.tar.gz` to a **private** URL (personal cloud storage, S3, a private GitHub Release asset, etc.).
-
-In the repo: **Settings → Secrets and variables → Actions → New repository secret**
-
-| Secret | Value |
-|--------|--------|
-| `DARWIN_SDK_TARBALL_URL` | HTTPS URL to `darwin-sdk.tar.gz` |
-
-Re-run **Build IPA**. The SDK is cached under `~/.swiftpm/swift-sdks` for faster later runs.
-
-### Option B — Self-hosted runner + Xcode.xip
-
-1. Add a [self-hosted Linux runner](https://docs.github.com/en/actions/hosting-your-own-runners) with `Xcode_16.3.xip` on disk
-2. Set secret `XCODE_XIP_PATH` to the full path (e.g. `/opt/Xcode_16.3.xip`)
-3. CI runs `xtool sdk install` on first use
-
-### Option C — Local build only
-
-Skip CI and keep using WSL:
+### Local WSL build (no CI)
 
 ```bash
 ./scripts/build_release_ipa.sh
@@ -92,7 +72,7 @@ See [README Phase 3](../README.md) for storage-format benchmarks; CI here is ind
 
 | Failure | Fix |
 |---------|-----|
-| `No Darwin Swift SDK` | Complete [One-time bootstrap](#one-time-bootstrap-darwin-swift-sdk) |
+| `brew install xtool` fails | Re-run workflow; check [xtool-org/tap](https://github.com/xtool-org/homebrew-tap) |
 | `missing Resources/AppIcon.png` | Commit the app icon under `Resources/` |
-| `No valid Swift SDK bundles` | Re-pack SDK with `ci-pack-darwin-sdk.sh` after local `xtool setup` |
-| Build OK locally, CI fails | Check pinned `XTOOL_VERSION` / `SWIFT_VERSION` match your working machine |
+| `xcrun -sdk iphoneos` fails | GitHub `macos-15` image issue — try `macos-14` in the workflow |
+| Build OK on WSL, CI fails | macOS CI uses Xcode SDK; WSL uses xtool cross-compile — both are supported |

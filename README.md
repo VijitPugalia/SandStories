@@ -67,7 +67,7 @@ See [`docs/INSTALL_IPA.md`](docs/INSTALL_IPA.md) if the app crashes on launch af
 
 ### CI (no Mac)
 
-GitHub Actions builds a downloadable IPA on Ubuntu. See [`docs/CI.md`](docs/CI.md) for setup (one-time Darwin SDK bootstrap) and how to install the artifact on your iPhone.
+GitHub Actions builds a downloadable IPA on macOS runners (no local Mac or SDK secrets required). See [`docs/CI.md`](docs/CI.md) for details and how to install the artifact on your iPhone.
 
 ## Architecture
 

@@ -124,7 +124,7 @@ actor DepthCaptureWriter {
 
         if let videoWriter, let videoInput {
             videoInput.markAsFinished()
-            await withCheckedContinuation { continuation in
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
                 videoWriter.finishWriting {
                     continuation.resume()
                 }

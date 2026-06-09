@@ -60,6 +60,9 @@ struct CaptureSessionManifest: Codable, Sendable {
         var arTimestamp: TimeInterval
         var monotonicElapsedSeconds: Double
         var relativePath: String
+        var confidencePath: String?
+        var cameraIntrinsics: [Float]? // 3x3 column-major
+        var cameraTransform: [Float]?  // 4x4 column-major
     }
 
     struct RGBFrameEntry: Codable, Sendable {

@@ -53,10 +53,11 @@ actor DepthCaptureWriter {
 
     private var depthDirectory: URL?
     private var rgbDirectory: URL?
+    private var confidenceDirectory: URL?
     private var sequentialIndex: Int = 0
     private var lastDownsample: [UInt16]?
     private var deltaThresholdMeanU16: Float = 400
-    private var onSaved: (@Sendable (TimeInterval, String, String) async -> Void)?
+    private var onSaved: (@Sendable (TimeInterval, String, String, String?, [Float]?, [Float]?) async -> Void)?
     private var benchmarkMetrics = DepthCaptureBenchmarkSnapshot()
 
     func setRecording(_ isRecording: Bool) {
@@ -66,11 +67,13 @@ actor DepthCaptureWriter {
     func configure(
         depthDirectory: URL?,
         rgbDirectory: URL?,
+        confidenceDirectory: URL?,
         deltaThresholdMeanU16: Float,
-        onSaved: (@Sendable (TimeInterval, String, String) async -> Void)?
+        onSaved: (@Sendable (TimeInterval, String, String, String?, [Float]?, [Float]?) async -> Void)?
     ) async {
         self.depthDirectory = depthDirectory
         self.rgbDirectory = rgbDirectory
+        self.confidenceDirectory = confidenceDirectory
         self.deltaThresholdMeanU16 = deltaThresholdMeanU16
         self.onSaved = onSaved
         sequentialIndex = 0
@@ -88,7 +91,10 @@ actor DepthCaptureWriter {
     func capture(
         timestamp: TimeInterval,
         depthMap: PixelBufferBox?,
-        capturedImage: PixelBufferBox
+        confidenceMap: PixelBufferBox?,
+        capturedImage: PixelBufferBox,
+        cameraIntrinsics: simd_float3x3,
+        cameraTransform: simd_float4x4
     ) async {
         guard isRecording else { return }
         benchmarkMetrics.writerCaptureCalls += 1
@@ -130,6 +136,15 @@ actor DepthCaptureWriter {
             try writeDepthPNG(depthU16, width: width, height: height, to: depthURL)
             benchmarkMetrics.totalDepthEncodeMilliseconds += Self.nowMilliseconds() - depthStart
 
+            // Save confidence map if available
+            var relConfidence: String? = nil
+            if let confidenceMap, let confidenceDirectory {
+                let confidenceName = String(format: "c_%06d.png", idx)
+                let confidenceURL = confidenceDirectory.appendingPathComponent(confidenceName)
+                try writeConfidencePNG(confidenceMap.pixelBuffer, to: confidenceURL)
+                relConfidence = "confidence/\(confidenceName)"
+            }
+
             let rgbStart = Self.nowMilliseconds()
             try writeRGBJPEG(from: capturedImage.pixelBuffer, to: rgbURL)
             benchmarkMetrics.totalRGBEncodeMilliseconds += Self.nowMilliseconds() - rgbStart
@@ -139,10 +154,96 @@ actor DepthCaptureWriter {
 
             let relDepth = "depth/\(depthName)"
             let relRgb = "rgb/\(rgbName)"
-            await onSaved(timestamp, relDepth, relRgb)
+            let intrinsicsArray = Self.intrinsicsToArray(cameraIntrinsics)
+            let transformArray = Self.transformToArray(cameraTransform)
+            await onSaved(timestamp, relDepth, relRgb, relConfidence, intrinsicsArray, transformArray)
         } catch {
             print("DepthCaptureWriter error: \(error)")
         }
+    }
+
+    private func writeConfidencePNG(_ confidenceMap: CVPixelBuffer, to url: URL) throws {
+        let width = CVPixelBufferGetWidth(confidenceMap)
+        let height = CVPixelBufferGetHeight(confidenceMap)
+        let pixelFormat = CVPixelBufferGetPixelFormatType(confidenceMap)
+
+        guard pixelFormat == kCVPixelFormatType_OneComponent8 else {
+            throw NSError(domain: "DepthCaptureWriter", code: 10, userInfo: [NSLocalizedDescriptionKey: "Unsupported confidence format: \(pixelFormat)"])
+        }
+
+        CVPixelBufferLockBaseAddress(confidenceMap, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(confidenceMap, .readOnly) }
+
+        guard let baseAddress = CVPixelBufferGetBaseAddress(confidenceMap) else {
+            throw NSError(domain: "DepthCaptureWriter", code: 11, userInfo: [NSLocalizedDescriptionKey: "Confidence buffer has no base address"])
+        }
+
+        let bytesPerRow = CVPixelBufferGetBytesPerRow(confidenceMap)
+        var rawData = Data(repeating: 0, count: width * height)
+        rawData.withUnsafeMutableBytes { rawPtr in
+            guard let destAddress = rawPtr.baseAddress else { return }
+            for y in 0..<height {
+                let srcRow = baseAddress.advanced(by: y * bytesPerRow)
+                let destRow = destAddress.advanced(by: y * width)
+                destRow.copyMemory(from: srcRow, byteCount: width)
+            }
+        }
+
+        guard let provider = CGDataProvider(data: rawData as CFData) else {
+            throw NSError(domain: "DepthCaptureWriter", code: 12, userInfo: [NSLocalizedDescriptionKey: "Failed to create CGDataProvider for confidence"])
+        }
+
+        let colorSpace = CGColorSpaceCreateDeviceGray()
+        let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue)
+
+        guard let cgImage = CGImage(
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bitsPerPixel: 8,
+            bytesPerRow: width,
+            space: colorSpace,
+            bitmapInfo: bitmapInfo,
+            provider: provider,
+            decode: nil,
+            shouldInterpolate: false,
+            intent: .defaultIntent
+        ) else {
+            throw NSError(domain: "DepthCaptureWriter", code: 13, userInfo: [NSLocalizedDescriptionKey: "Failed to create CGImage for confidence"])
+        }
+
+        guard let dest = CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil) else {
+            throw NSError(domain: "DepthCaptureWriter", code: 14, userInfo: [NSLocalizedDescriptionKey: "Failed to create CGImageDestination for confidence PNG"])
+        }
+
+        let pngProps: [CFString: Any] = [
+            kCGImagePropertyPNGCompressionFilter: 0,
+            kCGImagePropertyPNGInterlaceType: 0
+        ]
+        let props: [CFString: Any] = [
+            kCGImagePropertyPNGDictionary: pngProps
+        ]
+        CGImageDestinationAddImage(dest, cgImage, props as CFDictionary)
+        guard CGImageDestinationFinalize(dest) else {
+            throw NSError(domain: "DepthCaptureWriter", code: 15, userInfo: [NSLocalizedDescriptionKey: "Failed to finalize confidence PNG"])
+        }
+    }
+
+    private static func intrinsicsToArray(_ matrix: simd_float3x3) -> [Float] {
+        return [
+            matrix.columns.0.x, matrix.columns.0.y, matrix.columns.0.z,
+            matrix.columns.1.x, matrix.columns.1.y, matrix.columns.1.z,
+            matrix.columns.2.x, matrix.columns.2.y, matrix.columns.2.z
+        ]
+    }
+
+    private static func transformToArray(_ matrix: simd_float4x4) -> [Float] {
+        return [
+            matrix.columns.0.x, matrix.columns.0.y, matrix.columns.0.z, matrix.columns.0.w,
+            matrix.columns.1.x, matrix.columns.1.y, matrix.columns.1.z, matrix.columns.1.w,
+            matrix.columns.2.x, matrix.columns.2.y, matrix.columns.2.z, matrix.columns.2.w,
+            matrix.columns.3.x, matrix.columns.3.y, matrix.columns.3.z, matrix.columns.3.w
+        ]
     }
 
     private static func nowMilliseconds() -> Double {
@@ -341,17 +442,20 @@ final class DepthCaptureManager: NSObject, @preconcurrency ARSessionDelegate {
     func configureSessionCapture(
         depthDirectory: URL?,
         rgbDirectory: URL?,
+        confidenceDirectory: URL?,
         deltaThresholdMeanU16: Float,
-        onSaved: (@Sendable (TimeInterval, String, String) async -> Void)?
+        onSaved: (@Sendable (TimeInterval, String, String, String?, [Float]?, [Float]?) async -> Void)?
     ) {
         let dd = depthDirectory
         let rd = rgbDirectory
+        let cd = confidenceDirectory
         let th = deltaThresholdMeanU16
         let cb = onSaved
         Task {
             await writer.configure(
                 depthDirectory: dd,
                 rgbDirectory: rd,
+                confidenceDirectory: cd,
                 deltaThresholdMeanU16: th,
                 onSaved: cb
             )
@@ -383,13 +487,19 @@ final class DepthCaptureManager: NSObject, @preconcurrency ARSessionDelegate {
         let writer = self.writer
         let timestamp = frame.timestamp
         let depthMap = PixelBufferBox(depthData.depthMap)
+        let confidenceMap = depthData.confidenceMap.map { PixelBufferBox($0) }
         let capturedImage = PixelBufferBox(frame.capturedImage)
+        let cameraIntrinsics = frame.camera.intrinsics
+        let cameraTransform = frame.camera.transform
 
         Task {
             await writer.capture(
                 timestamp: timestamp,
                 depthMap: depthMap,
-                capturedImage: capturedImage
+                confidenceMap: confidenceMap,
+                capturedImage: capturedImage,
+                cameraIntrinsics: cameraIntrinsics,
+                cameraTransform: cameraTransform
             )
             self.captureInFlight = false
         }

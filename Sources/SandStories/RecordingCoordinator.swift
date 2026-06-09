@@ -290,17 +290,24 @@ final class RecordingCoordinator: ObservableObject {
 
             let depthDir = sessionFolder.appendingPathComponent("depth", isDirectory: true)
             let rgbDir = sessionFolder.appendingPathComponent("rgb", isDirectory: true)
+            let confidenceDir = sessionFolder.appendingPathComponent("confidence", isDirectory: true)
+
+            try fm.createDirectory(at: confidenceDir, withIntermediateDirectories: true)
 
             let session = captureSession
             depthCaptureManager.configureSessionCapture(
                 depthDirectory: depthDir,
                 rgbDirectory: rgbDir,
+                confidenceDirectory: confidenceDir,
                 deltaThresholdMeanU16: depthDeltaThresholdMeanU16,
-                onSaved: { ts, dPath, rPath in
+                onSaved: { ts, dPath, rPath, cPath, intrinsics, transform in
                     try? await session.appendDepthAndRGB(
                         arTimestamp: ts,
                         depthRelativePath: dPath,
-                        rgbRelativePath: rPath
+                        rgbRelativePath: rPath,
+                        confidenceRelativePath: cPath,
+                        cameraIntrinsics: intrinsics,
+                        cameraTransform: transform
                     )
                 }
             )
@@ -380,8 +387,9 @@ final class RecordingCoordinator: ObservableObject {
         depthCaptureManager.configureSessionCapture(
             depthDirectory: nil as URL?,
             rgbDirectory: nil as URL?,
+            confidenceDirectory: nil as URL?,
             deltaThresholdMeanU16: depthDeltaThresholdMeanU16,
-            onSaved: nil as (@Sendable (TimeInterval, String, String) async -> Void)?
+            onSaved: nil as (@Sendable (TimeInterval, String, String, String?, [Float]?, [Float]?) async -> Void)?
         )
 
         if let ext = externalScopedURL {

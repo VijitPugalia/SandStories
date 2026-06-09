@@ -127,14 +127,25 @@ actor CaptureSessionController {
     func appendDepthAndRGB(
         arTimestamp: TimeInterval,
         depthRelativePath: String,
-        rgbRelativePath: String
+        rgbRelativePath: String,
+        confidenceRelativePath: String?,
+        cameraIntrinsics: [Float]?,
+        cameraTransform: [Float]?
     ) async throws {
         guard var m = manifest, sessionStartMach != 0 else { return }
         let mono = monotonicElapsedSeconds()
         depthFrameIndex += 1
         rgbFrameIndex += 1
         m.depthFrames.append(
-            .init(frameIndex: depthFrameIndex, arTimestamp: arTimestamp, monotonicElapsedSeconds: mono, relativePath: depthRelativePath)
+            .init(
+                frameIndex: depthFrameIndex,
+                arTimestamp: arTimestamp,
+                monotonicElapsedSeconds: mono,
+                relativePath: depthRelativePath,
+                confidencePath: confidenceRelativePath,
+                cameraIntrinsics: cameraIntrinsics,
+                cameraTransform: cameraTransform
+            )
         )
         m.rgbFrames.append(
             .init(frameIndex: rgbFrameIndex, arTimestamp: arTimestamp, monotonicElapsedSeconds: mono, relativePath: rgbRelativePath)

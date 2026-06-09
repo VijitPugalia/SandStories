@@ -4,8 +4,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-echo "==> xtool dev build -c release (app only)"
-xtool dev build -c release
+CONFIGURATION="${1:-release}"
+
+echo "==> xtool dev build -c ${CONFIGURATION} (app only)"
+xtool dev build -c "${CONFIGURATION}"
 
 echo "==> merge privacy Info.plist keys"
 bash "$ROOT/scripts/merge_privacy_into_app.sh"

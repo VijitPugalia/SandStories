@@ -1,4 +1,5 @@
 import ARKit
+import AVFoundation
 import CoreImage
 import CoreVideo
 import Dispatch
@@ -54,10 +55,19 @@ actor DepthCaptureWriter {
     private var depthDirectory: URL?
     private var rgbDirectory: URL?
     private var confidenceDirectory: URL?
+    private var streamsDirectory: URL?
+    private var depthStreamHandle: FileHandle?
+    private var smoothedDepthStreamHandle: FileHandle?
+    private var confidenceStreamHandle: FileHandle?
+    private var videoWriter: AVAssetWriter?
+    private var videoInput: AVAssetWriterInput?
+    private var videoAdaptor: AVAssetWriterInputPixelBufferAdaptor?
+    private var videoStartTimestamp: TimeInterval?
     private var sequentialIndex: Int = 0
     private var lastDownsample: [UInt16]?
     private var deltaThresholdMeanU16: Float = 400
     private var onSaved: (@Sendable (TimeInterval, String, String, String?, [Float]?, [Float]?) async -> Void)?
+    private var onV2Saved: (@Sendable (V2StreamFrameRecord) async -> Void)?
     private var benchmarkMetrics = DepthCaptureBenchmarkSnapshot()
 
     func setRecording(_ isRecording: Bool) {
@@ -68,16 +78,32 @@ actor DepthCaptureWriter {
         depthDirectory: URL?,
         rgbDirectory: URL?,
         confidenceDirectory: URL?,
+        streamsDirectory: URL?,
         deltaThresholdMeanU16: Float,
-        onSaved: (@Sendable (TimeInterval, String, String, String?, [Float]?, [Float]?) async -> Void)?
+        onSaved: (@Sendable (TimeInterval, String, String, String?, [Float]?, [Float]?) async -> Void)?,
+        onV2Saved: (@Sendable (V2StreamFrameRecord) async -> Void)?
     ) async {
+        await finishRecording()
         self.depthDirectory = depthDirectory
         self.rgbDirectory = rgbDirectory
         self.confidenceDirectory = confidenceDirectory
+        self.streamsDirectory = streamsDirectory
         self.deltaThresholdMeanU16 = deltaThresholdMeanU16
         self.onSaved = onSaved
+        self.onV2Saved = onV2Saved
         sequentialIndex = 0
         lastDownsample = nil
+
+        if let streamsDirectory {
+            do {
+                try FileManager.default.createDirectory(at: streamsDirectory, withIntermediateDirectories: true)
+                depthStreamHandle = try Self.openStreamFile(streamsDirectory.appendingPathComponent("depth.f32"))
+                smoothedDepthStreamHandle = try Self.openStreamFile(streamsDirectory.appendingPathComponent("smoothed_depth.f32"))
+                confidenceStreamHandle = try Self.openStreamFile(streamsDirectory.appendingPathComponent("confidence.bin"))
+            } catch {
+                print("DepthCaptureWriter stream configure error: \(error)")
+            }
+        }
     }
 
     func resetBenchmarkMetrics() {
@@ -88,9 +114,32 @@ actor DepthCaptureWriter {
         benchmarkMetrics
     }
 
+    func finishRecording() async {
+        try? depthStreamHandle?.close()
+        try? smoothedDepthStreamHandle?.close()
+        try? confidenceStreamHandle?.close()
+        depthStreamHandle = nil
+        smoothedDepthStreamHandle = nil
+        confidenceStreamHandle = nil
+
+        if let videoWriter, let videoInput {
+            videoInput.markAsFinished()
+            await withCheckedContinuation { continuation in
+                videoWriter.finishWriting {
+                    continuation.resume()
+                }
+            }
+        }
+        videoWriter = nil
+        videoInput = nil
+        videoAdaptor = nil
+        videoStartTimestamp = nil
+    }
+
     func capture(
         timestamp: TimeInterval,
         depthMap: PixelBufferBox?,
+        smoothedDepthMap: PixelBufferBox?,
         confidenceMap: PixelBufferBox?,
         capturedImage: PixelBufferBox,
         cameraIntrinsics: simd_float3x3,
@@ -102,7 +151,7 @@ actor DepthCaptureWriter {
             benchmarkMetrics.framesSkippedWriting += 1
             return
         }
-        guard let depthMap, let depthDirectory, let rgbDirectory, let onSaved else { return }
+        guard let depthMap else { return }
 
         isWriting = true
         defer { isWriting = false }
@@ -116,7 +165,7 @@ actor DepthCaptureWriter {
             let height = CVPixelBufferGetHeight(depthMap.pixelBuffer)
 
             let down = Self.downsampleMean(depthU16, width: width, height: height, outW: 32, outH: 32)
-            if let prev = lastDownsample {
+            if deltaThresholdMeanU16 > 0, let prev = lastDownsample {
                 let meanAbs = Self.meanAbsoluteDifference(down, prev)
                 if meanAbs < deltaThresholdMeanU16 {
                     benchmarkMetrics.framesSkippedMotion += 1
@@ -127,39 +176,138 @@ actor DepthCaptureWriter {
 
             sequentialIndex += 1
             let idx = sequentialIndex
-            let depthName = String(format: "d_%06d.png", idx)
-            let rgbName = String(format: "r_%06d.jpg", idx)
-            let depthURL = depthDirectory.appendingPathComponent(depthName)
-            let rgbURL = rgbDirectory.appendingPathComponent(rgbName)
-
             let depthStart = Self.nowMilliseconds()
-            try writeDepthPNG(depthU16, width: width, height: height, to: depthURL)
+            let depthValues = try Self.convertDepthToFloat32(depthMap.pixelBuffer)
+            let depthData = depthValues.withUnsafeBytes { Data($0) }
+            let depthOffset = try writeStreamData(depthData, to: depthStreamHandle)
             benchmarkMetrics.totalDepthEncodeMilliseconds += Self.nowMilliseconds() - depthStart
+            benchmarkMetrics.depthBytes += Int64(depthData.count)
 
-            // Save confidence map if available
-            var relConfidence: String? = nil
-            if let confidenceMap, let confidenceDirectory {
-                let confidenceName = String(format: "c_%06d.png", idx)
-                let confidenceURL = confidenceDirectory.appendingPathComponent(confidenceName)
-                try writeConfidencePNG(confidenceMap.pixelBuffer, to: confidenceURL)
-                relConfidence = "confidence/\(confidenceName)"
+            var smoothedDepthOffset: UInt64?
+            var smoothedDepthCount: Int?
+            var smoothedDepthPixelFormat: String?
+            if let smoothedDepthMap, let smoothedDepthStreamHandle {
+                let smoothedValues = try Self.convertDepthToFloat32(smoothedDepthMap.pixelBuffer)
+                let smoothedData = smoothedValues.withUnsafeBytes { Data($0) }
+                smoothedDepthOffset = try writeStreamData(smoothedData, to: smoothedDepthStreamHandle)
+                smoothedDepthCount = smoothedData.count
+                smoothedDepthPixelFormat = Self.pixelFormatName(CVPixelBufferGetPixelFormatType(smoothedDepthMap.pixelBuffer))
+                benchmarkMetrics.depthBytes += Int64(smoothedData.count)
+            }
+
+            var confidenceOffset: UInt64?
+            var confidenceCount: Int?
+            var confidencePixelFormat: String?
+            var confidenceBytesPerRow: Int?
+            if let confidenceMap, let confidenceStreamHandle {
+                let confidenceData = try Self.rawPixelBufferBytes(confidenceMap.pixelBuffer)
+                confidenceOffset = try writeStreamData(confidenceData, to: confidenceStreamHandle)
+                confidenceCount = confidenceData.count
+                confidencePixelFormat = Self.pixelFormatName(CVPixelBufferGetPixelFormatType(confidenceMap.pixelBuffer))
+                confidenceBytesPerRow = CVPixelBufferGetBytesPerRow(confidenceMap.pixelBuffer)
             }
 
             let rgbStart = Self.nowMilliseconds()
-            try writeRGBJPEG(from: capturedImage.pixelBuffer, to: rgbURL)
+            let rgbPTS = try appendVideoFrame(capturedImage.pixelBuffer, timestamp: timestamp)
             benchmarkMetrics.totalRGBEncodeMilliseconds += Self.nowMilliseconds() - rgbStart
             benchmarkMetrics.framesWritten += 1
-            benchmarkMetrics.depthBytes += Self.fileSize(at: depthURL)
-            benchmarkMetrics.rgbBytes += Self.fileSize(at: rgbURL)
 
-            let relDepth = "depth/\(depthName)"
-            let relRgb = "rgb/\(rgbName)"
             let intrinsicsArray = Self.intrinsicsToArray(cameraIntrinsics)
             let transformArray = Self.transformToArray(cameraTransform)
-            await onSaved(timestamp, relDepth, relRgb, relConfidence, intrinsicsArray, transformArray)
+            if let onV2Saved {
+                await onV2Saved(
+                    .init(
+                        frameIndex: idx,
+                        arTimestamp: timestamp,
+                        monotonicElapsedSeconds: 0,
+                        width: width,
+                        height: height,
+                        sourceDepthPixelFormat: Self.pixelFormatName(CVPixelBufferGetPixelFormatType(depthMap.pixelBuffer)),
+                        storedDepthFormat: "float32_little_endian_meters",
+                        depthByteOffset: depthOffset,
+                        depthByteCount: depthData.count,
+                        smoothedDepthByteOffset: smoothedDepthOffset,
+                        smoothedDepthByteCount: smoothedDepthCount,
+                        smoothedDepthPixelFormat: smoothedDepthPixelFormat,
+                        confidenceByteOffset: confidenceOffset,
+                        confidenceByteCount: confidenceCount,
+                        confidencePixelFormat: confidencePixelFormat,
+                        confidenceBytesPerRow: confidenceBytesPerRow,
+                        rgbPresentationTimeSeconds: rgbPTS,
+                        cameraTransformColumnMajor: transformArray,
+                        cameraIntrinsicsColumnMajor: intrinsicsArray,
+                        cameraImageResolutionWidth: CVPixelBufferGetWidth(capturedImage.pixelBuffer),
+                        cameraImageResolutionHeight: CVPixelBufferGetHeight(capturedImage.pixelBuffer)
+                    )
+                )
+            }
         } catch {
             print("DepthCaptureWriter error: \(error)")
         }
+    }
+
+    private static func openStreamFile(_ url: URL) throws -> FileHandle {
+        if FileManager.default.fileExists(atPath: url.path) {
+            try FileManager.default.removeItem(at: url)
+        }
+        FileManager.default.createFile(atPath: url.path, contents: nil)
+        return try FileHandle(forWritingTo: url)
+    }
+
+    private func writeStreamData(_ data: Data, to handle: FileHandle?) throws -> UInt64 {
+        guard let handle else {
+            throw NSError(domain: "DepthCaptureWriter", code: 20, userInfo: [NSLocalizedDescriptionKey: "Stream file is not open"])
+        }
+        let offset = try handle.offset()
+        try handle.write(contentsOf: data)
+        return offset
+    }
+
+    private func appendVideoFrame(_ pixelBuffer: CVPixelBuffer, timestamp: TimeInterval) throws -> Double? {
+        guard let streamsDirectory else { return nil }
+        if videoWriter == nil {
+            try startVideoWriter(pixelBuffer: pixelBuffer, outputURL: streamsDirectory.appendingPathComponent("rgb.mp4"), timestamp: timestamp)
+        }
+        guard let videoInput, let videoAdaptor, videoInput.isReadyForMoreMediaData else { return nil }
+        let start = videoStartTimestamp ?? timestamp
+        let seconds = max(0, timestamp - start)
+        let time = CMTime(seconds: seconds, preferredTimescale: 600)
+        return videoAdaptor.append(pixelBuffer, withPresentationTime: time) ? seconds : nil
+    }
+
+    private func startVideoWriter(pixelBuffer: CVPixelBuffer, outputURL: URL, timestamp: TimeInterval) throws {
+        if FileManager.default.fileExists(atPath: outputURL.path) {
+            try FileManager.default.removeItem(at: outputURL)
+        }
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
+        let writer = try AVAssetWriter(outputURL: outputURL, fileType: .mp4)
+        let input = AVAssetWriterInput(
+            mediaType: .video,
+            outputSettings: [
+                AVVideoCodecKey: AVVideoCodecType.h264,
+                AVVideoWidthKey: width,
+                AVVideoHeightKey: height,
+                AVVideoCompressionPropertiesKey: [
+                    AVVideoAverageBitRateKey: 2_000_000,
+                    AVVideoMaxKeyFrameIntervalKey: 30
+                ]
+            ]
+        )
+        input.expectsMediaDataInRealTime = true
+        let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: nil)
+        guard writer.canAdd(input) else {
+            throw NSError(domain: "DepthCaptureWriter", code: 21, userInfo: [NSLocalizedDescriptionKey: "Cannot add video input"])
+        }
+        writer.add(input)
+        guard writer.startWriting() else {
+            throw writer.error ?? NSError(domain: "DepthCaptureWriter", code: 22, userInfo: [NSLocalizedDescriptionKey: "Video writer failed to start"])
+        }
+        writer.startSession(atSourceTime: .zero)
+        videoWriter = writer
+        videoInput = input
+        videoAdaptor = adaptor
+        videoStartTimestamp = timestamp
     }
 
     private func writeConfidencePNG(_ confidenceMap: CVPixelBuffer, to url: URL) throws {
@@ -246,6 +394,15 @@ actor DepthCaptureWriter {
         ]
     }
 
+    private static func pixelFormatName(_ value: OSType) -> String {
+        switch value {
+        case kCVPixelFormatType_DepthFloat32: return "DepthFloat32"
+        case kCVPixelFormatType_DepthFloat16: return "DepthFloat16"
+        case kCVPixelFormatType_OneComponent8: return "OneComponent8"
+        default: return String(value)
+        }
+    }
+
     private static func nowMilliseconds() -> Double {
         Double(DispatchTime.now().uptimeNanoseconds) / 1_000_000
     }
@@ -328,6 +485,56 @@ actor DepthCaptureWriter {
             throw NSError(domain: "DepthCaptureWriter", code: 2, userInfo: [NSLocalizedDescriptionKey: "Unsupported depth pixel format: \(pixelFormat)"])
         }
         return depthU16
+    }
+
+    private static func convertDepthToFloat32(_ depthMap: CVPixelBuffer) throws -> [Float] {
+        let width = CVPixelBufferGetWidth(depthMap)
+        let height = CVPixelBufferGetHeight(depthMap)
+        let pixelFormat = CVPixelBufferGetPixelFormatType(depthMap)
+
+        CVPixelBufferLockBaseAddress(depthMap, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(depthMap, .readOnly) }
+
+        guard let baseAddress = CVPixelBufferGetBaseAddress(depthMap) else {
+            throw NSError(domain: "DepthCaptureWriter", code: 16, userInfo: [NSLocalizedDescriptionKey: "Depth buffer has no base address"])
+        }
+
+        let rowBytes = CVPixelBufferGetBytesPerRow(depthMap)
+        var out = [Float](repeating: .nan, count: width * height)
+        switch pixelFormat {
+        case kCVPixelFormatType_DepthFloat32:
+            let floatPtr = baseAddress.assumingMemoryBound(to: Float.self)
+            let stride = rowBytes / MemoryLayout<Float>.size
+            for y in 0..<height {
+                let rowOffset = y * stride
+                let outOffset = y * width
+                for x in 0..<width {
+                    out[outOffset + x] = floatPtr[rowOffset + x]
+                }
+            }
+        case kCVPixelFormatType_DepthFloat16:
+            let halfPtr = baseAddress.assumingMemoryBound(to: UInt16.self)
+            let stride = rowBytes / MemoryLayout<UInt16>.size
+            for y in 0..<height {
+                let rowOffset = y * stride
+                let outOffset = y * width
+                for x in 0..<width {
+                    out[outOffset + x] = Float(Float16(bitPattern: halfPtr[rowOffset + x]))
+                }
+            }
+        default:
+            throw NSError(domain: "DepthCaptureWriter", code: 17, userInfo: [NSLocalizedDescriptionKey: "Unsupported raw depth pixel format: \(pixelFormat)"])
+        }
+        return out
+    }
+
+    private static func rawPixelBufferBytes(_ pixelBuffer: CVPixelBuffer) throws -> Data {
+        CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+        guard let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer) else {
+            throw NSError(domain: "DepthCaptureWriter", code: 18, userInfo: [NSLocalizedDescriptionKey: "Pixel buffer has no base address"])
+        }
+        return Data(bytes: baseAddress, count: CVPixelBufferGetBytesPerRow(pixelBuffer) * CVPixelBufferGetHeight(pixelBuffer))
     }
 
     private static func depthMetersToU16(_ meters: Float, maxDepthMeters: Float) -> UInt16 {
@@ -430,6 +637,13 @@ final class DepthCaptureManager: NSObject, @preconcurrency ARSessionDelegate {
         return snapshot
     }
 
+    func stopAndFinishRecording() async {
+        isRecording = false
+        await writer.setRecording(false)
+        await writer.finishRecording()
+        captureInFlight = false
+    }
+
     private func resetBenchmarkFrameCounters() {
         benchmarkFramesReceived = 0
         benchmarkFramesWithoutDepth = 0
@@ -443,21 +657,27 @@ final class DepthCaptureManager: NSObject, @preconcurrency ARSessionDelegate {
         depthDirectory: URL?,
         rgbDirectory: URL?,
         confidenceDirectory: URL?,
+        streamsDirectory: URL? = nil,
         deltaThresholdMeanU16: Float,
-        onSaved: (@Sendable (TimeInterval, String, String, String?, [Float]?, [Float]?) async -> Void)?
+        onSaved: (@Sendable (TimeInterval, String, String, String?, [Float]?, [Float]?) async -> Void)?,
+        onV2Saved: (@Sendable (V2StreamFrameRecord) async -> Void)? = nil
     ) {
         let dd = depthDirectory
         let rd = rgbDirectory
         let cd = confidenceDirectory
+        let sd = streamsDirectory
         let th = deltaThresholdMeanU16
         let cb = onSaved
+        let v2 = onV2Saved
         Task {
             await writer.configure(
                 depthDirectory: dd,
                 rgbDirectory: rd,
                 confidenceDirectory: cd,
+                streamsDirectory: sd,
                 deltaThresholdMeanU16: th,
-                onSaved: cb
+                onSaved: cb,
+                onV2Saved: v2
             )
         }
     }
@@ -487,6 +707,7 @@ final class DepthCaptureManager: NSObject, @preconcurrency ARSessionDelegate {
         let writer = self.writer
         let timestamp = frame.timestamp
         let depthMap = PixelBufferBox(depthData.depthMap)
+        let smoothedDepthMap = frame.smoothedSceneDepth.map { PixelBufferBox($0.depthMap) }
         let confidenceMap = depthData.confidenceMap.map { PixelBufferBox($0) }
         let capturedImage = PixelBufferBox(frame.capturedImage)
         let cameraIntrinsics = frame.camera.intrinsics
@@ -496,6 +717,7 @@ final class DepthCaptureManager: NSObject, @preconcurrency ARSessionDelegate {
             await writer.capture(
                 timestamp: timestamp,
                 depthMap: depthMap,
+                smoothedDepthMap: smoothedDepthMap,
                 confidenceMap: confidenceMap,
                 capturedImage: capturedImage,
                 cameraIntrinsics: cameraIntrinsics,

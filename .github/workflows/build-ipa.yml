@@ -6,6 +6,15 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      configuration:
+        description: Build configuration passed to xtool
+        required: false
+        default: release
+        type: choice
+        options:
+          - release
+          - debug
 
 concurrency:
   group: build-ipa-${{ github.ref }}
@@ -19,7 +28,11 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Show Xcode SDK
-        run: xcrun -sdk iphoneos -show-sdk-path
+        run: |
+          sw_vers
+          xcodebuild -version
+          xcrun -sdk iphoneos -show-sdk-path
+          swift --version
 
       - name: Install xtool
         run: bash scripts/ci-setup-xtool-macos.sh
@@ -28,14 +41,22 @@ jobs:
         run: which xtool && xtool --version
 
       - name: Build release IPA
-        run: bash scripts/build_release_ipa.sh
+        run: bash scripts/build_release_ipa.sh "${{ inputs.configuration || 'release' }}"
+
+      - name: List build outputs
+        if: always()
+        run: |
+          find xtool -maxdepth 2 -print || true
+          du -h xtool/SandStories.ipa || true
 
       - name: Upload IPA artifact
         if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v4
         with:
           name: SandStories-ipa
-          path: xtool/SandStories.ipa
+          path: |
+            xtool/SandStories.ipa
+            xtool/SandStories.app
           retention-days: 30
 
       - name: Upload IPA artifact (PR preview)
@@ -43,5 +64,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: SandStories-ipa-pr-${{ github.event.pull_request.number }}
-          path: xtool/SandStories.ipa
+          path: |
+            xtool/SandStories.ipa
+            xtool/SandStories.app
           retention-days: 7

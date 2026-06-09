@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>SandStories Field Console</title>
+    <link rel="stylesheet" href="/static/dashboard.css">
+    <script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <div class="eyebrow">SandStories</div>
+        <h1>Field Console</h1>
+      </div>
+      <div class="status-strip">
+        <span id="server-status" class="pill warn">SERVER</span>
+        <span id="device-status" class="pill off">NO DEVICE</span>
+        <span id="clock" class="pill">--:--</span>
+      </div>
+    </header>
+
+    <main class="grid">
+      <section class="panel preview-panel">
+        <div class="panel-head">
+          <div>
+            <div class="eyebrow">LiveKit WebRTC</div>
+            <h2>Live Preview</h2>
+          </div>
+          <button id="connect-preview" class="secondary">Connect Preview</button>
+        </div>
+        <div id="preview" class="preview">
+          <div class="preview-empty">NO VIDEO SIGNAL</div>
+        </div>
+      </section>
+
+      <section class="panel control-panel">
+        <div class="panel-head">
+          <div>
+            <div class="eyebrow">Remote</div>
+            <h2>Capture</h2>
+          </div>
+        </div>
+        <select id="device-select" class="device-select"></select>
+        <div class="button-stack">
+          <button data-command="start_recording" class="primary huge">Start Recording</button>
+          <button data-command="stop_recording" class="danger huge">Stop</button>
+          <button data-command="pause_recording" class="secondary">Pause</button>
+          <button data-command="resume_recording" class="secondary">Resume</button>
+          <button data-command="mark_segment" class="secondary">Mark Segment</button>
+          <button data-command="upload_last_session" class="secondary">Upload Last</button>
+        </div>
+        <div class="readout">
+          <div><span>State</span><strong id="capture-state">unknown</strong></div>
+          <div><span>Elapsed</span><strong id="elapsed">--</strong></div>
+          <div><span>Frames</span><strong id="frames">--</strong></div>
+          <div><span>Upload</span><strong id="upload-state">--</strong></div>
+        </div>
+      </section>
+
+      <section class="panel packages-panel">
+        <div class="panel-head">
+          <div>
+            <div class="eyebrow">Validated Archive</div>
+            <h2>Session Packages</h2>
+          </div>
+          <button id="refresh" class="secondary">Refresh</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Status</th>
+                <th>Session</th>
+                <th>Frames</th>
+                <th>Size</th>
+                <th>Uploaded</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="packages-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel log-panel">
+        <div class="panel-head">
+          <div>
+            <div class="eyebrow">Debug</div>
+            <h2>Events</h2>
+          </div>
+        </div>
+        <pre id="events"></pre>
+      </section>
+    </main>
+
+    <script src="/static/dashboard.js"></script>
+  </body>
+</html>

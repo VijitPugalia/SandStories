@@ -2,20 +2,20 @@
 
 Capture sand storytelling sessions as synchronized LiDAR depth, RGB video frames, audio, and 3D stroke data.
 
-SandStories is an iOS AR capture app for research-style recording of sand tray storytelling sessions. It uses ARKit, LiDAR scene depth, camera frames, hand pose input, microphone audio, and location metadata to produce a portable session folder that can be shared and analyzed offline.
+SandStories is an iOS AR capture app for research-style recording of sand tray storytelling sessions. It uses ARKit, LiDAR scene depth, camera frames, hand pose input, microphone audio, and location metadata to produce a portable session folder that can be shared, analyzed offline, or automatically uploaded to a receiver service.
 
 ```text
 iPhone ARKit + LiDAR  ──▶  Session Writer  ──▶  manifest.json + depth/RGB/audio/strokes
   scene depth frames          timestamp sync        Python / MATLAB / Fiji analysis
   RGB camera frames           manifest index        ZIP export for sharing
-  hand stroke points          storage routing       benchmark data for format tests
+  hand stroke points          storage/upload        benchmark data for format tests
 ```
 
 ## What Works Today
 
-The app runs on a physical LiDAR-capable iPhone/iPad and records packaged sessions into app storage or an external Files/USB-C destination. Each session includes a `manifest.json` file, motion-gated 16-bit depth PNGs, paired RGB JPEGs, optional AAC audio, 3D stroke data, location metadata, and placeholder object-detection/tray-boundary hooks.
+The app runs on a physical LiDAR-capable iPhone/iPad and records packaged sessions into app storage or an external Files/USB-C destination. The current v2 package format stores one RGB video stream, one contiguous high-fidelity Float32 depth stream, one optional confidence stream, frame metadata, optional AAC audio, 3D stroke data, location metadata, and placeholder object-detection/tray-boundary hooks.
 
-There is also a **Benchmark** button that runs a 15-second depth-only capture test and reports AR frame rate, saved frame rate, motion skips, no-depth frames, PNG/JPEG encode time, and total depth/RGB size. This gives a baseline for comparing the current PNG format against future compressed depth storage.
+There is also a **Benchmark** button that runs a 15-second depth-only capture test and reports AR frame rate, saved frame rate, motion skips, no-depth frames, stream encode/write time, and total depth/RGB size.
 
 ```mermaid
 flowchart LR
@@ -33,7 +33,7 @@ flowchart LR
 
 - Object detection is currently a stubbed pipeline hook rather than a trained/story-specific detector.
 - Tray boundary detection is heuristic and may remain `pending` for difficult scenes.
-- Depth is currently stored as individual PNG files; compressed depth chunks and lossless depth video are planned but not implemented.
+- v2 depth is stored as a contiguous Float32 stream rather than one file per frame; lossless compression for the stream is still future work.
 - The Python visualization script shows one selected frame at a time; full session reports/contact sheets are future tooling.
 - Simulator support is not a goal for real capture because ARKit scene depth requires physical hardware.
 
@@ -85,9 +85,10 @@ sequenceDiagram
 
   ARView->>Multiplexer: ARFrame didUpdate
   Multiplexer->>DepthManager: sceneDepth + capturedImage
-  DepthManager->>Disk: depth/d_NNNNNN.png
-  DepthManager->>Disk: rgb/r_NNNNNN.jpg
-  DepthManager->>SessionController: frame paths + timestamps
+  DepthManager->>Disk: streams/depth.f32
+  DepthManager->>Disk: streams/confidence.bin
+  DepthManager->>Disk: streams/rgb.mp4
+  DepthManager->>SessionController: v2 frame offsets + timestamps
   Multiplexer->>HandManager: hand pose / stroke point
   HandManager->>Disk: strokes.json
   Multiplexer->>Coordinator: tray, object, location hooks
@@ -101,11 +102,12 @@ Key source files:
 - `ContentView.swift` — main AR UI, capture controls, benchmark button, export sheet.
 - `ARSessionDelegateMultiplexer.swift` — fans ARKit delegate callbacks out to capture subsystems.
 - `RecordingCoordinator.swift` — owns start/stop flow, storage destination, audio, location, tray/object hooks, and benchmark mode.
-- `DepthCaptureManager.swift` — converts ARKit scene depth to 16-bit PNG, writes paired RGB JPEGs, and records throughput metrics.
+- `DepthCaptureManager.swift` — writes v2 RGB/depth/confidence streams and records throughput metrics.
 - `CaptureSessionController.swift` — creates session folders, writes `manifest.json`, and appends `objects.jsonl`.
 - `HandPoseCaptureManager.swift` and `StrokeRecorder.swift` — convert hand pose events into 3D stroke polylines.
 - `SessionManifestModels.swift` — canonical schema for exported sessions.
-- `ShareExportManager.swift` and `SimpleZipWriter.swift` — package sessions for sharing.
+- `SessionUploadManager.swift` — optional automatic session ZIP upload after recording.
+- `ShareExportManager.swift` and `SimpleZipWriter.swift` — package sessions for sharing/upload.
 
 ## Data Format
 
@@ -115,15 +117,16 @@ Each recording is a self-contained folder named `session_<UUID>`. The canonical 
 flowchart TB
   subgraph sessionFolder["session_UUID"]
     manifest["manifest.json"]
-    depthDir["depth/d_000001.png"]
-    rgbDir["rgb/r_000001.jpg"]
+    streams["streams/rgb.mp4 + depth.f32 + confidence.bin"]
+    frames["v2_frames.jsonl"]
     audioFile["audio.m4a"]
     strokesFile["strokes.json"]
     objectsFile["objects.jsonl"]
   end
 
-  manifest --> depthDir
-  manifest --> rgbDir
+  manifest --> streams
+  manifest --> frames
+  frames --> streams
   manifest --> audioFile
   manifest --> strokesFile
   manifest --> objectsFile
@@ -136,19 +139,70 @@ flowchart TB
 - Monotonic elapsed session time for cross-modality alignment.
 - ARKit timestamp reference.
 - Storage destination metadata.
-- Depth encoding settings.
-- Depth and RGB frame entries with relative paths and timestamps.
+- `captureFormat = v2_streams` and `v2Streams` paths.
+- `v2_frames.jsonl` frame entries with timestamps, byte offsets, byte counts, dimensions, camera transform, and intrinsics.
 - Optional audio metadata.
 - Stroke, object-detection, tray-boundary, and location metadata.
 
-Current depth format:
+Current v2 stream format:
 
 ```text
-format = png16_grayscale_zlib
-meters = (uint16_value / 65535.0) * maxDepthMeters
+streams/rgb.mp4              H.264 MP4 preview/reference video
+streams/depth.f32            contiguous little-endian Float32 meters
+streams/confidence.bin       contiguous raw ARKit confidence bytes when available
+v2_frames.jsonl              per-frame offsets, sizes, timestamps, camera transform, intrinsics
 ```
 
-`0` means invalid/no depth. `maxDepthMeters` is stored in `manifest.json`.
+For each row in `v2_frames.jsonl`, read `depthByteCount` bytes from `streams/depth.f32` starting at `depthByteOffset`, then interpret the bytes as `width * height` little-endian `Float32` depth values in meters. Confidence data uses the same offset/count pattern when ARKit provides a confidence map. Frames are motion-gated, so the stream contains retained frames only.
+
+## Automatic Upload
+
+Run the standalone receiver on a computer on the same network:
+
+```bash
+python scripts/sandstories_upload_server.py --host 0.0.0.0 --port 8080 --dir uploads --extract
+```
+
+On the iPhone, tap **Upload**, enable **Auto-upload after recording**, and set the endpoint to your computer's LAN address, for example:
+
+```text
+http://192.168.1.20:8080/upload
+```
+
+When a recording stops, the app zips the completed session folder and posts it to the server. For a simple shared secret, start the server with `--token mytoken` and use `http://192.168.1.20:8080/upload?token=mytoken` as the endpoint.
+
+## Field Console (LAN)
+
+For experiment debugging, the repo includes a LAN field console with a high-contrast outdoor UI, package validation, download links, remote-control WebSockets, and self-hosted LiveKit preview.
+
+1. Find the computer's LAN IP, for example `192.168.1.20`.
+2. Start LiveKit and the console:
+
+```bash
+cd deploy
+LAN_IP=192.168.1.20 docker compose -f docker-compose.lan.yml up
+```
+
+3. Open the dashboard:
+
+```text
+http://192.168.1.20:8080/?token=field-console
+```
+
+4. In the iPhone app, open **Upload** and set:
+
+```text
+Auto-upload after recording: on
+Server upload URL: http://192.168.1.20:8080/upload?token=field-device
+Enable remote console: on
+Publish LiveKit preview: on
+Console server URL: http://192.168.1.20:8080
+Device token: field-device
+```
+
+The dashboard can send start/stop/pause/resume/mark commands to a connected device. Uploaded ZIP packages are validated server-side before being marked valid. The package table lets you download any uploaded session ZIP and inspect its validation report.
+
+Default LAN tokens are intentionally simple. Change these in `deploy/env.lan.example` before exposing anything beyond a trusted local network.
 
 ## Timing Model
 
@@ -203,6 +257,7 @@ SandStories/
     RecordingCoordinator.swift          Session lifecycle orchestration
     DepthCaptureManager.swift           LiDAR/RGB persistence and benchmark metrics
     CaptureSessionController.swift      manifest.json and objects.jsonl writer
+    SessionUploadManager.swift          Auto-upload settings and ZIP upload client
     HandPoseCaptureManager.swift        Hand pose integration
     StrokeRecorder.swift                3D stroke persistence
     SessionManifestModels.swift         Exported data schema
@@ -214,6 +269,7 @@ SandStories/
     build_release_ipa.sh                Release app + IPA build
     merge_privacy_into_app.sh           Info.plist privacy merge
     visualize_sandstories_session.py    Depth/RGB visualization tool
+    sandstories_upload_server.py        Standalone upload receiver
   Package.swift                         Swift package definition
   xtool.yml                             iOS bundle identifier config
 ```
@@ -258,4 +314,3 @@ Build products and local scratch files are intentionally ignored:
 - local transcription scratch files
 
 The repository should contain source, scripts, docs, and lightweight configuration only.
-

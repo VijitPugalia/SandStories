@@ -17,9 +17,15 @@ let package = Package(
             targets: ["SandStories"]
         ),
     ],
+    dependencies: [
+        .package(url: "https://github.com/livekit/client-sdk-swift.git", exact: "2.5.0"),
+    ],
     targets: [
         .target(
             name: "SandStories",
+            dependencies: [
+                .product(name: "LiveKit", package: "client-sdk-swift"),
+            ],
             linkerSettings: [
                 .linkedFramework("ARKit", .when(platforms: [.iOS])),
                 .linkedFramework("RealityKit", .when(platforms: [.iOS])),

@@ -3,6 +3,7 @@ import Foundation
 /// Canonical JSON manifest for a sand-storytelling capture session (replay tools read this).
 struct CaptureSessionManifest: Codable, Sendable {
     var schemaVersion: Int
+    var captureFormat: String?
     var sessionId: String
     var deviceModel: String
     var osVersion: String
@@ -27,6 +28,7 @@ struct CaptureSessionManifest: Codable, Sendable {
     var strokesFile: String
     var trayBoundary: TrayBoundaryEntry
     var objectDetectionsFile: String
+    var v2Streams: V2StreamsInfo?
     var objectDetectionProvenance: String?
     var boundarySamplesFile: String
     var location: SessionLocationEntry?
@@ -52,6 +54,18 @@ struct CaptureSessionManifest: Codable, Sendable {
         var format: String // "png16_grayscale_zlib"
         var maxDepthMeters: Float
         var deltaMeanAbsThresholdU16: Float
+        var note: String
+    }
+
+    struct V2StreamsInfo: Codable, Sendable {
+        var formatVersion: Int
+        var frameMetadataFile: String
+        var rgbVideoPath: String
+        var rgbVideoCodec: String
+        var depthStreamPath: String
+        var depthFormat: String
+        var smoothedDepthStreamPath: String?
+        var confidenceStreamPath: String?
         var note: String
     }
 
@@ -115,4 +129,29 @@ struct TrayBoundarySample: Codable, Sendable {
     var monotonicElapsedSeconds: Double
     var confidence: Double
     var cornersNormalized: [[Double]]?
+}
+
+/// One line in `v2_frames.jsonl`, indexing continuous v2 stream files.
+struct V2StreamFrameRecord: Codable, Sendable {
+    var frameIndex: Int
+    var arTimestamp: TimeInterval
+    var monotonicElapsedSeconds: Double
+    var width: Int
+    var height: Int
+    var sourceDepthPixelFormat: String
+    var storedDepthFormat: String
+    var depthByteOffset: UInt64
+    var depthByteCount: Int
+    var smoothedDepthByteOffset: UInt64?
+    var smoothedDepthByteCount: Int?
+    var smoothedDepthPixelFormat: String?
+    var confidenceByteOffset: UInt64?
+    var confidenceByteCount: Int?
+    var confidencePixelFormat: String?
+    var confidenceBytesPerRow: Int?
+    var rgbPresentationTimeSeconds: Double?
+    var cameraTransformColumnMajor: [Float]
+    var cameraIntrinsicsColumnMajor: [Float]
+    var cameraImageResolutionWidth: Int
+    var cameraImageResolutionHeight: Int
 }

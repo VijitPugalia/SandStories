@@ -10,5 +10,12 @@
 	<string>SandStories uses your location to tag captured strokes with the GPS coordinate.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>SandStories records microphone audio during each capture session for sand storytelling research.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>SandStories connects to a local field console for experiment control, preview, and session upload.</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
 </dict>
 </plist>

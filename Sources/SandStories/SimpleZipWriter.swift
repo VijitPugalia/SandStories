@@ -6,6 +6,8 @@ final class SimpleZipWriter {
     enum ZipError: Error {
         case fileReadFailed(URL)
         case invalidFilename(String)
+        case fileTooLarge(URL)
+        case archiveTooLarge(URL)
     }
 
     /// Zips all regular files under `root`, preserving relative paths (sorted for deterministic output).
@@ -41,8 +43,6 @@ final class SimpleZipWriter {
     }
 
     func writeZip(storingEntries entries: [(URL, String)], to zipURL: URL) throws {
-        var out = Data()
-
         struct CentralDirectoryEntry {
             let name: String
             let crc32: UInt32
@@ -53,38 +53,41 @@ final class SimpleZipWriter {
 
         var central: [CentralDirectoryEntry] = []
 
+        FileManager.default.createFile(atPath: zipURL.path, contents: nil)
+        let out = try FileHandle(forWritingTo: zipURL)
+        defer { try? out.close() }
+
         for (fileURL, name) in entries {
             guard name.utf8.count <= UInt16.max else { throw ZipError.invalidFilename(name) }
 
-            guard let fileData = try? Data(contentsOf: fileURL) else {
-                throw ZipError.fileReadFailed(fileURL)
-            }
-
-            let crc = CRC32.checksum(fileData)
-            let size = UInt32(fileData.count)
-            let localOffset = UInt32(out.count)
+            let info = try CRC32.checksumAndSize(fileURL)
+            guard info.size <= UInt64(UInt32.max) else { throw ZipError.fileTooLarge(fileURL) }
+            let size = UInt32(info.size)
+            let currentOffset = try out.offset()
+            guard currentOffset <= UInt64(UInt32.max) else { throw ZipError.archiveTooLarge(zipURL) }
+            let localOffset = UInt32(currentOffset)
 
             // Local file header
             // signature(4) + ver(2) + flags(2) + method(2) + time(2) + date(2) + crc(4) + csize(4) + usize(4)
             // + nameLen(2) + extraLen(2) + name + extra + filedata
-            out.appendLE(UInt32(0x04034b50))
-            out.appendLE(UInt16(20)) // version needed to extract
-            out.appendLE(UInt16(0))  // flags
-            out.appendLE(UInt16(0))  // compression = store
-            out.appendLE(UInt16(0))  // mod time
-            out.appendLE(UInt16(0))  // mod date
-            out.appendLE(crc)
-            out.appendLE(size) // compressed size
-            out.appendLE(size) // uncompressed size
-            out.appendLE(UInt16(name.utf8.count))
-            out.appendLE(UInt16(0)) // extra len
-            out.append(name.data(using: .utf8)!)
-            out.append(fileData)
+            try out.writeLE(UInt32(0x04034b50))
+            try out.writeLE(UInt16(20)) // version needed to extract
+            try out.writeLE(UInt16(0))  // flags
+            try out.writeLE(UInt16(0))  // compression = store
+            try out.writeLE(UInt16(0))  // mod time
+            try out.writeLE(UInt16(0))  // mod date
+            try out.writeLE(info.crc32)
+            try out.writeLE(size) // compressed size
+            try out.writeLE(size) // uncompressed size
+            try out.writeLE(UInt16(name.utf8.count))
+            try out.writeLE(UInt16(0)) // extra len
+            try out.write(contentsOf: name.data(using: .utf8)!)
+            try out.writeFileData(from: fileURL)
 
             central.append(
                 CentralDirectoryEntry(
                     name: name,
-                    crc32: crc,
+                    crc32: info.crc32,
                     compressedSize: size,
                     uncompressedSize: size,
                     localHeaderOffset: localOffset
@@ -92,45 +95,47 @@ final class SimpleZipWriter {
             )
         }
 
-        let centralDirectoryOffset = UInt32(out.count)
+        let centralDirectoryOffset64 = try out.offset()
+        guard centralDirectoryOffset64 <= UInt64(UInt32.max) else { throw ZipError.archiveTooLarge(zipURL) }
+        let centralDirectoryOffset = UInt32(centralDirectoryOffset64)
 
         // Central directory records
         for entry in central {
             let nameData = entry.name.data(using: .utf8)!
 
-            out.appendLE(UInt32(0x02014b50)) // central file header signature
-            out.appendLE(UInt16(20)) // version made by
-            out.appendLE(UInt16(20)) // version needed to extract
-            out.appendLE(UInt16(0))  // flags
-            out.appendLE(UInt16(0))  // method store
-            out.appendLE(UInt16(0))  // mod time
-            out.appendLE(UInt16(0))  // mod date
-            out.appendLE(entry.crc32)
-            out.appendLE(entry.compressedSize)
-            out.appendLE(entry.uncompressedSize)
-            out.appendLE(UInt16(nameData.count))
-            out.appendLE(UInt16(0)) // extra len
-            out.appendLE(UInt16(0)) // comment len
-            out.appendLE(UInt16(0)) // disk number
-            out.appendLE(UInt16(0)) // internal attrs
-            out.appendLE(UInt32(0)) // external attrs
-            out.appendLE(entry.localHeaderOffset)
-            out.append(nameData)
+            try out.writeLE(UInt32(0x02014b50)) // central file header signature
+            try out.writeLE(UInt16(20)) // version made by
+            try out.writeLE(UInt16(20)) // version needed to extract
+            try out.writeLE(UInt16(0))  // flags
+            try out.writeLE(UInt16(0))  // method store
+            try out.writeLE(UInt16(0))  // mod time
+            try out.writeLE(UInt16(0))  // mod date
+            try out.writeLE(entry.crc32)
+            try out.writeLE(entry.compressedSize)
+            try out.writeLE(entry.uncompressedSize)
+            try out.writeLE(UInt16(nameData.count))
+            try out.writeLE(UInt16(0)) // extra len
+            try out.writeLE(UInt16(0)) // comment len
+            try out.writeLE(UInt16(0)) // disk number
+            try out.writeLE(UInt16(0)) // internal attrs
+            try out.writeLE(UInt32(0)) // external attrs
+            try out.writeLE(entry.localHeaderOffset)
+            try out.write(contentsOf: nameData)
         }
 
-        let centralDirectorySize = UInt32(out.count) - centralDirectoryOffset
+        let endOffset = try out.offset()
+        guard endOffset <= UInt64(UInt32.max) else { throw ZipError.archiveTooLarge(zipURL) }
+        let centralDirectorySize = UInt32(endOffset) - centralDirectoryOffset
 
         // End of central directory record
-        out.appendLE(UInt32(0x06054b50))
-        out.appendLE(UInt16(0)) // disk number
-        out.appendLE(UInt16(0)) // start disk
-        out.appendLE(UInt16(central.count))
-        out.appendLE(UInt16(central.count))
-        out.appendLE(centralDirectorySize)
-        out.appendLE(centralDirectoryOffset)
-        out.appendLE(UInt16(0)) // comment len
-
-        try out.write(to: zipURL, options: [.atomic])
+        try out.writeLE(UInt32(0x06054b50))
+        try out.writeLE(UInt16(0)) // disk number
+        try out.writeLE(UInt16(0)) // start disk
+        try out.writeLE(UInt16(central.count))
+        try out.writeLE(UInt16(central.count))
+        try out.writeLE(centralDirectorySize)
+        try out.writeLE(centralDirectoryOffset)
+        try out.writeLE(UInt16(0)) // comment len
     }
 }
 
@@ -153,17 +158,41 @@ private enum CRC32 {
         }
         return crc ^ 0xFFFFFFFF
     }
+
+    static func checksumAndSize(_ url: URL) throws -> (crc32: UInt32, size: UInt64) {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var crc: UInt32 = 0xFFFFFFFF
+        var size: UInt64 = 0
+        while let chunk = try handle.read(upToCount: 1024 * 1024), !chunk.isEmpty {
+            size += UInt64(chunk.count)
+            for b in chunk {
+                let idx = Int((crc ^ UInt32(b)) & 0xFF)
+                crc = table[idx] ^ (crc >> 8)
+            }
+        }
+        return (crc ^ 0xFFFFFFFF, size)
+    }
 }
 
-private extension Data {
-    mutating func appendLE(_ v: UInt16) {
+private extension FileHandle {
+    func writeLE(_ v: UInt16) throws {
         var x = v.littleEndian
-        Swift.withUnsafeBytes(of: &x) { append(contentsOf: $0) }
+        let data = Swift.withUnsafeBytes(of: &x) { Data($0) }
+        try write(contentsOf: data)
     }
 
-    mutating func appendLE(_ v: UInt32) {
+    func writeLE(_ v: UInt32) throws {
         var x = v.littleEndian
-        Swift.withUnsafeBytes(of: &x) { append(contentsOf: $0) }
+        let data = Swift.withUnsafeBytes(of: &x) { Data($0) }
+        try write(contentsOf: data)
+    }
+
+    func writeFileData(from url: URL) throws {
+        let input = try FileHandle(forReadingFrom: url)
+        defer { try? input.close() }
+        while let chunk = try input.read(upToCount: 1024 * 1024), !chunk.isEmpty {
+            try write(contentsOf: chunk)
+        }
     }
 }
-

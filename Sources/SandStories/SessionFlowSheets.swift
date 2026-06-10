@@ -215,17 +215,19 @@ struct UploadSettingsSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Session upload") {
+                Section {
                     Toggle("Auto-upload after recording", isOn: $settings.enabled)
                     TextField("Server upload URL", text: $settings.endpoint)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
+                } header: {
+                    Text("Session upload")
                 } footer: {
                     Text("Run the receiver on your computer and use a URL like http://192.168.1.20:8080/upload. Upload sends the completed session as a ZIP.")
                 }
 
-                Section("Field console") {
+                Section {
                     Toggle("Enable remote console", isOn: $experimentSettings.enabled)
                     Toggle("Publish LiveKit preview", isOn: $experimentSettings.previewEnabled)
                     TextField("Console server URL", text: $experimentSettings.serverURL)
@@ -236,6 +238,8 @@ struct UploadSettingsSheet: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                     TextField("Device name", text: $experimentSettings.deviceName)
+                } header: {
+                    Text("Field console")
                 } footer: {
                     Text("For LAN: run the field console and LiveKit on your computer, then use http://YOUR-LAN-IP:8080.")
                 }

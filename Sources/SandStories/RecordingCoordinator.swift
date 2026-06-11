@@ -13,11 +13,13 @@ final class RecordingCoordinator: ObservableObject {
     let audioRecorder = SessionAudioRecorder()
     let captureSession = CaptureSessionController()
     let locationCaptureManager = LocationCaptureManager()
+    let uploadSettings = UploadSettingsStore()
+    let uploadManager = SessionUploadManager()
 
     private let objectDetector: any StoryObjectDetecting = StubStoryObjectDetector()
 
     /// Mean absolute delta on 32×32 downsampled UInt16 depth; skip save when below this (configurable).
-    var depthDeltaThresholdMeanU16: Float = 400
+    var depthDeltaThresholdMeanU16: Float = 0
 
     @Published private(set) var isCaptureRecording = false
     @Published private(set) var isCapturePaused = false
@@ -27,6 +29,7 @@ final class RecordingCoordinator: ObservableObject {
     @Published private(set) var lastSessionFolderURL: URL?
     @Published private(set) var isBenchmarkRunning = false
     @Published private(set) var benchmarkSummary: String?
+    @Published private(set) var uploadStatus: String?
 
     private var externalScopedURL: URL?
     private var trayDetectionLocked = false
@@ -122,6 +125,27 @@ final class RecordingCoordinator: ObservableObject {
             await stopCaptureSession()
         } else {
             await startCaptureSession()
+        }
+    }
+
+    func startFromRemote(recordAudio: Bool = true) async {
+        guard !isCaptureRecording, !isBenchmarkRunning else { return }
+        await startCaptureSession(recordAudio: recordAudio)
+    }
+
+    func stopFromRemote() async {
+        guard isCaptureRecording else { return }
+        await stopCaptureSession()
+    }
+
+    func uploadLastSessionFromRemote() async {
+        guard let folder = lastSessionFolderURL, let endpoint = uploadSettings.endpointURL() else { return }
+        uploadStatus = "Uploading session..."
+        do {
+            try await uploadManager.uploadSessionFolder(folder, to: endpoint)
+            uploadStatus = "Upload complete"
+        } catch {
+            uploadStatus = "Upload failed: \(error.localizedDescription)"
         }
     }
 
@@ -291,6 +315,7 @@ final class RecordingCoordinator: ObservableObject {
             let depthDir = sessionFolder.appendingPathComponent("depth", isDirectory: true)
             let rgbDir = sessionFolder.appendingPathComponent("rgb", isDirectory: true)
             let confidenceDir = sessionFolder.appendingPathComponent("confidence", isDirectory: true)
+            let streamsDir = sessionFolder.appendingPathComponent("streams", isDirectory: true)
 
             try fm.createDirectory(at: confidenceDir, withIntermediateDirectories: true)
 
@@ -299,16 +324,11 @@ final class RecordingCoordinator: ObservableObject {
                 depthDirectory: depthDir,
                 rgbDirectory: rgbDir,
                 confidenceDirectory: confidenceDir,
+                streamsDirectory: streamsDir,
                 deltaThresholdMeanU16: depthDeltaThresholdMeanU16,
-                onSaved: { ts, dPath, rPath, cPath, intrinsics, transform in
-                    try? await session.appendDepthAndRGB(
-                        arTimestamp: ts,
-                        depthRelativePath: dPath,
-                        rgbRelativePath: rPath,
-                        confidenceRelativePath: cPath,
-                        cameraIntrinsics: intrinsics,
-                        cameraTransform: transform
-                    )
+                onSaved: nil,
+                onV2Saved: { record in
+                    try? await session.appendV2StreamFrame(record)
                 }
             )
 
@@ -352,7 +372,7 @@ final class RecordingCoordinator: ObservableObject {
     }
 
     private func stopCaptureSession() async {
-        depthCaptureManager.setRecording(false)
+        await depthCaptureManager.stopAndFinishRecording()
         isCaptureRecording = false
         isCapturePaused = false
 
@@ -381,6 +401,18 @@ final class RecordingCoordinator: ObservableObject {
         let folder = try? await captureSession.stopSession()
         lastSessionFolderURL = folder
 
+        if let folder, uploadSettings.isEnabled(), let endpoint = uploadSettings.endpointURL() {
+            uploadStatus = "Uploading session..."
+            Task {
+                do {
+                    try await uploadManager.uploadSessionFolder(folder, to: endpoint)
+                    await MainActor.run { self.uploadStatus = "Upload complete" }
+                } catch {
+                    await MainActor.run { self.uploadStatus = "Upload failed: \(error.localizedDescription)" }
+                }
+            }
+        }
+
         await handPoseManager.setStrokeOutputURL(nil)
         await handPoseManager.setPaused(false)
 
@@ -388,8 +420,10 @@ final class RecordingCoordinator: ObservableObject {
             depthDirectory: nil as URL?,
             rgbDirectory: nil as URL?,
             confidenceDirectory: nil as URL?,
+            streamsDirectory: nil as URL?,
             deltaThresholdMeanU16: depthDeltaThresholdMeanU16,
-            onSaved: nil as (@Sendable (TimeInterval, String, String, String?, [Float]?, [Float]?) async -> Void)?
+            onSaved: nil as (@Sendable (TimeInterval, String, String, String?, [Float]?, [Float]?) async -> Void)?,
+            onV2Saved: nil as (@Sendable (V2StreamFrameRecord) async -> Void)?
         )
 
         if let ext = externalScopedURL {

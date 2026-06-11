@@ -16,6 +16,9 @@ DerivedData/
 # Added by code-review-graph
 .code-review-graph/
 /test_sessions/
+/server_data/
+__pycache__/
+*.py[cod]
 
 # Agent & IDE directories/files
 .claude/

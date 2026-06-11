@@ -4,10 +4,14 @@ import SwiftUI
 
 struct ContentView: View {
     @StateObject private var recordingCoordinator = RecordingCoordinator()
+    @StateObject private var experimentSettings = ExperimentServerSettings()
+    @StateObject private var remoteControlManager = RemoteControlManager()
+    @StateObject private var liveKitPreviewManager = LiveKitPreviewManager()
     @State private var shareItems: [Any] = []
     @State private var isShowingShareSheet = false
     @State private var showStorageSheet = false
     @State private var showExportSheet = false
+    @State private var showUploadSheet = false
     @State private var exportFolderURL: URL?
     @State private var recordingStartDate: Date?
     @State private var showGestureGuide = false
@@ -133,6 +137,15 @@ struct ContentView: View {
                 .presentationCornerRadius(28)
             }
         }
+        .sheet(isPresented: $showUploadSheet) {
+            UploadSettingsSheet(
+                settings: recordingCoordinator.uploadSettings,
+                experimentSettings: experimentSettings
+            )
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+                .presentationCornerRadius(28)
+        }
         .sheet(isPresented: $isShowingShareSheet) {
             ActivityView(items: shareItems)
         }
@@ -142,6 +155,17 @@ struct ContentView: View {
             } else {
                 recordingStartDate = nil
             }
+        }
+        .onAppear {
+            remoteControlManager.start(settings: experimentSettings, coordinator: recordingCoordinator)
+            Task { await liveKitPreviewManager.connect(settings: experimentSettings) }
+        }
+        .onChange(of: experimentSettings.enabled) { _, _ in
+            remoteControlManager.start(settings: experimentSettings, coordinator: recordingCoordinator)
+            Task { await liveKitPreviewManager.connect(settings: experimentSettings) }
+        }
+        .onChange(of: experimentSettings.previewEnabled) { _, _ in
+            Task { await liveKitPreviewManager.connect(settings: experimentSettings) }
         }
         .animation(.spring(duration: 0.35, bounce: 0.22), value: recordingCoordinator.isCaptureRecording)
     }
@@ -177,6 +201,32 @@ struct ContentView: View {
             if let summary = recordingCoordinator.benchmarkSummary {
                 Text(summary)
                     .font(.caption.monospacedDigit())
+                    .foregroundStyle(Color(uiColor: .secondaryLabel))
+                    .multilineTextAlignment(.leading)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .glassPanel(cornerRadius: 14, blurStyle: .systemThinMaterial, shadowRadius: 10, shadowYOffset: 4)
+                    .padding(.horizontal, 16)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+
+            if let uploadStatus = recordingCoordinator.uploadStatus {
+                Text(uploadStatus)
+                    .font(.caption)
+                    .foregroundStyle(Color(uiColor: .secondaryLabel))
+                    .multilineTextAlignment(.leading)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .glassPanel(cornerRadius: 14, blurStyle: .systemThinMaterial, shadowRadius: 10, shadowYOffset: 4)
+                    .padding(.horizontal, 16)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+
+            if experimentSettings.enabled {
+                Text("\(remoteControlManager.status) | \(liveKitPreviewManager.status)")
+                    .font(.caption)
                     .foregroundStyle(Color(uiColor: .secondaryLabel))
                     .multilineTextAlignment(.leading)
                     .padding(.horizontal, 14)
@@ -297,6 +347,7 @@ struct ContentView: View {
             HStack(spacing: 12) {
                 clearToolbarButton
                 benchmarkToolbarButton
+                uploadToolbarButton
                 shareToolbarButton
             }
             .padding(.horizontal, 14)
@@ -413,6 +464,23 @@ struct ContentView: View {
         .accessibilityLabel("Share last session")
     }
 
+    private var uploadToolbarButton: some View {
+        Button {
+            showUploadSheet = true
+        } label: {
+            Label("Upload", systemImage: recordingCoordinator.uploadSettings.enabled ? "icloud.and.arrow.up.fill" : "icloud.and.arrow.up")
+                .font(.subheadline.weight(.semibold))
+                .labelStyle(.titleAndIcon)
+                .foregroundStyle(recordingCoordinator.uploadSettings.enabled ? Color.accentColor : Color(uiColor: .label))
+                .frame(maxWidth: .infinity)
+                .frame(minHeight: 44)
+        }
+        .buttonStyle(.plain)
+        .disabled(recordingCoordinator.isCaptureRecording)
+        .opacity(recordingCoordinator.isCaptureRecording ? 0.45 : 1)
+        .accessibilityLabel("Configure automatic upload")
+    }
+
     // MARK: - Export (same zip + activity flow as before)
 
     private func exportAndPresentShare(folder: URL) async {
@@ -495,6 +563,10 @@ struct ARViewContainer: UIViewRepresentable {
 
         if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) {
             configuration.frameSemantics.insert(.sceneDepth)
+        }
+
+        if ARWorldTrackingConfiguration.supportsFrameSemantics(.smoothedSceneDepth) {
+            configuration.frameSemantics.insert(.smoothedSceneDepth)
         }
 
         // Build the LiDAR scene mesh so the colored mesh overlay has geometry to draw.

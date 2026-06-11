@@ -204,3 +204,53 @@ struct ExportSessionPreviewSheet: View {
         .padding(.vertical, 4)
     }
 }
+
+// MARK: - Upload settings
+
+struct UploadSettingsSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject var settings: UploadSettingsStore
+    @ObservedObject var experimentSettings: ExperimentServerSettings
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Toggle("Auto-upload after recording", isOn: $settings.enabled)
+                    TextField("Server upload URL", text: $settings.endpoint)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.URL)
+                } header: {
+                    Text("Session upload")
+                } footer: {
+                    Text("Run the receiver on your computer and use a URL like http://192.168.1.20:8080/upload. Upload sends the completed session as a ZIP.")
+                }
+
+                Section {
+                    Toggle("Enable remote console", isOn: $experimentSettings.enabled)
+                    Toggle("Publish LiveKit preview", isOn: $experimentSettings.previewEnabled)
+                    TextField("Console server URL", text: $experimentSettings.serverURL)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.URL)
+                    TextField("Device token", text: $experimentSettings.deviceToken)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    TextField("Device name", text: $experimentSettings.deviceName)
+                } header: {
+                    Text("Field console")
+                } footer: {
+                    Text("For LAN: run the field console and LiveKit on your computer, then use http://YOUR-LAN-IP:8080.")
+                }
+            }
+            .navigationTitle("Upload")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+}

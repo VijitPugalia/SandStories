@@ -171,10 +171,15 @@ actor ShareExportManager {
             if let sv = manifestJson["schemaVersion"] as? Int {
                 schemaVersion = sv
             }
-            if let depthFrames = manifestJson["depthFrames"] as? [[String: Any]], !depthFrames.isEmpty {
+            if manifestJson["v2Streams"] != nil {
                 modalities.append("depth")
-            }
-            if let rgbFrames = manifestJson["rgbFrames"] as? [[String: Any]], !rgbFrames.isEmpty {
+                modalities.append("rgb")
+            } else if let depthFrames = manifestJson["depthFrames"] as? [[String: Any]], !depthFrames.isEmpty {
+                modalities.append("depth")
+                if let rgbFrames = manifestJson["rgbFrames"] as? [[String: Any]], !rgbFrames.isEmpty {
+                    modalities.append("rgb")
+                }
+            } else if let rgbFrames = manifestJson["rgbFrames"] as? [[String: Any]], !rgbFrames.isEmpty {
                 modalities.append("rgb")
             }
             if manifestJson["audio"] != nil {
@@ -260,4 +265,3 @@ actor ShareExportManager {
         try roCrateData.write(to: roCrateURL, options: [.atomic])
     }
 }
-

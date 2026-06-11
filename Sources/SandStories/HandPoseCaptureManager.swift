@@ -20,12 +20,16 @@ actor HandPoseVisionProcessor {
     private var openPalmConsecutiveFrames = 0
     private var gestureCooldownFrames = 0
     
-    // Wave state
-    private var wristXHistory: [CGFloat] = []
+    // Separate wrist histories for still-palm check vs wave check
+    private var pauseWristXHistory: [CGFloat] = []
+    private var pauseWristYHistory: [CGFloat] = []
+    private var waveWristXHistory: [CGFloat] = []
+    private var waveWristYHistory: [CGFloat] = []
     
     // Tap / Pinch state
     private var lastPinchActive = false
-    private var lastPinchTime: TimeInterval = 0
+    private var pinchTimestamps: [TimeInterval] = []
+    private var waveTimestamps: [TimeInterval] = []
 
     init() {
         request.maximumHandCount = 1
@@ -35,9 +39,13 @@ actor HandPoseVisionProcessor {
     func reset() {
         openPalmConsecutiveFrames = 0
         gestureCooldownFrames = 60  // block gestures for ~2 s after reset
-        wristXHistory.removeAll()
+        pauseWristXHistory.removeAll()
+        pauseWristYHistory.removeAll()
+        waveWristXHistory.removeAll()
+        waveWristYHistory.removeAll()
         lastPinchActive = false
-        lastPinchTime = 0
+        pinchTimestamps.removeAll()
+        waveTimestamps.removeAll()
     }
 
     struct DetectionResult: Sendable {
@@ -48,7 +56,10 @@ actor HandPoseVisionProcessor {
     func processFrameForFingertipAndGestures(
         pixelBufferBox: PixelBufferBox,
         orientation: CGImagePropertyOrientation,
-        timestamp: TimeInterval
+        timestamp: TimeInterval,
+        pauseEnabled: Bool,
+        stopEnabled: Bool,
+        markEnabled: Bool
     ) async -> DetectionResult {
         // Process every frame — actor already serializes concurrent requests.
         let handler = VNImageRequestHandler(cvPixelBuffer: pixelBufferBox.pixelBuffer, orientation: orientation)
@@ -67,9 +78,10 @@ actor HandPoseVisionProcessor {
         guard let obs = observations.first else {
             print("🖐️ No hand in frame")
             openPalmConsecutiveFrames = 0
-            if !wristXHistory.isEmpty {
-                wristXHistory.removeFirst()
-            }
+            if !pauseWristXHistory.isEmpty { pauseWristXHistory.removeFirst() }
+            if !pauseWristYHistory.isEmpty { pauseWristYHistory.removeFirst() }
+            if !waveWristXHistory.isEmpty { waveWristXHistory.removeFirst() }
+            if !waveWristYHistory.isEmpty { waveWristYHistory.removeFirst() }
             return DetectionResult(fingertip: nil, command: nil)
         }
 
@@ -94,9 +106,10 @@ actor HandPoseVisionProcessor {
             let lC = (try? obs.recognizedPoint(.littleTip))?.confidence ?? 0
             print("🖐️ Landmarks below threshold: wrist=\(String(format: "%.2f", wC)) thumb=\(String(format: "%.2f", tC)) index=\(String(format: "%.2f", iC)) mid=\(String(format: "%.2f", mC)) ring=\(String(format: "%.2f", rC)) little=\(String(format: "%.2f", lC))")
             openPalmConsecutiveFrames = 0
-            if !wristXHistory.isEmpty {
-                wristXHistory.removeFirst()
-            }
+            if !pauseWristXHistory.isEmpty { pauseWristXHistory.removeFirst() }
+            if !pauseWristYHistory.isEmpty { pauseWristYHistory.removeFirst() }
+            if !waveWristXHistory.isEmpty { waveWristXHistory.removeFirst() }
+            if !waveWristYHistory.isEmpty { waveWristYHistory.removeFirst() }
             return DetectionResult(fingertip: nil, command: nil)
         }
 
@@ -122,34 +135,70 @@ actor HandPoseVisionProcessor {
 
         var command: UIGestureCommand? = nil
 
-        // Heuristic 1: Open Palm (Hold 1.0 second = 30 frames)
+        // Update wrist movement histories
         if isOpenPalm {
+            pauseWristXHistory.append(wLoc.x)
+            pauseWristYHistory.append(wLoc.y)
+            if pauseWristXHistory.count > 90 {
+                pauseWristXHistory.removeFirst()
+            }
+            if pauseWristYHistory.count > 90 {
+                pauseWristYHistory.removeFirst()
+            }
+            
+            waveWristXHistory.append(wLoc.x)
+            waveWristYHistory.append(wLoc.y)
+            if waveWristXHistory.count > 30 {
+                waveWristXHistory.removeFirst()
+            }
+            if waveWristYHistory.count > 30 {
+                waveWristYHistory.removeFirst()
+            }
+        } else {
+            if !pauseWristXHistory.isEmpty { pauseWristXHistory.removeFirst() }
+            if !pauseWristYHistory.isEmpty { pauseWristYHistory.removeFirst() }
+            if !waveWristXHistory.isEmpty { waveWristXHistory.removeFirst() }
+            if !waveWristYHistory.isEmpty { waveWristYHistory.removeFirst() }
+        }
+
+        // Heuristic 1: Open Palm (Hold 3.0 seconds = 90 frames)
+        if isOpenPalm && pauseEnabled {
             openPalmConsecutiveFrames += 1
-            if gestureCooldownFrames == 0 && openPalmConsecutiveFrames >= 30 {
-                openPalmConsecutiveFrames = 0
-                gestureCooldownFrames = 60
-                wristXHistory.removeAll()
-                command = .pause
+            if gestureCooldownFrames == 0 && openPalmConsecutiveFrames >= 90 {
+                let minX = pauseWristXHistory.min() ?? 0
+                let maxX = pauseWristXHistory.max() ?? 0
+                let minY = pauseWristYHistory.min() ?? 0
+                let maxY = pauseWristYHistory.max() ?? 0
+                
+                let rangeX = maxX - minX
+                let rangeY = maxY - minY
+                
+                // Only trigger pause if the hand is held relatively still.
+                if rangeX < 0.08 && rangeY < 0.08 {
+                    openPalmConsecutiveFrames = 0
+                    gestureCooldownFrames = 60
+                    pauseWristXHistory.removeAll()
+                    pauseWristYHistory.removeAll()
+                    command = .pause
+                } else {
+                    // Hand is moving/waving, so do not trigger pause.
+                    openPalmConsecutiveFrames = 0
+                }
             }
         } else {
             openPalmConsecutiveFrames = 0
         }
 
-        // Heuristic 2: Open Hand Wave (moving side-to-side)
-        if isOpenPalm {
-            wristXHistory.append(wLoc.x)
-            if wristXHistory.count > 30 {
-                wristXHistory.removeFirst()
-            }
-
-            if command == nil && gestureCooldownFrames == 0 && wristXHistory.count == 30 {
-                let minX = wristXHistory.min() ?? 0
-                let maxX = wristXHistory.max() ?? 0
+        // Heuristic 2: Open Hand Wave (moving side-to-side, 3 times to Stop)
+        if isOpenPalm && stopEnabled {
+            if command == nil && gestureCooldownFrames == 0 && waveWristXHistory.count == 30 {
+                let minX = waveWristXHistory.min() ?? 0
+                let maxX = waveWristXHistory.max() ?? 0
                 if (maxX - minX) > 0.18 {
                     var directionChanges = 0
                     var lastDelta: CGFloat = 0
-                    for i in 1..<wristXHistory.count {
-                        let delta = wristXHistory[i] - wristXHistory[i-1]
+                    for i in 1..<waveWristXHistory.count {
+                        let delta = waveWristXHistory[i] - waveWristXHistory[i-1]
                         if abs(delta) > 0.005 {
                             if (delta > 0 && lastDelta < 0) || (delta < 0 && lastDelta > 0) {
                                 directionChanges += 1
@@ -158,35 +207,41 @@ actor HandPoseVisionProcessor {
                         }
                     }
                     if directionChanges >= 3 {
-                        wristXHistory.removeAll()
-                        gestureCooldownFrames = 60
-                        openPalmConsecutiveFrames = 0
-                        command = .start
+                        waveWristXHistory.removeAll()
+                        waveWristYHistory.removeAll()
+                        
+                        waveTimestamps.append(timestamp)
+                        waveTimestamps = waveTimestamps.filter { timestamp - $0 < 4.0 }
+                        
+                        print("👋 Wave detected! Count: \(waveTimestamps.count)")
+                        
+                        if waveTimestamps.count >= 3 {
+                            waveTimestamps.removeAll()
+                            gestureCooldownFrames = 60
+                            openPalmConsecutiveFrames = 0
+                            command = .stop
+                            print("🚨 Triggering Stop via 3x Wave")
+                        }
                     }
                 }
             }
-        } else {
-            if !wristXHistory.isEmpty {
-                wristXHistory.removeFirst()
-            }
         }
 
-        // Heuristic 3: Two-Finger Double Tap
-        let isTwoFingersExtended = isIndexExtended && isMiddleExtended && !isRingExtended && !isLittleExtended
-        let pinchActive = distance(iTip, tTip) < 0.05 && distance(mTip, tTip) < 0.05
+        // Heuristic 3: One-Finger Triple Tap (Mark Segment)
+        let isOneFingerExtended = isIndexExtended && !isMiddleExtended && !isRingExtended && !isLittleExtended
+        let pinchActive = distance(iTip, tTip) < 0.05
 
-        if isTwoFingersExtended {
+        if isOneFingerExtended && markEnabled {
             if pinchActive && !lastPinchActive {
-                let deltaT = timestamp - lastPinchTime
-                if deltaT < 1.2 && lastPinchTime > 0 {
-                    lastPinchTime = 0
-                    lastPinchActive = false
-                    if command == nil && gestureCooldownFrames == 0 {
-                        command = .markSegment
-                        gestureCooldownFrames = 60
-                    }
-                } else {
-                    lastPinchTime = timestamp
+                pinchTimestamps.append(timestamp)
+                pinchTimestamps = pinchTimestamps.filter { timestamp - $0 < 2.0 }
+                print("☝️ Pinch detected! Count: \(pinchTimestamps.count)")
+                
+                if command == nil && gestureCooldownFrames == 0 && pinchTimestamps.count >= 3 {
+                    pinchTimestamps.removeAll()
+                    command = .markSegment
+                    gestureCooldownFrames = 60
+                    print("🚨 Triggering Mark Segment via 3x Pinch")
                 }
             }
             lastPinchActive = pinchActive
@@ -331,6 +386,10 @@ final class HandPoseCaptureManager: NSObject, @preconcurrency ARSessionDelegate 
     private let strokeRecorder = StrokeRecorder()
     private var isPaused = false
 
+    var isPauseGestureEnabled = true
+    var isStopGestureEnabled = true
+    var isMarkGestureEnabled = true
+
     var onGestureCommand: (@MainActor @Sendable (UIGestureCommand) -> Void)?
 
     func setPaused(_ paused: Bool) async {
@@ -374,12 +433,18 @@ final class HandPoseCaptureManager: NSObject, @preconcurrency ARSessionDelegate 
         let orientation: CGImagePropertyOrientation = .right
         let frameTimestamp = frame.timestamp
         let viewportSize = renderer.currentViewportSize()
+        let pauseEnabled = self.isPauseGestureEnabled
+        let stopEnabled = self.isStopGestureEnabled
+        let markEnabled = self.isMarkGestureEnabled
 
         Task(priority: .userInitiated) {
             let result = await processor.processFrameForFingertipAndGestures(
                 pixelBufferBox: pixelBuffer,
                 orientation: orientation,
-                timestamp: frameTimestamp
+                timestamp: frameTimestamp,
+                pauseEnabled: pauseEnabled,
+                stopEnabled: stopEnabled,
+                markEnabled: markEnabled
             )
 
             if let command = result.command {

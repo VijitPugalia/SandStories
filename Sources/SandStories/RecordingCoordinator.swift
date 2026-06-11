@@ -31,6 +31,25 @@ final class RecordingCoordinator: ObservableObject {
     @Published private(set) var benchmarkSummary: String?
     @Published private(set) var uploadStatus: String?
 
+    @Published var isPauseGestureEnabled: Bool = true {
+        didSet {
+            UserDefaults.standard.set(isPauseGestureEnabled, forKey: "isPauseGestureEnabled")
+            handPoseManager.isPauseGestureEnabled = isPauseGestureEnabled
+        }
+    }
+    @Published var isStopGestureEnabled: Bool = true {
+        didSet {
+            UserDefaults.standard.set(isStopGestureEnabled, forKey: "isStopGestureEnabled")
+            handPoseManager.isStopGestureEnabled = isStopGestureEnabled
+        }
+    }
+    @Published var isMarkGestureEnabled: Bool = true {
+        didSet {
+            UserDefaults.standard.set(isMarkGestureEnabled, forKey: "isMarkGestureEnabled")
+            handPoseManager.isMarkGestureEnabled = isMarkGestureEnabled
+        }
+    }
+
     private var externalScopedURL: URL?
     private var trayDetectionLocked = false
     private var auxiliaryFrameCounter = 0
@@ -39,6 +58,18 @@ final class RecordingCoordinator: ObservableObject {
     private var usedExternalForCurrentSession = false
 
     init() {
+        let pauseEnabled = UserDefaults.standard.object(forKey: "isPauseGestureEnabled") as? Bool ?? true
+        let stopEnabled = UserDefaults.standard.object(forKey: "isStopGestureEnabled") as? Bool ?? true
+        let markEnabled = UserDefaults.standard.object(forKey: "isMarkGestureEnabled") as? Bool ?? true
+        
+        self.isPauseGestureEnabled = pauseEnabled
+        self.isStopGestureEnabled = stopEnabled
+        self.isMarkGestureEnabled = markEnabled
+        
+        self.handPoseManager.isPauseGestureEnabled = pauseEnabled
+        self.handPoseManager.isStopGestureEnabled = stopEnabled
+        self.handPoseManager.isMarkGestureEnabled = markEnabled
+
         framePipeline.coordinator = self
         refreshDestinationLabel()
         

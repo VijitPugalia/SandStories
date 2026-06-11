@@ -35,7 +35,7 @@ struct ContentView: View {
             if showGestureGuide {
                 VStack(alignment: .leading, spacing: 14) {
                     HStack {
-                        Text("Tripod Gestures")
+                        Text("Gestures")
                             .font(.headline.weight(.bold))
                         Spacer()
                         Button {
@@ -50,10 +50,25 @@ struct ContentView: View {
                     
                     Divider()
                     
-                    VStack(alignment: .leading, spacing: 12) {
-                        GestureGuideRow(icon: "hand.raised.fill", gestureName: "Open Palm (hold 1s)", actionDescription: "Pause / Resume Recording")
-                        GestureGuideRow(icon: "hand.wave.fill", gestureName: "Wave Hand", actionDescription: "Start / Stop Session")
-                        GestureGuideRow(icon: "hand.point.up.left.fill", gestureName: "Two-Finger Double Tap", actionDescription: "Mark Segment")
+                    VStack(alignment: .leading, spacing: 8) {
+                        InteractiveGestureRow(
+                            icon: "hand.raised.fill",
+                            gestureName: "Open Palm (hold 3s)",
+                            actionDescription: "Pause / Resume Recording",
+                            isEnabled: $recordingCoordinator.isPauseGestureEnabled
+                        )
+                        InteractiveGestureRow(
+                            icon: "hand.wave.fill",
+                            gestureName: "Wave Hand (3 times)",
+                            actionDescription: "Stop Recording Session",
+                            isEnabled: $recordingCoordinator.isStopGestureEnabled
+                        )
+                        InteractiveGestureRow(
+                            icon: "hand.point.up.left.fill",
+                            gestureName: "One-Finger Triple Tap",
+                            actionDescription: "Mark Segment",
+                            isEnabled: $recordingCoordinator.isMarkGestureEnabled
+                        )
                     }
                 }
                 .padding(16)
@@ -66,7 +81,7 @@ struct ContentView: View {
                         .stroke(Color(uiColor: .label).opacity(0.15), lineWidth: 1)
                 }
                 .shadow(color: Color.black.opacity(0.15), radius: 15, y: 5)
-                .frame(maxWidth: 290)
+                .frame(maxWidth: 310)
                 .padding(.horizontal, 16)
                 .padding(.top, 80) // Below top HUD
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
@@ -410,12 +425,16 @@ struct ContentView: View {
                 await recordingCoordinator.handPoseManager.clearStrokes()
             }
         } label: {
-            Label("Clear", systemImage: "paintbrush.pointed")
-                .font(.subheadline.weight(.semibold))
-                .labelStyle(.titleAndIcon)
-                .foregroundStyle(Color(uiColor: .label))
-                .frame(maxWidth: .infinity)
-                .frame(minHeight: 44)
+            VStack(spacing: 5) {
+                Image(systemName: "paintbrush.pointed")
+                    .font(.body.weight(.semibold))
+                Text("Clear")
+                    .font(.caption2.weight(.bold))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(Color(uiColor: .label))
+            .frame(maxWidth: .infinity)
+            .frame(minHeight: 44)
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Clear strokes")
@@ -427,12 +446,16 @@ struct ContentView: View {
                 await recordingCoordinator.runDepthBenchmark()
             }
         } label: {
-            Label(recordingCoordinator.isBenchmarkRunning ? "Running" : "Benchmark", systemImage: "speedometer")
-                .font(.subheadline.weight(.semibold))
-                .labelStyle(.titleAndIcon)
-                .foregroundStyle(recordingCoordinator.isBenchmarkRunning ? Color(uiColor: .secondaryLabel) : Color.accentColor)
-                .frame(maxWidth: .infinity)
-                .frame(minHeight: 44)
+            VStack(spacing: 5) {
+                Image(systemName: "speedometer")
+                    .font(.body.weight(.semibold))
+                Text(recordingCoordinator.isBenchmarkRunning ? "Running" : "Benchmark")
+                    .font(.caption2.weight(.bold))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(recordingCoordinator.isBenchmarkRunning ? Color(uiColor: .secondaryLabel) : Color.accentColor)
+            .frame(maxWidth: .infinity)
+            .frame(minHeight: 44)
         }
         .buttonStyle(.plain)
         .disabled(recordingCoordinator.isCaptureRecording || recordingCoordinator.isBenchmarkRunning)
@@ -453,12 +476,16 @@ struct ContentView: View {
                 }
             }
         } label: {
-            Label("Share", systemImage: "square.and.arrow.up")
-                .font(.subheadline.weight(.semibold))
-                .labelStyle(.titleAndIcon)
-                .foregroundStyle(Color.accentColor)
-                .frame(maxWidth: .infinity)
-                .frame(minHeight: 44)
+            VStack(spacing: 5) {
+                Image(systemName: "square.and.arrow.up")
+                    .font(.body.weight(.semibold))
+                Text("Share")
+                    .font(.caption2.weight(.bold))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(Color.accentColor)
+            .frame(maxWidth: .infinity)
+            .frame(minHeight: 44)
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Share last session")
@@ -601,29 +628,55 @@ extension ContentView {
                 }
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Show tripod gestures guide")
+        .accessibilityLabel("Show gestures guide")
     }
 }
 
-struct GestureGuideRow: View {
+struct InteractiveGestureRow: View {
     let icon: String
     let gestureName: String
     let actionDescription: String
+    @Binding var isEnabled: Bool
     
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: icon)
-                .font(.title3)
-                .foregroundStyle(Color.accentColor)
-                .frame(width: 28)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(gestureName)
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(Color(uiColor: .label))
-                Text(actionDescription)
-                    .font(.caption2)
-                    .foregroundStyle(Color(uiColor: .secondaryLabel))
+        Button {
+            withAnimation(.spring(duration: 0.2, bounce: 0.1)) {
+                isEnabled.toggle()
             }
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: icon)
+                    .font(.title3)
+                    .foregroundStyle(isEnabled ? Color.accentColor : Color(uiColor: .tertiaryLabel))
+                    .frame(width: 28, height: 28)
+                    .background {
+                        Circle()
+                            .fill(isEnabled ? Color.accentColor.opacity(0.15) : Color(uiColor: .quaternarySystemFill))
+                    }
+                
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(gestureName)
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(isEnabled ? Color(uiColor: .label) : Color(uiColor: .secondaryLabel))
+                    Text(actionDescription)
+                        .font(.caption2)
+                        .foregroundStyle(Color(uiColor: .secondaryLabel))
+                }
+                
+                Spacer()
+                
+                Image(systemName: isEnabled ? "checkmark.circle.fill" : "circle")
+                    .font(.title3)
+                    .foregroundStyle(isEnabled ? Color.accentColor : Color(uiColor: .tertiaryLabel))
+            }
+            .padding(.vertical, 10)
+            .padding(.horizontal, 12)
+            .background {
+                RoundedRectangle(cornerRadius: 14)
+                    .fill(isEnabled ? Color.accentColor.opacity(0.05) : Color.clear)
+            }
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
     }
 }

@@ -425,9 +425,10 @@ struct ContentView: View {
                 await recordingCoordinator.handPoseManager.clearStrokes()
             }
         } label: {
-            VStack(spacing: 5) {
+            VStack(spacing: 4) {
                 Image(systemName: "paintbrush.pointed")
                     .font(.body.weight(.semibold))
+                    .frame(width: 24, height: 24)
                 Text("Clear")
                     .font(.caption2.weight(.bold))
                     .lineLimit(1)
@@ -436,7 +437,7 @@ struct ContentView: View {
             .frame(maxWidth: .infinity)
             .frame(minHeight: 44)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(LiquidButtonStyle())
         .accessibilityLabel("Clear strokes")
     }
 
@@ -446,9 +447,10 @@ struct ContentView: View {
                 await recordingCoordinator.runDepthBenchmark()
             }
         } label: {
-            VStack(spacing: 5) {
+            VStack(spacing: 4) {
                 Image(systemName: "speedometer")
                     .font(.body.weight(.semibold))
+                    .frame(width: 24, height: 24)
                 Text(recordingCoordinator.isBenchmarkRunning ? "Running" : "Benchmark")
                     .font(.caption2.weight(.bold))
                     .lineLimit(1)
@@ -457,7 +459,7 @@ struct ContentView: View {
             .frame(maxWidth: .infinity)
             .frame(minHeight: 44)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(LiquidButtonStyle())
         .disabled(recordingCoordinator.isCaptureRecording || recordingCoordinator.isBenchmarkRunning)
         .opacity(recordingCoordinator.isCaptureRecording ? 0.45 : 1)
         .accessibilityLabel("Run 15 second depth capture benchmark")
@@ -476,9 +478,10 @@ struct ContentView: View {
                 }
             }
         } label: {
-            VStack(spacing: 5) {
+            VStack(spacing: 4) {
                 Image(systemName: "square.and.arrow.up")
                     .font(.body.weight(.semibold))
+                    .frame(width: 24, height: 24)
                 Text("Share")
                     .font(.caption2.weight(.bold))
                     .lineLimit(1)
@@ -487,7 +490,7 @@ struct ContentView: View {
             .frame(maxWidth: .infinity)
             .frame(minHeight: 44)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(LiquidButtonStyle())
         .accessibilityLabel("Share last session")
     }
 
@@ -678,5 +681,14 @@ struct InteractiveGestureRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+}
+
+struct LiquidButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.90 : 1.0)
+            .opacity(configuration.isPressed ? 0.8 : 1.0)
+            .animation(.spring(response: 0.3, dampingFraction: 0.6), value: configuration.isPressed)
     }
 }

@@ -46,25 +46,49 @@ struct GlassPanelModifier: ViewModifier {
                 .clipShape(GlassPanelShape(cornerRadius: cornerRadius))
             }
             .overlay {
+                // Outer specular border
                 GlassPanelShape(cornerRadius: cornerRadius)
                     .stroke(
                         LinearGradient(
                             colors: colorScheme == .dark ? [
-                                Color.white.opacity(0.22),
-                                Color.white.opacity(0.03),
-                                Color.black.opacity(0.2),
-                                Color.white.opacity(0.08)
+                                Color.white.opacity(0.24),
+                                Color.white.opacity(0.04),
+                                Color.black.opacity(0.25),
+                                Color.white.opacity(0.1)
                             ] : [
-                                Color.white.opacity(0.45),
-                                Color.white.opacity(0.1),
-                                Color.black.opacity(0.06),
-                                Color.white.opacity(0.15)
+                                Color.white.opacity(0.55),
+                                Color.white.opacity(0.12),
+                                Color.black.opacity(0.08),
+                                Color.white.opacity(0.2)
                             ],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
                         ),
                         lineWidth: 1
                     )
+            }
+            .overlay {
+                // Inner highlight stroke for liquid refraction/bevel
+                GlassPanelShape(cornerRadius: cornerRadius)
+                    .stroke(
+                        LinearGradient(
+                            colors: colorScheme == .dark ? [
+                                Color.white.opacity(0.15),
+                                Color.clear,
+                                Color.clear,
+                                Color.clear
+                            ] : [
+                                Color.white.opacity(0.40),
+                                Color.clear,
+                                Color.clear,
+                                Color.clear
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 2
+                    )
+                    .padding(1)
             }
             .shadow(
                 color: Color.black.opacity(colorScheme == .dark ? 0.25 : 0.08),

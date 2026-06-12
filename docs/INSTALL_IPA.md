@@ -1,4 +1,22 @@
-# Fix: app crashes on launch (SideStore / device)
+# Install IPA on iPhone (LiveContainer / SideStore)
+
+## Fast path: latest private GitHub build
+
+Successful pushes to `main` publish a direct private IPA asset:
+
+<https://github.com/VijitPugalia/SandStories/releases/download/latest-ipa/SandStories.ipa>
+
+On the iPhone:
+
+1. Log into GitHub in Safari with access to this private repo.
+2. Bookmark the link above.
+3. After the **Build IPA** action succeeds, open the bookmark.
+4. Download `SandStories.ipa`.
+5. Import or open the IPA in **LiveContainer** or **SideStore**.
+
+This skips the old Actions artifact ZIP download, unzip step, and Windows transfer. iOS still requires an explicit import/install confirmation.
+
+## Local build fix: app crashes on launch
 
 ## Cause
 
@@ -25,7 +43,7 @@ It will:
 2. Merge `AppSupport/SandStories-App-Info.plist` into the app’s `Info.plist`
 3. Create `xtool/SandStories.ipa` (Payload zip)
 
-Then copy the IPA to Windows and reinstall in SideStore.
+Then copy the IPA to Windows and reinstall in LiveContainer or SideStore.
 
 ## If you only used `xtool dev build --ipa`
 

@@ -485,7 +485,7 @@ struct ContentView: View {
 
     private var recordFloatingButton: some View {
         let isDisabled = !recordingCoordinator.isCaptureRecording && (recordingCoordinator.isBenchmarkRunning || recordingCoordinator.isDepthDiagnosticRunning)
-        Button {
+        return Button {
             Task {
                 await recordingCoordinator.toggleRecording()
             }

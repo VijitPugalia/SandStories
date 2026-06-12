@@ -48,7 +48,8 @@ actor CaptureSessionController {
         storageDestination: String,
         securityScopedExternal: Bool,
         deltaThreshold: Float,
-        maxDepthMeters: Float
+        maxDepthMeters: Float,
+        diagnostic: CaptureSessionManifest.DepthDiagnosticInfo? = nil
     ) async throws {
         self.sessionFolderURL = folderURL
         self.sessionId = sessionId
@@ -115,7 +116,9 @@ actor CaptureSessionController {
             ),
             objectDetectionProvenance: "postprocessed_yolo_world_v1",
             boundarySamplesFile: "boundary_samples.jsonl",
-            location: nil
+            location: nil,
+            segments: nil,
+            diagnostic: diagnostic
         )
 
         let objectsURL = folderURL.appendingPathComponent("objects.jsonl")
@@ -228,6 +231,14 @@ actor CaptureSessionController {
         var currentSegments = m.segments ?? []
         currentSegments.append(.init(monotonicElapsedSeconds: mono, timestampUnix: unix))
         m.segments = currentSegments
+        manifest = m
+        try await flushManifest()
+    }
+
+    func setDepthDiagnosticCounters(_ counters: CaptureSessionManifest.DepthDiagnosticCounters) async throws {
+        guard var m = manifest, var diagnostic = m.diagnostic else { return }
+        diagnostic.counters = counters
+        m.diagnostic = diagnostic
         manifest = m
         try await flushManifest()
     }

@@ -10,6 +10,22 @@ import UniformTypeIdentifiers
 struct DepthCaptureBenchmarkSnapshot: Sendable {
     var arFramesReceived: Int = 0
     var arFramesWithoutDepth: Int = 0
+    var arFramesSkippedInFlight: Int = 0
+    var rawDepthFramesAvailable: Int = 0
+    var smoothedDepthFramesAvailable: Int = 0
+    var confidenceFramesAvailable: Int = 0
+    var rawDepthWidth: Int?
+    var rawDepthHeight: Int?
+    var rawDepthPixelFormat: String?
+    var rawDepthBytesPerRow: Int?
+    var smoothedDepthWidth: Int?
+    var smoothedDepthHeight: Int?
+    var smoothedDepthPixelFormat: String?
+    var smoothedDepthBytesPerRow: Int?
+    var confidenceWidth: Int?
+    var confidenceHeight: Int?
+    var confidencePixelFormat: String?
+    var confidenceBytesPerRow: Int?
     var writerCaptureCalls: Int = 0
     var framesSkippedWriting: Int = 0
     var framesSkippedMotion: Int = 0
@@ -28,6 +44,41 @@ struct DepthCaptureBenchmarkSnapshot: Sendable {
         let rgbAvg = framesWritten > 0 ? totalRGBEncodeMilliseconds / Double(framesWritten) : 0
 
         return "Benchmark \(Self.oneDecimal(seconds))s | AR \(Self.oneDecimal(arFPS)) fps | saved \(Self.oneDecimal(savedFPS)) fps (\(framesWritten) frames) | motion skips \(framesSkippedMotion) | no depth \(arFramesWithoutDepth) | depth \(Self.oneDecimal(depthAvg)) ms/frame | rgb \(Self.oneDecimal(rgbAvg)) ms/frame | \(Self.oneDecimal(totalMB)) MB"
+    }
+
+    func diagnosticSummary(elapsedSeconds: TimeInterval, profile: String) -> String {
+        let seconds = max(elapsedSeconds, 0.001)
+        let savedFPS = Double(framesWritten) / seconds
+        let depthSize = rawDepthWidth.map { "\($0)x\(rawDepthHeight ?? 0)" } ?? "unknown"
+        let smoothed = smoothedDepthFramesAvailable > 0 ? "\(smoothedDepthFramesAvailable)" : "off/none"
+        return "Diagnostic \(Self.oneDecimal(seconds))s \(profile) | saved \(Self.oneDecimal(savedFPS)) fps (\(framesWritten)) | raw \(rawDepthFramesAvailable) \(depthSize) | smoothed \(smoothed) | confidence \(confidenceFramesAvailable) | no depth \(arFramesWithoutDepth) | in-flight skips \(arFramesSkippedInFlight)"
+    }
+
+    func diagnosticCounters() -> CaptureSessionManifest.DepthDiagnosticCounters {
+        .init(
+            arFramesReceived: arFramesReceived,
+            arFramesWithoutDepth: arFramesWithoutDepth,
+            arFramesSkippedInFlight: arFramesSkippedInFlight,
+            writerCaptureCalls: writerCaptureCalls,
+            framesSkippedWriting: framesSkippedWriting,
+            framesSkippedMotion: framesSkippedMotion,
+            framesWritten: framesWritten,
+            rawDepthFramesAvailable: rawDepthFramesAvailable,
+            smoothedDepthFramesAvailable: smoothedDepthFramesAvailable,
+            confidenceFramesAvailable: confidenceFramesAvailable,
+            rawDepthWidth: rawDepthWidth,
+            rawDepthHeight: rawDepthHeight,
+            rawDepthPixelFormat: rawDepthPixelFormat,
+            rawDepthBytesPerRow: rawDepthBytesPerRow,
+            smoothedDepthWidth: smoothedDepthWidth,
+            smoothedDepthHeight: smoothedDepthHeight,
+            smoothedDepthPixelFormat: smoothedDepthPixelFormat,
+            smoothedDepthBytesPerRow: smoothedDepthBytesPerRow,
+            confidenceWidth: confidenceWidth,
+            confidenceHeight: confidenceHeight,
+            confidencePixelFormat: confidencePixelFormat,
+            confidenceBytesPerRow: confidenceBytesPerRow
+        )
     }
 
     private static func oneDecimal(_ value: Double) -> String {
@@ -66,6 +117,8 @@ actor DepthCaptureWriter {
     private var sequentialIndex: Int = 0
     private var lastDownsample: [UInt16]?
     private var deltaThresholdMeanU16: Float = 400
+    private var captureProfile: String = "standard"
+    private var enabledFrameSemantics: [String] = ["sceneDepth", "smoothedSceneDepth"]
     private var onSaved: (@Sendable (TimeInterval, String, String, String?, [Float]?, [Float]?) async -> Void)?
     private var onV2Saved: (@Sendable (V2StreamFrameRecord) async -> Void)?
     private var benchmarkMetrics = DepthCaptureBenchmarkSnapshot()
@@ -80,6 +133,8 @@ actor DepthCaptureWriter {
         confidenceDirectory: URL?,
         streamsDirectory: URL?,
         deltaThresholdMeanU16: Float,
+        captureProfile: String,
+        enabledFrameSemantics: [String],
         onSaved: (@Sendable (TimeInterval, String, String, String?, [Float]?, [Float]?) async -> Void)?,
         onV2Saved: (@Sendable (V2StreamFrameRecord) async -> Void)?
     ) async {
@@ -89,6 +144,8 @@ actor DepthCaptureWriter {
         self.confidenceDirectory = confidenceDirectory
         self.streamsDirectory = streamsDirectory
         self.deltaThresholdMeanU16 = deltaThresholdMeanU16
+        self.captureProfile = captureProfile
+        self.enabledFrameSemantics = enabledFrameSemantics
         self.onSaved = onSaved
         self.onV2Saved = onV2Saved
         sequentialIndex = 0
@@ -214,6 +271,7 @@ actor DepthCaptureWriter {
 
             let intrinsicsArray = Self.intrinsicsToArray(cameraIntrinsics)
             let transformArray = Self.transformToArray(cameraTransform)
+            let depthBytesPerRow = CVPixelBufferGetBytesPerRow(depthMap.pixelBuffer)
             if let onV2Saved {
                 await onV2Saved(
                     .init(
@@ -223,21 +281,29 @@ actor DepthCaptureWriter {
                         width: width,
                         height: height,
                         sourceDepthPixelFormat: Self.pixelFormatName(CVPixelBufferGetPixelFormatType(depthMap.pixelBuffer)),
+                        depthBytesPerRow: depthBytesPerRow,
                         storedDepthFormat: "float32_little_endian_meters",
                         depthByteOffset: depthOffset,
                         depthByteCount: depthData.count,
                         smoothedDepthByteOffset: smoothedDepthOffset,
                         smoothedDepthByteCount: smoothedDepthCount,
                         smoothedDepthPixelFormat: smoothedDepthPixelFormat,
+                        smoothedDepthWidth: smoothedDepthMap.map { CVPixelBufferGetWidth($0.pixelBuffer) },
+                        smoothedDepthHeight: smoothedDepthMap.map { CVPixelBufferGetHeight($0.pixelBuffer) },
+                        smoothedDepthBytesPerRow: smoothedDepthMap.map { CVPixelBufferGetBytesPerRow($0.pixelBuffer) },
                         confidenceByteOffset: confidenceOffset,
                         confidenceByteCount: confidenceCount,
                         confidencePixelFormat: confidencePixelFormat,
+                        confidenceWidth: confidenceMap.map { CVPixelBufferGetWidth($0.pixelBuffer) },
+                        confidenceHeight: confidenceMap.map { CVPixelBufferGetHeight($0.pixelBuffer) },
                         confidenceBytesPerRow: confidenceBytesPerRow,
                         rgbPresentationTimeSeconds: rgbPTS,
                         cameraTransformColumnMajor: transformArray,
                         cameraIntrinsicsColumnMajor: intrinsicsArray,
                         cameraImageResolutionWidth: CVPixelBufferGetWidth(capturedImage.pixelBuffer),
-                        cameraImageResolutionHeight: CVPixelBufferGetHeight(capturedImage.pixelBuffer)
+                        cameraImageResolutionHeight: CVPixelBufferGetHeight(capturedImage.pixelBuffer),
+                        enabledFrameSemantics: enabledFrameSemantics,
+                        captureProfile: captureProfile
                     )
                 )
             }
@@ -617,6 +683,23 @@ final class DepthCaptureManager: NSObject, @preconcurrency ARSessionDelegate {
     private var captureInFlight: Bool = false
     private var benchmarkFramesReceived: Int = 0
     private var benchmarkFramesWithoutDepth: Int = 0
+    private var benchmarkFramesSkippedInFlight: Int = 0
+    private var rawDepthFramesAvailable: Int = 0
+    private var smoothedDepthFramesAvailable: Int = 0
+    private var confidenceFramesAvailable: Int = 0
+    private var rawDepthWidth: Int?
+    private var rawDepthHeight: Int?
+    private var rawDepthPixelFormat: String?
+    private var rawDepthBytesPerRow: Int?
+    private var smoothedDepthWidth: Int?
+    private var smoothedDepthHeight: Int?
+    private var smoothedDepthPixelFormat: String?
+    private var smoothedDepthBytesPerRow: Int?
+    private var confidenceWidth: Int?
+    private var confidenceHeight: Int?
+    private var confidencePixelFormat: String?
+    private var confidenceBytesPerRow: Int?
+    private var capturesSmoothedDepth: Bool = true
 
     var isCurrentlyRecording: Bool {
         return isRecording
@@ -634,6 +717,22 @@ final class DepthCaptureManager: NSObject, @preconcurrency ARSessionDelegate {
         var snapshot = writerSnapshot
         snapshot.arFramesReceived = counters.received
         snapshot.arFramesWithoutDepth = counters.withoutDepth
+        snapshot.arFramesSkippedInFlight = counters.skippedInFlight
+        snapshot.rawDepthFramesAvailable = counters.rawAvailable
+        snapshot.smoothedDepthFramesAvailable = counters.smoothedAvailable
+        snapshot.confidenceFramesAvailable = counters.confidenceAvailable
+        snapshot.rawDepthWidth = counters.rawWidth
+        snapshot.rawDepthHeight = counters.rawHeight
+        snapshot.rawDepthPixelFormat = counters.rawPixelFormat
+        snapshot.rawDepthBytesPerRow = counters.rawBytesPerRow
+        snapshot.smoothedDepthWidth = counters.smoothedWidth
+        snapshot.smoothedDepthHeight = counters.smoothedHeight
+        snapshot.smoothedDepthPixelFormat = counters.smoothedPixelFormat
+        snapshot.smoothedDepthBytesPerRow = counters.smoothedBytesPerRow
+        snapshot.confidenceWidth = counters.confidenceWidth
+        snapshot.confidenceHeight = counters.confidenceHeight
+        snapshot.confidencePixelFormat = counters.confidencePixelFormat
+        snapshot.confidenceBytesPerRow = counters.confidenceBytesPerRow
         return snapshot
     }
 
@@ -647,10 +746,64 @@ final class DepthCaptureManager: NSObject, @preconcurrency ARSessionDelegate {
     private func resetBenchmarkFrameCounters() {
         benchmarkFramesReceived = 0
         benchmarkFramesWithoutDepth = 0
+        benchmarkFramesSkippedInFlight = 0
+        rawDepthFramesAvailable = 0
+        smoothedDepthFramesAvailable = 0
+        confidenceFramesAvailable = 0
+        rawDepthWidth = nil
+        rawDepthHeight = nil
+        rawDepthPixelFormat = nil
+        rawDepthBytesPerRow = nil
+        smoothedDepthWidth = nil
+        smoothedDepthHeight = nil
+        smoothedDepthPixelFormat = nil
+        smoothedDepthBytesPerRow = nil
+        confidenceWidth = nil
+        confidenceHeight = nil
+        confidencePixelFormat = nil
+        confidenceBytesPerRow = nil
     }
 
-    private func benchmarkFrameCounters() -> (received: Int, withoutDepth: Int) {
-        return (benchmarkFramesReceived, benchmarkFramesWithoutDepth)
+    private func benchmarkFrameCounters() -> (
+        received: Int,
+        withoutDepth: Int,
+        skippedInFlight: Int,
+        rawAvailable: Int,
+        smoothedAvailable: Int,
+        confidenceAvailable: Int,
+        rawWidth: Int?,
+        rawHeight: Int?,
+        rawPixelFormat: String?,
+        rawBytesPerRow: Int?,
+        smoothedWidth: Int?,
+        smoothedHeight: Int?,
+        smoothedPixelFormat: String?,
+        smoothedBytesPerRow: Int?,
+        confidenceWidth: Int?,
+        confidenceHeight: Int?,
+        confidencePixelFormat: String?,
+        confidenceBytesPerRow: Int?
+    ) {
+        return (
+            benchmarkFramesReceived,
+            benchmarkFramesWithoutDepth,
+            benchmarkFramesSkippedInFlight,
+            rawDepthFramesAvailable,
+            smoothedDepthFramesAvailable,
+            confidenceFramesAvailable,
+            rawDepthWidth,
+            rawDepthHeight,
+            rawDepthPixelFormat,
+            rawDepthBytesPerRow,
+            smoothedDepthWidth,
+            smoothedDepthHeight,
+            smoothedDepthPixelFormat,
+            smoothedDepthBytesPerRow,
+            confidenceWidth,
+            confidenceHeight,
+            confidencePixelFormat,
+            confidenceBytesPerRow
+        )
     }
 
     func configureSessionCapture(
@@ -659,6 +812,9 @@ final class DepthCaptureManager: NSObject, @preconcurrency ARSessionDelegate {
         confidenceDirectory: URL?,
         streamsDirectory: URL? = nil,
         deltaThresholdMeanU16: Float,
+        capturesSmoothedDepth: Bool = true,
+        captureProfile: String = "standard",
+        enabledFrameSemantics: [String] = ["sceneDepth", "smoothedSceneDepth"],
         onSaved: (@Sendable (TimeInterval, String, String, String?, [Float]?, [Float]?) async -> Void)?,
         onV2Saved: (@Sendable (V2StreamFrameRecord) async -> Void)? = nil
     ) {
@@ -667,6 +823,9 @@ final class DepthCaptureManager: NSObject, @preconcurrency ARSessionDelegate {
         let cd = confidenceDirectory
         let sd = streamsDirectory
         let th = deltaThresholdMeanU16
+        self.capturesSmoothedDepth = capturesSmoothedDepth
+        let profile = captureProfile
+        let semantics = enabledFrameSemantics
         let cb = onSaved
         let v2 = onV2Saved
         Task {
@@ -676,6 +835,8 @@ final class DepthCaptureManager: NSObject, @preconcurrency ARSessionDelegate {
                 confidenceDirectory: cd,
                 streamsDirectory: sd,
                 deltaThresholdMeanU16: th,
+                captureProfile: profile,
+                enabledFrameSemantics: semantics,
                 onSaved: cb,
                 onV2Saved: v2
             )
@@ -701,13 +862,27 @@ final class DepthCaptureManager: NSObject, @preconcurrency ARSessionDelegate {
             return
         }
 
-        guard !captureInFlight else { return }
+        rawDepthFramesAvailable += 1
+        recordRawDepthMetadata(depthData.depthMap)
+        if let smoothedDepth = frame.smoothedSceneDepth {
+            smoothedDepthFramesAvailable += 1
+            recordSmoothedDepthMetadata(smoothedDepth.depthMap)
+        }
+        if let confidenceMap = depthData.confidenceMap {
+            confidenceFramesAvailable += 1
+            recordConfidenceMetadata(confidenceMap)
+        }
+
+        guard !captureInFlight else {
+            benchmarkFramesSkippedInFlight += 1
+            return
+        }
         captureInFlight = true
 
         let writer = self.writer
         let timestamp = frame.timestamp
         let depthMap = PixelBufferBox(depthData.depthMap)
-        let smoothedDepthMap = frame.smoothedSceneDepth.map { PixelBufferBox($0.depthMap) }
+        let smoothedDepthMap = capturesSmoothedDepth ? frame.smoothedSceneDepth.map { PixelBufferBox($0.depthMap) } : nil
         let confidenceMap = depthData.confidenceMap.map { PixelBufferBox($0) }
         let capturedImage = PixelBufferBox(frame.capturedImage)
         let cameraIntrinsics = frame.camera.intrinsics
@@ -724,6 +899,36 @@ final class DepthCaptureManager: NSObject, @preconcurrency ARSessionDelegate {
                 cameraTransform: cameraTransform
             )
             self.captureInFlight = false
+        }
+    }
+
+    private func recordRawDepthMetadata(_ pixelBuffer: CVPixelBuffer) {
+        rawDepthWidth = CVPixelBufferGetWidth(pixelBuffer)
+        rawDepthHeight = CVPixelBufferGetHeight(pixelBuffer)
+        rawDepthPixelFormat = Self.pixelFormatName(CVPixelBufferGetPixelFormatType(pixelBuffer))
+        rawDepthBytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
+    }
+
+    private func recordSmoothedDepthMetadata(_ pixelBuffer: CVPixelBuffer) {
+        smoothedDepthWidth = CVPixelBufferGetWidth(pixelBuffer)
+        smoothedDepthHeight = CVPixelBufferGetHeight(pixelBuffer)
+        smoothedDepthPixelFormat = Self.pixelFormatName(CVPixelBufferGetPixelFormatType(pixelBuffer))
+        smoothedDepthBytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
+    }
+
+    private func recordConfidenceMetadata(_ pixelBuffer: CVPixelBuffer) {
+        confidenceWidth = CVPixelBufferGetWidth(pixelBuffer)
+        confidenceHeight = CVPixelBufferGetHeight(pixelBuffer)
+        confidencePixelFormat = Self.pixelFormatName(CVPixelBufferGetPixelFormatType(pixelBuffer))
+        confidenceBytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
+    }
+
+    private static func pixelFormatName(_ value: OSType) -> String {
+        switch value {
+        case kCVPixelFormatType_DepthFloat32: return "DepthFloat32"
+        case kCVPixelFormatType_DepthFloat16: return "DepthFloat16"
+        case kCVPixelFormatType_OneComponent8: return "OneComponent8"
+        default: return String(value)
         }
     }
 }

@@ -30,3 +30,12 @@ mkdir -p "$TMP_PAYLOAD/Payload"
 cp -R "$APP_BUNDLE" "$TMP_PAYLOAD/Payload/"
 (cd "$TMP_PAYLOAD" && zip -qr "$IPA_PATH" Payload)
 echo "Wrote $IPA_PATH"
+
+WINDOWS_SHARE_DIR="/mnt/c/Users/vijit/SandStoriesIPA"
+if [[ -d "$WINDOWS_SHARE_DIR" ]]; then
+  cp "$IPA_PATH" "$WINDOWS_SHARE_DIR/"
+  echo "Copied IPA to Windows share: $WINDOWS_SHARE_DIR/SandStories.ipa"
+else
+  echo "Warning: Windows share directory $WINDOWS_SHARE_DIR does not exist. Skipping copy."
+fi
+

@@ -188,89 +188,51 @@ struct ContentView: View {
     // MARK: - Top
 
     private var topChrome: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 12) {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 8) {
                 destinationPill
-                Spacer(minLength: 8)
+                Spacer(minLength: 4)
                 gestureGuideButton
                 sessionStatusHUD
             }
             .padding(.horizontal, 16)
 
-            locationOverlay
-                .padding(.horizontal, 16)
+            HStack(spacing: 8) {
+                locationOverlay
+                    .layoutPriority(1)
 
-            if !recordingCoordinator.isCaptureRecording && !recordingCoordinator.isBenchmarkRunning && !recordingCoordinator.isDepthDiagnosticRunning {
-                Toggle("Raw-only depth diagnostic", isOn: $recordingCoordinator.isDepthDiagnosticRawOnly)
-                    .font(.caption.weight(.semibold))
-                    .toggleStyle(.switch)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
-                    .glassPanel(cornerRadius: 14, blurStyle: .systemThinMaterial, shadowRadius: 10, shadowYOffset: 4)
-                    .padding(.horizontal, 16)
+                if !recordingCoordinator.isCaptureRecording && !recordingCoordinator.isBenchmarkRunning && !recordingCoordinator.isDepthDiagnosticRunning {
+                    depthDiagnosticModePill
+                }
             }
+            .padding(.horizontal, 16)
 
             if let warn = recordingCoordinator.warningBanner {
-                Text(warn)
-                    .font(.caption)
-                    .foregroundStyle(Color(uiColor: .secondaryLabel))
-                    .multilineTextAlignment(.leading)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .glassPanel(cornerRadius: 14, blurStyle: .systemThinMaterial, shadowRadius: 10, shadowYOffset: 4)
+                statusGlassText(warn)
                     .padding(.horizontal, 16)
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
 
             if let summary = recordingCoordinator.benchmarkSummary {
-                Text(summary)
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(Color(uiColor: .secondaryLabel))
-                    .multilineTextAlignment(.leading)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .glassPanel(cornerRadius: 14, blurStyle: .systemThinMaterial, shadowRadius: 10, shadowYOffset: 4)
+                statusGlassText(summary, monospaced: true)
                     .padding(.horizontal, 16)
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
 
             if let summary = recordingCoordinator.depthDiagnosticSummary {
-                Text(summary)
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(Color(uiColor: .secondaryLabel))
-                    .multilineTextAlignment(.leading)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .glassPanel(cornerRadius: 14, blurStyle: .systemThinMaterial, shadowRadius: 10, shadowYOffset: 4)
+                statusGlassText(summary, monospaced: true)
                     .padding(.horizontal, 16)
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
 
             if let uploadStatus = recordingCoordinator.uploadStatus {
-                Text(uploadStatus)
-                    .font(.caption)
-                    .foregroundStyle(Color(uiColor: .secondaryLabel))
-                    .multilineTextAlignment(.leading)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .glassPanel(cornerRadius: 14, blurStyle: .systemThinMaterial, shadowRadius: 10, shadowYOffset: 4)
+                statusGlassText(uploadStatus)
                     .padding(.horizontal, 16)
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
 
             if experimentSettings.enabled {
-                Text("\(remoteControlManager.status) | \(liveKitPreviewManager.status)")
-                    .font(.caption)
-                    .foregroundStyle(Color(uiColor: .secondaryLabel))
-                    .multilineTextAlignment(.leading)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .glassPanel(cornerRadius: 14, blurStyle: .systemThinMaterial, shadowRadius: 10, shadowYOffset: 4)
+                statusGlassText("\(remoteControlManager.status) | \(liveKitPreviewManager.status)")
                     .padding(.horizontal, 16)
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
@@ -290,16 +252,17 @@ struct ContentView: View {
                 Text(destinationShortLabel)
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(Color(uiColor: .label))
-                    .lineLimit(2)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
                     .multilineTextAlignment(.leading)
                 Spacer(minLength: 0)
             }
             .padding(.leading, 12)
             .padding(.trailing, 14)
-            .padding(.vertical, 10)
-            .frame(minHeight: 44)
-            .frame(maxWidth: 280, alignment: .leading)
-            .glassPanel(cornerRadius: 22)
+            .padding(.vertical, 9)
+            .frame(minHeight: 42)
+            .frame(maxWidth: 220, alignment: .leading)
+            .glassPanel(cornerRadius: 21, blurStyle: .systemUltraThinMaterial, shadowRadius: 12, shadowYOffset: 5)
         }
         .buttonStyle(.plain)
         .accessibilityLabel(recordingCoordinator.destinationLabel)
@@ -345,8 +308,9 @@ struct ContentView: View {
             }
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .glassPanel(cornerRadius: 16, blurStyle: .systemThinMaterial, shadowRadius: 12, shadowYOffset: 5)
+        .padding(.vertical, 9)
+        .frame(minWidth: 108)
+        .glassPanel(cornerRadius: 18, blurStyle: .systemUltraThinMaterial, shadowRadius: 12, shadowYOffset: 5)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(sessionAccessibilityLabel)
     }
@@ -366,20 +330,58 @@ struct ContentView: View {
     }
 
     private var locationOverlay: some View {
-        Text(recordingCoordinator.locationCaptureManager.coordinateDisplay)
-            .font(.caption)
+        Label(recordingCoordinator.locationCaptureManager.coordinateDisplay, systemImage: "location.fill")
+            .font(.caption.monospacedDigit())
+            .labelStyle(.titleAndIcon)
             .foregroundStyle(Color(uiColor: .secondaryLabel))
+            .lineLimit(1)
+            .minimumScaleFactor(0.72)
+            .padding(.horizontal, 11)
+            .padding(.vertical, 7)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .glassPanel(cornerRadius: 15, blurStyle: .systemUltraThinMaterial, shadowRadius: 8, shadowYOffset: 3)
+            .allowsHitTesting(false)
+    }
+
+    private var depthDiagnosticModePill: some View {
+        Button {
+            withAnimation(.spring(duration: 0.3, bounce: 0.18)) {
+                recordingCoordinator.isDepthDiagnosticRawOnly.toggle()
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: recordingCoordinator.isDepthDiagnosticRawOnly ? "waveform.path.ecg" : "waveform.path")
+                    .font(.caption.weight(.bold))
+                Text(recordingCoordinator.isDepthDiagnosticRawOnly ? "Raw" : "Raw+S")
+                    .font(.caption.weight(.bold))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(Color.accentColor)
+            .padding(.horizontal, 11)
+            .padding(.vertical, 7)
+            .glassPanel(cornerRadius: 15, blurStyle: .systemUltraThinMaterial, shadowRadius: 8, shadowYOffset: 3)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(recordingCoordinator.isDepthDiagnosticRawOnly ? "Depth diagnostic raw only" : "Depth diagnostic raw and smoothed")
+    }
+
+    private func statusGlassText(_ text: String, monospaced: Bool = false) -> some View {
+        Text(text)
+            .font(monospaced ? .caption.monospacedDigit() : .caption)
+            .foregroundStyle(Color(uiColor: .secondaryLabel))
+            .lineLimit(2)
+            .minimumScaleFactor(0.82)
+            .multilineTextAlignment(.leading)
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .glassPanel(cornerRadius: 12, blurStyle: .systemUltraThinMaterial, shadowRadius: 8, shadowYOffset: 3)
-            .allowsHitTesting(false)
+            .glassPanel(cornerRadius: 15, blurStyle: .systemUltraThinMaterial, shadowRadius: 8, shadowYOffset: 3)
     }
 
     // MARK: - Bottom
 
     private var bottomChrome: some View {
-        VStack(spacing: 20) {
+        VStack(spacing: 18) {
             recordFloatingButton
 
             HStack(spacing: 12) {
@@ -389,9 +391,10 @@ struct ContentView: View {
                 uploadToolbarButton
                 shareToolbarButton
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
-            .glassPanel(cornerRadius: 26, blurStyle: .systemThinMaterial, shadowRadius: 16, shadowYOffset: 8)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .frame(maxWidth: 360)
+            .glassPanel(cornerRadius: 30, blurStyle: .systemUltraThinMaterial, shadowRadius: 22, shadowYOffset: 10)
             .padding(.horizontal, 20)
         }
         .padding(.bottom, 12)
@@ -407,7 +410,7 @@ struct ContentView: View {
             ZStack {
                 Circle()
                     .fill(Color.clear)
-                    .frame(width: 80, height: 80)
+                    .frame(width: 76, height: 76)
                     .background {
                         VisualEffectBlur(
                             style: recordingCoordinator.isCaptureRecording
@@ -418,9 +421,20 @@ struct ContentView: View {
                     }
                     .overlay {
                         Circle()
-                            .stroke(Color(uiColor: .label).opacity(0.2), lineWidth: 1)
+                            .stroke(
+                                LinearGradient(
+                                    colors: [
+                                        Color.white.opacity(0.36),
+                                        Color.white.opacity(0.08),
+                                        Color.black.opacity(0.18)
+                                    ],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                ),
+                                lineWidth: 1
+                            )
                     }
-                    .shadow(color: Color(uiColor: .label).opacity(0.14), radius: 18, y: 8)
+                    .shadow(color: Color.black.opacity(0.32), radius: 22, y: 10)
 
                 if recordingCoordinator.isCaptureRecording {
                     Image(systemName: "stop.circle.fill")
@@ -434,7 +448,7 @@ struct ContentView: View {
                         .foregroundStyle(Color.accentColor)
                 }
             }
-            .frame(width: 80, height: 80)
+            .frame(width: 76, height: 76)
         }
         .buttonStyle(.plain)
         .frame(minWidth: 44, minHeight: 44)
@@ -444,83 +458,57 @@ struct ContentView: View {
     }
 
     private var clearToolbarButton: some View {
-        Button {
+        toolDockButton(
+            systemImage: "paintbrush.pointed",
+            accessibilityLabel: "Clear strokes",
+            foregroundStyle: Color(uiColor: .label),
+            isDisabled: false
+        ) {
             Task {
                 await recordingCoordinator.handPoseManager.clearStrokes()
             }
-        } label: {
-            VStack(spacing: 4) {
-                Image(systemName: "paintbrush.pointed")
-                    .font(.body.weight(.semibold))
-                    .frame(width: 24, height: 24)
-                Text("Clear")
-                    .font(.caption2.weight(.bold))
-                    .lineLimit(1)
-            }
-            .foregroundStyle(Color(uiColor: .label))
-            .frame(maxWidth: .infinity)
-            .frame(minHeight: 44)
         }
-        .buttonStyle(LiquidButtonStyle())
-        .accessibilityLabel("Clear strokes")
     }
 
     private var benchmarkToolbarButton: some View {
-        Button {
+        toolDockButton(
+            systemImage: "speedometer",
+            accessibilityLabel: "Run 15 second depth capture benchmark",
+            foregroundStyle: recordingCoordinator.isBenchmarkRunning ? Color(uiColor: .secondaryLabel) : Color.accentColor,
+            isDisabled: recordingCoordinator.isCaptureRecording || recordingCoordinator.isBenchmarkRunning || recordingCoordinator.isDepthDiagnosticRunning
+        ) {
             Task {
                 await recordingCoordinator.runDepthBenchmark()
             }
-        } label: {
-            VStack(spacing: 4) {
-                Image(systemName: "speedometer")
-                    .font(.body.weight(.semibold))
-                    .frame(width: 24, height: 24)
-                Text(recordingCoordinator.isBenchmarkRunning ? "Running" : "Benchmark")
-                    .font(.caption2.weight(.bold))
-                    .lineLimit(1)
-            }
-            .foregroundStyle(recordingCoordinator.isBenchmarkRunning ? Color(uiColor: .secondaryLabel) : Color.accentColor)
-            .frame(maxWidth: .infinity)
-            .frame(minHeight: 44)
         }
-        .buttonStyle(LiquidButtonStyle())
-        .disabled(recordingCoordinator.isCaptureRecording || recordingCoordinator.isBenchmarkRunning || recordingCoordinator.isDepthDiagnosticRunning)
-        .opacity(recordingCoordinator.isCaptureRecording ? 0.45 : 1)
-        .accessibilityLabel("Run 15 second depth capture benchmark")
     }
 
     private var diagnosticToolbarButton: some View {
-        Button {
+        toolDockButton(
+            systemImage: recordingCoordinator.isDepthDiagnosticRawOnly ? "waveform.path.ecg" : "waveform.path",
+            accessibilityLabel: "Run 20 second depth diagnostic capture",
+            foregroundStyle: recordingCoordinator.isDepthDiagnosticRunning ? Color(uiColor: .secondaryLabel) : Color.accentColor,
+            isDisabled: recordingCoordinator.isCaptureRecording || recordingCoordinator.isBenchmarkRunning || recordingCoordinator.isDepthDiagnosticRunning
+        ) {
             Task {
                 await recordingCoordinator.runDepthDiagnostic()
             }
-        } label: {
-            VStack(spacing: 4) {
-                Image(systemName: recordingCoordinator.isDepthDiagnosticRawOnly ? "waveform.path.ecg" : "waveform.path")
-                    .font(.body.weight(.semibold))
-                    .frame(width: 24, height: 24)
-                Text(recordingCoordinator.isDepthDiagnosticRunning ? "Running" : "Depth")
-                    .font(.caption2.weight(.bold))
-                    .lineLimit(1)
-            }
-            .foregroundStyle(recordingCoordinator.isDepthDiagnosticRunning ? Color(uiColor: .secondaryLabel) : Color.accentColor)
-            .frame(maxWidth: .infinity)
-            .frame(minHeight: 44)
         }
-        .buttonStyle(LiquidButtonStyle())
-        .disabled(recordingCoordinator.isCaptureRecording || recordingCoordinator.isBenchmarkRunning || recordingCoordinator.isDepthDiagnosticRunning)
-        .opacity(recordingCoordinator.isCaptureRecording ? 0.45 : 1)
-        .accessibilityLabel("Run 20 second depth diagnostic capture")
         .contextMenu {
             Toggle("Raw only", isOn: $recordingCoordinator.isDepthDiagnosticRawOnly)
         }
     }
 
     private var shareToolbarButton: some View {
-        Button {
+        toolDockButton(
+            systemImage: "square.and.arrow.up",
+            accessibilityLabel: "Share last session",
+            foregroundStyle: Color.accentColor,
+            isDisabled: false
+        ) {
             Task {
                 guard let folder = recordingCoordinator.lastSessionFolderURL else {
-                    print("Share: no session folder yet — record a session first.")
+                    print("Share: no session folder yet - record a session first.")
                     return
                 }
                 await MainActor.run {
@@ -528,38 +516,43 @@ struct ContentView: View {
                     showExportSheet = true
                 }
             }
-        } label: {
-            VStack(spacing: 4) {
-                Image(systemName: "square.and.arrow.up")
-                    .font(.body.weight(.semibold))
-                    .frame(width: 24, height: 24)
-                Text("Share")
-                    .font(.caption2.weight(.bold))
-                    .lineLimit(1)
-            }
-            .foregroundStyle(Color.accentColor)
-            .frame(maxWidth: .infinity)
-            .frame(minHeight: 44)
         }
-        .buttonStyle(LiquidButtonStyle())
-        .accessibilityLabel("Share last session")
     }
 
     private var uploadToolbarButton: some View {
-        Button {
+        toolDockButton(
+            systemImage: recordingCoordinator.uploadSettings.enabled ? "icloud.and.arrow.up.fill" : "icloud.and.arrow.up",
+            accessibilityLabel: "Configure automatic upload",
+            foregroundStyle: recordingCoordinator.uploadSettings.enabled ? Color.accentColor : Color(uiColor: .label),
+            isDisabled: recordingCoordinator.isCaptureRecording
+        ) {
             showUploadSheet = true
-        } label: {
-            Label("Upload", systemImage: recordingCoordinator.uploadSettings.enabled ? "icloud.and.arrow.up.fill" : "icloud.and.arrow.up")
-                .font(.subheadline.weight(.semibold))
-                .labelStyle(.titleAndIcon)
-                .foregroundStyle(recordingCoordinator.uploadSettings.enabled ? Color.accentColor : Color(uiColor: .label))
-                .frame(maxWidth: .infinity)
-                .frame(minHeight: 44)
         }
-        .buttonStyle(.plain)
-        .disabled(recordingCoordinator.isCaptureRecording)
-        .opacity(recordingCoordinator.isCaptureRecording ? 0.45 : 1)
-        .accessibilityLabel("Configure automatic upload")
+    }
+
+    private func toolDockButton(
+        systemImage: String,
+        accessibilityLabel: String,
+        foregroundStyle: Color,
+        isDisabled: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 21, weight: .semibold))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(foregroundStyle)
+                .frame(width: 46, height: 46)
+                .background {
+                    Circle()
+                        .fill(Color(uiColor: .secondarySystemFill).opacity(0.28))
+                }
+                .contentShape(Circle())
+        }
+        .buttonStyle(LiquidButtonStyle())
+        .disabled(isDisabled)
+        .opacity(isDisabled ? 0.42 : 1)
+        .accessibilityLabel(accessibilityLabel)
     }
 
     // MARK: - Export (same zip + activity flow as before)

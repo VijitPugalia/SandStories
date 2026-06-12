@@ -41,7 +41,16 @@ struct GlassPanelModifier: ViewModifier {
                 ZStack {
                     VisualEffectBlur(style: blurStyle)
                     // Premium frosted glass tint
-                    Color.white.opacity(colorScheme == .dark ? 0.03 : 0.08)
+                    Color.white.opacity(colorScheme == .dark ? 0.09 : 0.12)
+                    LinearGradient(
+                        colors: [
+                            Color.white.opacity(colorScheme == .dark ? 0.12 : 0.22),
+                            Color.clear,
+                            Color.black.opacity(colorScheme == .dark ? 0.12 : 0.03)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
                 }
                 .clipShape(GlassPanelShape(cornerRadius: cornerRadius))
             }

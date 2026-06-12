@@ -33,6 +33,11 @@ final class RecordingCoordinator: ObservableObject {
     @Published private(set) var depthDiagnosticSummary: String?
     @Published var isDepthDiagnosticRawOnly: Bool = false
     @Published private(set) var uploadStatus: String?
+    @Published var isMeshVisualizationEnabled: Bool = UserDefaults.standard.object(forKey: "isMeshVisualizationEnabled") as? Bool ?? false {
+        didSet {
+            UserDefaults.standard.set(isMeshVisualizationEnabled, forKey: "isMeshVisualizationEnabled")
+        }
+    }
 
     @Published var isPauseGestureEnabled: Bool = true {
         didSet {
@@ -61,6 +66,12 @@ final class RecordingCoordinator: ObservableObject {
     private var usedExternalForCurrentSession = false
     private var activeDepthDiagnosticProfile: String?
 
+    private enum StopReason {
+        case manual
+        case remote
+        case gesture
+    }
+
     init() {
         let pauseEnabled = UserDefaults.standard.object(forKey: "isPauseGestureEnabled") as? Bool ?? true
         let stopEnabled = UserDefaults.standard.object(forKey: "isStopGestureEnabled") as? Bool ?? true
@@ -83,13 +94,13 @@ final class RecordingCoordinator: ObservableObject {
                 switch command {
                 case .start:
                     if self.isCaptureRecording {
-                        await self.stopCaptureSession()
+                        await self.stopActiveCaptureSession(reason: .gesture)
                     } else {
                         await self.startCaptureSession(recordAudio: true)
                     }
                 case .stop:
                     if self.isCaptureRecording {
-                        await self.stopCaptureSession()
+                        await self.stopActiveCaptureSession(reason: .gesture)
                     }
                 case .pause:
                     if self.isCapturePaused {
@@ -155,22 +166,22 @@ final class RecordingCoordinator: ObservableObject {
 
     /// Toggle packaged session recording (manifest + aligned modalities).
     func toggleRecording() async {
-        guard !isBenchmarkRunning, !isDepthDiagnosticRunning else { return }
         if isCaptureRecording {
-            await stopCaptureSession()
+            await stopActiveCaptureSession(reason: .manual)
         } else {
+            guard !isBenchmarkRunning, !isDepthDiagnosticRunning else { return }
             await startCaptureSession()
         }
     }
 
     func startFromRemote(recordAudio: Bool = true) async {
-        guard !isCaptureRecording, !isBenchmarkRunning else { return }
+        guard !isCaptureRecording, !isBenchmarkRunning, !isDepthDiagnosticRunning else { return }
         await startCaptureSession(recordAudio: recordAudio)
     }
 
     func stopFromRemote() async {
         guard isCaptureRecording else { return }
-        await stopCaptureSession()
+        await stopActiveCaptureSession(reason: .remote)
     }
 
     func uploadLastSessionFromRemote() async {
@@ -207,7 +218,10 @@ final class RecordingCoordinator: ObservableObject {
             // If the task is cancelled, stop cleanly and still report what was captured.
         }
 
-        await stopCaptureSession()
+        guard isBenchmarkRunning else { return }
+        if isCaptureRecording {
+            await stopCaptureSession()
+        }
 
         let elapsed = Date().timeIntervalSince(start)
         let snapshot = await depthCaptureManager.benchmarkSnapshot()
@@ -251,7 +265,10 @@ final class RecordingCoordinator: ObservableObject {
             // Stop cleanly and report whatever was captured.
         }
 
-        await stopCaptureSession()
+        guard isDepthDiagnosticRunning else { return }
+        if isCaptureRecording {
+            await stopCaptureSession()
+        }
 
         let elapsed = Date().timeIntervalSince(start)
         let snapshot = await depthCaptureManager.benchmarkSnapshot()
@@ -260,6 +277,15 @@ final class RecordingCoordinator: ObservableObject {
         warningBanner = "Depth diagnostic complete. \(summary)"
         print(summary)
         isDepthDiagnosticRunning = false
+    }
+
+    func togglePauseCaptureSession() async {
+        guard isCaptureRecording else { return }
+        if isCapturePaused {
+            await resumeCaptureSession()
+        } else {
+            await pauseCaptureSession()
+        }
     }
 
     func pauseCaptureSession() async {
@@ -471,6 +497,30 @@ final class RecordingCoordinator: ObservableObject {
             if securityScoped, let ext = externalScopedURL {
                 ext.stopAccessingSecurityScopedResource()
                 externalScopedURL = nil
+            }
+        }
+    }
+
+    private func stopActiveCaptureSession(reason: StopReason) async {
+        guard isCaptureRecording else { return }
+        let wasBenchmarkRunning = isBenchmarkRunning
+        let wasDepthDiagnosticRunning = isDepthDiagnosticRunning
+
+        await stopCaptureSession()
+
+        if wasBenchmarkRunning {
+            isBenchmarkRunning = false
+            benchmarkSummary = "Benchmark stopped."
+            if reason == .manual {
+                warningBanner = "Benchmark stopped."
+            }
+        }
+
+        if wasDepthDiagnosticRunning {
+            isDepthDiagnosticRunning = false
+            depthDiagnosticSummary = "Depth diagnostic stopped."
+            if reason == .manual {
+                warningBanner = "Depth diagnostic stopped."
             }
         }
     }

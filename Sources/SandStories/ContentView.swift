@@ -182,7 +182,6 @@ struct ContentView: View {
         .onChange(of: experimentSettings.previewEnabled) { _, _ in
             Task { await liveKitPreviewManager.connect(settings: experimentSettings) }
         }
-        .animation(.spring(duration: 0.35, bounce: 0.22), value: recordingCoordinator.isCaptureRecording)
     }
 
     // MARK: - Top
@@ -246,23 +245,23 @@ struct ContentView: View {
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: destinationSystemImage)
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(Color.accentColor)
-                    .frame(width: 28, height: 28)
-                Text(destinationShortLabel)
                     .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 22, height: 22)
+                Text(destinationShortLabel)
+                    .font(.footnote.weight(.semibold))
                     .foregroundStyle(Color(uiColor: .label))
                     .lineLimit(1)
                     .minimumScaleFactor(0.82)
                     .multilineTextAlignment(.leading)
                 Spacer(minLength: 0)
             }
-            .padding(.leading, 12)
-            .padding(.trailing, 14)
-            .padding(.vertical, 9)
-            .frame(minHeight: 42)
-            .frame(maxWidth: 220, alignment: .leading)
-            .glassPanel(cornerRadius: 21, blurStyle: .systemUltraThinMaterial, shadowRadius: 12, shadowYOffset: 5)
+            .padding(.leading, 10)
+            .padding(.trailing, 12)
+            .padding(.vertical, 7)
+            .frame(minHeight: 38)
+            .frame(maxWidth: 168, alignment: .leading)
+            .glassPanel(cornerRadius: 19, blurStyle: .systemUltraThinMaterial, shadowRadius: 10, shadowYOffset: 4)
         }
         .buttonStyle(.plain)
         .accessibilityLabel(recordingCoordinator.destinationLabel)
@@ -391,11 +390,11 @@ struct ContentView: View {
                 uploadToolbarButton
                 shareToolbarButton
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .frame(maxWidth: 360)
-            .glassPanel(cornerRadius: 30, blurStyle: .systemUltraThinMaterial, shadowRadius: 22, shadowYOffset: 10)
-            .padding(.horizontal, 20)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .frame(maxWidth: 390)
+            .glassPanel(cornerRadius: 28, blurStyle: .systemUltraThinMaterial, shadowRadius: 20, shadowYOffset: 9)
+            .padding(.horizontal, 16)
         }
         .padding(.bottom, 12)
         .safeAreaPadding(.bottom, 8)
@@ -459,10 +458,12 @@ struct ContentView: View {
 
     private var clearToolbarButton: some View {
         toolDockButton(
+            title: "Clear",
             systemImage: "paintbrush.pointed",
             accessibilityLabel: "Clear strokes",
             foregroundStyle: Color(uiColor: .label),
-            isDisabled: false
+            isDisabled: false,
+            isHighlighted: false
         ) {
             Task {
                 await recordingCoordinator.handPoseManager.clearStrokes()
@@ -472,10 +473,12 @@ struct ContentView: View {
 
     private var benchmarkToolbarButton: some View {
         toolDockButton(
+            title: recordingCoordinator.isBenchmarkRunning ? "Run" : "Bench",
             systemImage: "speedometer",
             accessibilityLabel: "Run 15 second depth capture benchmark",
             foregroundStyle: recordingCoordinator.isBenchmarkRunning ? Color(uiColor: .secondaryLabel) : Color.accentColor,
-            isDisabled: recordingCoordinator.isCaptureRecording || recordingCoordinator.isBenchmarkRunning || recordingCoordinator.isDepthDiagnosticRunning
+            isDisabled: recordingCoordinator.isCaptureRecording || recordingCoordinator.isBenchmarkRunning || recordingCoordinator.isDepthDiagnosticRunning,
+            isHighlighted: recordingCoordinator.isBenchmarkRunning
         ) {
             Task {
                 await recordingCoordinator.runDepthBenchmark()
@@ -485,10 +488,12 @@ struct ContentView: View {
 
     private var diagnosticToolbarButton: some View {
         toolDockButton(
+            title: recordingCoordinator.isDepthDiagnosticRunning ? "Run" : "Depth",
             systemImage: recordingCoordinator.isDepthDiagnosticRawOnly ? "waveform.path.ecg" : "waveform.path",
             accessibilityLabel: "Run 20 second depth diagnostic capture",
             foregroundStyle: recordingCoordinator.isDepthDiagnosticRunning ? Color(uiColor: .secondaryLabel) : Color.accentColor,
-            isDisabled: recordingCoordinator.isCaptureRecording || recordingCoordinator.isBenchmarkRunning || recordingCoordinator.isDepthDiagnosticRunning
+            isDisabled: recordingCoordinator.isCaptureRecording || recordingCoordinator.isBenchmarkRunning || recordingCoordinator.isDepthDiagnosticRunning,
+            isHighlighted: recordingCoordinator.isDepthDiagnosticRunning || recordingCoordinator.isDepthDiagnosticRawOnly
         ) {
             Task {
                 await recordingCoordinator.runDepthDiagnostic()
@@ -501,10 +506,12 @@ struct ContentView: View {
 
     private var shareToolbarButton: some View {
         toolDockButton(
+            title: "Share",
             systemImage: "square.and.arrow.up",
             accessibilityLabel: "Share last session",
             foregroundStyle: Color.accentColor,
-            isDisabled: false
+            isDisabled: false,
+            isHighlighted: false
         ) {
             Task {
                 guard let folder = recordingCoordinator.lastSessionFolderURL else {
@@ -521,33 +528,50 @@ struct ContentView: View {
 
     private var uploadToolbarButton: some View {
         toolDockButton(
+            title: "Upload",
             systemImage: recordingCoordinator.uploadSettings.enabled ? "icloud.and.arrow.up.fill" : "icloud.and.arrow.up",
             accessibilityLabel: "Configure automatic upload",
             foregroundStyle: recordingCoordinator.uploadSettings.enabled ? Color.accentColor : Color(uiColor: .label),
-            isDisabled: recordingCoordinator.isCaptureRecording
+            isDisabled: recordingCoordinator.isCaptureRecording,
+            isHighlighted: recordingCoordinator.uploadSettings.enabled
         ) {
             showUploadSheet = true
         }
     }
 
     private func toolDockButton(
+        title: String,
         systemImage: String,
         accessibilityLabel: String,
         foregroundStyle: Color,
         isDisabled: Bool,
+        isHighlighted: Bool,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            Image(systemName: systemImage)
-                .font(.system(size: 21, weight: .semibold))
-                .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(foregroundStyle)
-                .frame(width: 46, height: 46)
-                .background {
-                    Circle()
-                        .fill(Color(uiColor: .secondarySystemFill).opacity(0.28))
+            VStack(spacing: 3) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 18, weight: .semibold))
+                    .symbolRenderingMode(.hierarchical)
+                    .frame(width: 23, height: 22)
+                Text(title)
+                    .font(.system(size: 10, weight: .semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+            }
+            .foregroundStyle(foregroundStyle)
+            .frame(width: 58, height: 52)
+            .background {
+                if isHighlighted {
+                    Capsule(style: .continuous)
+                        .fill(Color(uiColor: .secondarySystemFill).opacity(0.55))
+                        .overlay {
+                            Capsule(style: .continuous)
+                                .stroke(Color.white.opacity(0.22), lineWidth: 1)
+                        }
                 }
-                .contentShape(Circle())
+            }
+            .contentShape(Rectangle())
         }
         .buttonStyle(LiquidButtonStyle())
         .disabled(isDisabled)

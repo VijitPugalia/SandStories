@@ -200,6 +200,16 @@ struct ContentView: View {
             locationOverlay
                 .padding(.horizontal, 16)
 
+            if !recordingCoordinator.isCaptureRecording && !recordingCoordinator.isBenchmarkRunning && !recordingCoordinator.isDepthDiagnosticRunning {
+                Toggle("Raw-only depth diagnostic", isOn: $recordingCoordinator.isDepthDiagnosticRawOnly)
+                    .font(.caption.weight(.semibold))
+                    .toggleStyle(.switch)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .glassPanel(cornerRadius: 14, blurStyle: .systemThinMaterial, shadowRadius: 10, shadowYOffset: 4)
+                    .padding(.horizontal, 16)
+            }
+
             if let warn = recordingCoordinator.warningBanner {
                 Text(warn)
                     .font(.caption)
@@ -214,6 +224,19 @@ struct ContentView: View {
             }
 
             if let summary = recordingCoordinator.benchmarkSummary {
+                Text(summary)
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(Color(uiColor: .secondaryLabel))
+                    .multilineTextAlignment(.leading)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .glassPanel(cornerRadius: 14, blurStyle: .systemThinMaterial, shadowRadius: 10, shadowYOffset: 4)
+                    .padding(.horizontal, 16)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+
+            if let summary = recordingCoordinator.depthDiagnosticSummary {
                 Text(summary)
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(Color(uiColor: .secondaryLabel))
@@ -362,6 +385,7 @@ struct ContentView: View {
             HStack(spacing: 12) {
                 clearToolbarButton
                 benchmarkToolbarButton
+                diagnosticToolbarButton
                 uploadToolbarButton
                 shareToolbarButton
             }
@@ -415,8 +439,8 @@ struct ContentView: View {
         .buttonStyle(.plain)
         .frame(minWidth: 44, minHeight: 44)
         .accessibilityLabel(recordingCoordinator.isCaptureRecording ? "Stop session recording" : "Start session recording")
-        .disabled(recordingCoordinator.isBenchmarkRunning)
-        .opacity(recordingCoordinator.isBenchmarkRunning ? 0.5 : 1)
+        .disabled(recordingCoordinator.isBenchmarkRunning || recordingCoordinator.isDepthDiagnosticRunning)
+        .opacity((recordingCoordinator.isBenchmarkRunning || recordingCoordinator.isDepthDiagnosticRunning) ? 0.5 : 1)
     }
 
     private var clearToolbarButton: some View {
@@ -460,9 +484,36 @@ struct ContentView: View {
             .frame(minHeight: 44)
         }
         .buttonStyle(LiquidButtonStyle())
-        .disabled(recordingCoordinator.isCaptureRecording || recordingCoordinator.isBenchmarkRunning)
+        .disabled(recordingCoordinator.isCaptureRecording || recordingCoordinator.isBenchmarkRunning || recordingCoordinator.isDepthDiagnosticRunning)
         .opacity(recordingCoordinator.isCaptureRecording ? 0.45 : 1)
         .accessibilityLabel("Run 15 second depth capture benchmark")
+    }
+
+    private var diagnosticToolbarButton: some View {
+        Button {
+            Task {
+                await recordingCoordinator.runDepthDiagnostic()
+            }
+        } label: {
+            VStack(spacing: 4) {
+                Image(systemName: recordingCoordinator.isDepthDiagnosticRawOnly ? "waveform.path.ecg" : "waveform.path")
+                    .font(.body.weight(.semibold))
+                    .frame(width: 24, height: 24)
+                Text(recordingCoordinator.isDepthDiagnosticRunning ? "Running" : "Depth")
+                    .font(.caption2.weight(.bold))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(recordingCoordinator.isDepthDiagnosticRunning ? Color(uiColor: .secondaryLabel) : Color.accentColor)
+            .frame(maxWidth: .infinity)
+            .frame(minHeight: 44)
+        }
+        .buttonStyle(LiquidButtonStyle())
+        .disabled(recordingCoordinator.isCaptureRecording || recordingCoordinator.isBenchmarkRunning || recordingCoordinator.isDepthDiagnosticRunning)
+        .opacity(recordingCoordinator.isCaptureRecording ? 0.45 : 1)
+        .accessibilityLabel("Run 20 second depth diagnostic capture")
+        .contextMenu {
+            Toggle("Raw only", isOn: $recordingCoordinator.isDepthDiagnosticRawOnly)
+        }
     }
 
     private var shareToolbarButton: some View {

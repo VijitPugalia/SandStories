@@ -28,7 +28,10 @@ final class RecordingCoordinator: ObservableObject {
     @Published var showingFolderPicker = false
     @Published private(set) var lastSessionFolderURL: URL?
     @Published private(set) var isBenchmarkRunning = false
+    @Published private(set) var isDepthDiagnosticRunning = false
     @Published private(set) var benchmarkSummary: String?
+    @Published private(set) var depthDiagnosticSummary: String?
+    @Published var isDepthDiagnosticRawOnly: Bool = false
     @Published private(set) var uploadStatus: String?
 
     @Published var isPauseGestureEnabled: Bool = true {
@@ -56,6 +59,7 @@ final class RecordingCoordinator: ObservableObject {
     private var pendingStrokeAlignment = false
     private var audioStartMonotonic: Double = 0
     private var usedExternalForCurrentSession = false
+    private var activeDepthDiagnosticProfile: String?
 
     init() {
         let pauseEnabled = UserDefaults.standard.object(forKey: "isPauseGestureEnabled") as? Bool ?? true
@@ -151,7 +155,7 @@ final class RecordingCoordinator: ObservableObject {
 
     /// Toggle packaged session recording (manifest + aligned modalities).
     func toggleRecording() async {
-        guard !isBenchmarkRunning else { return }
+        guard !isBenchmarkRunning, !isDepthDiagnosticRunning else { return }
         if isCaptureRecording {
             await stopCaptureSession()
         } else {
@@ -181,7 +185,7 @@ final class RecordingCoordinator: ObservableObject {
     }
 
     func runDepthBenchmark() async {
-        guard !isCaptureRecording, !isBenchmarkRunning else { return }
+        guard !isCaptureRecording, !isBenchmarkRunning, !isDepthDiagnosticRunning else { return }
 
         isBenchmarkRunning = true
         benchmarkSummary = "Benchmark running for 15 seconds..."
@@ -212,6 +216,50 @@ final class RecordingCoordinator: ObservableObject {
         warningBanner = "Benchmark complete. \(summary)"
         print(summary)
         isBenchmarkRunning = false
+    }
+
+    func runDepthDiagnostic() async {
+        guard !isCaptureRecording, !isBenchmarkRunning, !isDepthDiagnosticRunning else { return }
+
+        let durationSeconds: Double = 20
+        let capturesSmoothed = !isDepthDiagnosticRawOnly
+        let profile = capturesSmoothed ? "depth_diagnostic_raw_plus_smoothed" : "depth_diagnostic_raw_only"
+
+        isDepthDiagnosticRunning = true
+        depthDiagnosticSummary = "Depth diagnostic running for 20 seconds..."
+        warningBanner = nil
+
+        await depthCaptureManager.resetBenchmarkMetrics()
+        let start = Date()
+        await startCaptureSession(
+            recordAudio: false,
+            forcedDeltaThresholdMeanU16: 0,
+            capturesSmoothedDepth: capturesSmoothed,
+            captureProfile: profile,
+            diagnosticDurationSeconds: durationSeconds
+        )
+
+        guard isCaptureRecording else {
+            isDepthDiagnosticRunning = false
+            depthDiagnosticSummary = "Depth diagnostic could not start."
+            return
+        }
+
+        do {
+            try await Task.sleep(nanoseconds: UInt64(durationSeconds * 1_000_000_000))
+        } catch {
+            // Stop cleanly and report whatever was captured.
+        }
+
+        await stopCaptureSession()
+
+        let elapsed = Date().timeIntervalSince(start)
+        let snapshot = await depthCaptureManager.benchmarkSnapshot()
+        let summary = snapshot.diagnosticSummary(elapsedSeconds: elapsed, profile: profile)
+        depthDiagnosticSummary = summary
+        warningBanner = "Depth diagnostic complete. \(summary)"
+        print(summary)
+        isDepthDiagnosticRunning = false
     }
 
     func pauseCaptureSession() async {
@@ -294,10 +342,30 @@ final class RecordingCoordinator: ObservableObject {
 
     // MARK: - Private
 
-    private func startCaptureSession(recordAudio: Bool = true) async {
+    private func startCaptureSession(
+        recordAudio: Bool = true,
+        forcedDeltaThresholdMeanU16: Float? = nil,
+        capturesSmoothedDepth: Bool = true,
+        captureProfile: String = "standard",
+        diagnosticDurationSeconds: Double? = nil
+    ) async {
         warningBanner = nil
         let sessionId = UUID()
         let fm = FileManager.default
+        let captureDeltaThreshold = forcedDeltaThresholdMeanU16 ?? depthDeltaThresholdMeanU16
+        let enabledSemantics = capturesSmoothedDepth ? ["sceneDepth", "smoothedSceneDepth"] : ["sceneDepth"]
+        let diagnosticInfo = diagnosticDurationSeconds.map {
+            CaptureSessionManifest.DepthDiagnosticInfo(
+                enabled: true,
+                profile: captureProfile,
+                durationSeconds: $0,
+                capturesSmoothedDepth: capturesSmoothedDepth,
+                forcedDeltaThresholdU16: captureDeltaThreshold,
+                enabledFrameSemantics: enabledSemantics,
+                counters: nil
+            )
+        }
+        activeDepthDiagnosticProfile = diagnosticInfo?.profile
 
         var baseURL: URL
         var securityScoped = false
@@ -339,8 +407,9 @@ final class RecordingCoordinator: ObservableObject {
                 sessionId: sessionId,
                 storageDestination: destLabel,
                 securityScopedExternal: securityScoped,
-                deltaThreshold: depthDeltaThresholdMeanU16,
-                maxDepthMeters: 8.0
+                deltaThreshold: captureDeltaThreshold,
+                maxDepthMeters: 8.0,
+                diagnostic: diagnosticInfo
             )
 
             let depthDir = sessionFolder.appendingPathComponent("depth", isDirectory: true)
@@ -356,7 +425,10 @@ final class RecordingCoordinator: ObservableObject {
                 rgbDirectory: rgbDir,
                 confidenceDirectory: confidenceDir,
                 streamsDirectory: streamsDir,
-                deltaThresholdMeanU16: depthDeltaThresholdMeanU16,
+                deltaThresholdMeanU16: captureDeltaThreshold,
+                capturesSmoothedDepth: capturesSmoothedDepth,
+                captureProfile: captureProfile,
+                enabledFrameSemantics: enabledSemantics,
                 onSaved: nil,
                 onV2Saved: { record in
                     try? await session.appendV2StreamFrame(record)
@@ -394,6 +466,7 @@ final class RecordingCoordinator: ObservableObject {
             isCapturePaused = false
             depthCaptureManager.setRecording(true)
         } catch {
+            activeDepthDiagnosticProfile = nil
             warningBanner = "Could not start session: \(error.localizedDescription)"
             if securityScoped, let ext = externalScopedURL {
                 ext.stopAccessingSecurityScopedResource()
@@ -406,6 +479,7 @@ final class RecordingCoordinator: ObservableObject {
         await depthCaptureManager.stopAndFinishRecording()
         isCaptureRecording = false
         isCapturePaused = false
+        let diagnosticSnapshot = await depthCaptureManager.benchmarkSnapshot()
 
         let audioInfo = audioRecorder.stopRecording()
         if let info = audioInfo {
@@ -429,8 +503,13 @@ final class RecordingCoordinator: ObservableObject {
             )
         }
 
+        if activeDepthDiagnosticProfile != nil {
+            try? await captureSession.setDepthDiagnosticCounters(diagnosticSnapshot.diagnosticCounters())
+        }
+
         let folder = try? await captureSession.stopSession()
         lastSessionFolderURL = folder
+        activeDepthDiagnosticProfile = nil
 
         if let folder, uploadSettings.isEnabled(), let endpoint = uploadSettings.endpointURL() {
             uploadStatus = "Uploading session..."
@@ -453,6 +532,9 @@ final class RecordingCoordinator: ObservableObject {
             confidenceDirectory: nil as URL?,
             streamsDirectory: nil as URL?,
             deltaThresholdMeanU16: depthDeltaThresholdMeanU16,
+            capturesSmoothedDepth: true,
+            captureProfile: "standard",
+            enabledFrameSemantics: ["sceneDepth", "smoothedSceneDepth"],
             onSaved: nil as (@Sendable (TimeInterval, String, String, String?, [Float]?, [Float]?) async -> Void)?,
             onV2Saved: nil as (@Sendable (V2StreamFrameRecord) async -> Void)?
         )

@@ -33,6 +33,7 @@ struct CaptureSessionManifest: Codable, Sendable {
     var boundarySamplesFile: String
     var location: SessionLocationEntry?
     var segments: [SegmentMarkEntry]?
+    var diagnostic: DepthDiagnosticInfo?
 
     struct MonotonicAnchor: Codable, Sendable {
         /// Nanoseconds from an arbitrary monotonic origin at session start (for debugging).
@@ -111,6 +112,41 @@ struct CaptureSessionManifest: Codable, Sendable {
         var monotonicElapsedSeconds: Double
         var timestampUnix: TimeInterval
     }
+
+    struct DepthDiagnosticInfo: Codable, Sendable {
+        var enabled: Bool
+        var profile: String
+        var durationSeconds: Double
+        var capturesSmoothedDepth: Bool
+        var forcedDeltaThresholdU16: Float
+        var enabledFrameSemantics: [String]
+        var counters: DepthDiagnosticCounters?
+    }
+
+    struct DepthDiagnosticCounters: Codable, Sendable {
+        var arFramesReceived: Int
+        var arFramesWithoutDepth: Int
+        var arFramesSkippedInFlight: Int
+        var writerCaptureCalls: Int
+        var framesSkippedWriting: Int
+        var framesSkippedMotion: Int
+        var framesWritten: Int
+        var rawDepthFramesAvailable: Int
+        var smoothedDepthFramesAvailable: Int
+        var confidenceFramesAvailable: Int
+        var rawDepthWidth: Int?
+        var rawDepthHeight: Int?
+        var rawDepthPixelFormat: String?
+        var rawDepthBytesPerRow: Int?
+        var smoothedDepthWidth: Int?
+        var smoothedDepthHeight: Int?
+        var smoothedDepthPixelFormat: String?
+        var smoothedDepthBytesPerRow: Int?
+        var confidenceWidth: Int?
+        var confidenceHeight: Int?
+        var confidencePixelFormat: String?
+        var confidenceBytesPerRow: Int?
+    }
 }
 
 /// One line in `objects.jsonl` (append-friendly).
@@ -139,19 +175,27 @@ struct V2StreamFrameRecord: Codable, Sendable {
     var width: Int
     var height: Int
     var sourceDepthPixelFormat: String
+    var depthBytesPerRow: Int?
     var storedDepthFormat: String
     var depthByteOffset: UInt64
     var depthByteCount: Int
     var smoothedDepthByteOffset: UInt64?
     var smoothedDepthByteCount: Int?
     var smoothedDepthPixelFormat: String?
+    var smoothedDepthWidth: Int?
+    var smoothedDepthHeight: Int?
+    var smoothedDepthBytesPerRow: Int?
     var confidenceByteOffset: UInt64?
     var confidenceByteCount: Int?
     var confidencePixelFormat: String?
+    var confidenceWidth: Int?
+    var confidenceHeight: Int?
     var confidenceBytesPerRow: Int?
     var rgbPresentationTimeSeconds: Double?
     var cameraTransformColumnMajor: [Float]
     var cameraIntrinsicsColumnMajor: [Float]
     var cameraImageResolutionWidth: Int
     var cameraImageResolutionHeight: Int
+    var enabledFrameSemantics: [String]?
+    var captureProfile: String?
 }

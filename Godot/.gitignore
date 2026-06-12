@@ -1,0 +1,19 @@
+.godot/
+.mono/
+.venv/
+export/
+build/
+export_templates/
+
+# Captured/generated session data. Keep source code and small config in git;
+# regenerate these from raw captures or copy them locally when needed.
+assets/sessions/
+assets/processed_sessions/
+assets/experiments/
+
+# Runtime/user logs and transient outputs.
+*.log
+*.tmp
+*.bak
+*.swp
+*.DS_Store

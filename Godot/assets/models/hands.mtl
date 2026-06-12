@@ -1,0 +1,8 @@
+# Minimal material companion for hands.obj.
+newmtl Hand_Tex
+Ka 0.120000 0.230000 0.280000
+Kd 0.120000 0.230000 0.280000
+Ks 0.050000 0.050000 0.050000
+Ns 32.000000
+d 1.000000
+illum 2

@@ -20,6 +20,20 @@ DerivedData/
 __pycache__/
 *.py[cod]
 
+# Godot subproject local/generated data
+/Godot/.godot/
+/Godot/.mono/
+/Godot/.venv/
+/Godot/export/
+/Godot/build/
+/Godot/export_templates/
+/Godot/assets/sessions/
+/Godot/assets/processed_sessions/
+/Godot/assets/experiments/
+/Godot/*.log
+/Godot/*.tmp
+/Godot/*.bak
+
 # Agent & IDE directories/files
 .claude/
 .cursor/

@@ -1,0 +1,224 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Sand Stories Godot Session",
+  "type": "object",
+  "required": ["id", "title", "duration", "data_sources"],
+  "properties": {
+    "id": { "type": "string" },
+    "title": { "type": "string" },
+    "duration": { "type": "number" },
+    "participants": {
+      "type": "array",
+      "description": "Optional participant roster. UTF-8/CJK display names are supported and shown in the Study Inspector.",
+      "items": {
+        "oneOf": [
+          { "type": "string" },
+          {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "display_name": { "type": "string" },
+              "name": { "type": "string" },
+              "role": { "type": "string" },
+              "group": { "type": "string" },
+              "notes": { "type": "string" }
+            }
+          }
+        ]
+      }
+    },
+    "data_sources": {
+      "type": "object",
+      "description": "Raw and processed media inputs for the RGB-D reconstruction pipeline.",
+      "properties": {
+        "use_video_streams": { "type": "boolean" },
+        "depth_map": { "type": "string", "description": "Static depth/height map texture resource." },
+        "texture_map": { "type": "string", "description": "Static RGB/material texture resource aligned with depth_map." },
+        "surface_mask": { "type": "string", "description": "Optional sand-validity mask generated from a production session; white keeps sand, black hides tray/outside areas." },
+        "occlusion_mask": { "type": "string", "description": "Optional frame-level hand/body/tool occlusion mask kept for QA and future video-stream reconstruction." },
+        "processed_manifest": { "type": "string", "description": "Optional adapter manifest describing generated RGB/depth/mask cache assets." },
+        "production_manifest": { "type": "string", "description": "Optional original production manifest path; production files are treated as read-only input." },
+        "depth_video": { "type": "string", "description": "Synced OGV depth-map stream." },
+        "texture_video": { "type": "string", "description": "Synced OGV RGB/material stream." },
+        "top_rgb_video": { "type": "string", "description": "Future top-down RGB reference video." },
+        "front_rgb_video": { "type": "string", "description": "Future front-view participant/creator video." },
+        "audio": { "type": "string", "description": "Future narration/audio stream." },
+        "calibration": {
+          "type": "object",
+          "properties": {
+            "depth_uv_offset": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+            "texture_uv_offset": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+            "depth_uv_scale": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+            "texture_uv_scale": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+            "height_scale": { "type": "number" },
+            "material_strength": { "type": "number", "minimum": 0, "maximum": 1 }
+          }
+        }
+      }
+    },
+    "hand_samples": {
+      "type": "array",
+      "description": "Legacy single-hand timestamped keypoints in scene coordinates.",
+      "items": {
+        "type": "object",
+        "required": ["time", "joints"],
+        "properties": {
+          "time": { "type": "number" },
+          "joints": {
+            "type": "array",
+            "items": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 }
+          }
+        }
+      }
+    },
+    "hand_tracks": {
+      "type": "array",
+      "description": "Independent hand tracks; each track can consume MediaPipe-style 21-point landmarks and an optional split hand mesh.",
+      "items": {
+        "type": "object",
+        "required": ["id", "samples"],
+        "properties": {
+          "id": { "type": "string" },
+          "label": { "type": "string" },
+          "handedness": { "type": "string", "enum": ["left", "right", "unknown"] },
+          "model_path": { "type": "string" },
+          "model_scale": { "type": "number" },
+          "model_rotation_degrees": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 },
+          "model_follow_orientation": { "type": "boolean", "description": "When true, the ghost hand mesh follows palm orientation inferred from wrist/middle landmarks." },
+          "virtual_hand": { "type": "boolean", "description": "When true, render a procedural translucent hologram hand from the 21 landmarks." },
+          "show_landmarks": { "type": "boolean", "description": "Debug-only landmark point visibility." },
+          "show_skeleton": { "type": "boolean", "description": "Debug-only MediaPipe skeleton bone visibility." },
+          "show_mesh_ghost": { "type": "boolean", "description": "Show the imported split OBJ ghost even when virtual_hand is enabled." },
+          "interpolation": { "type": "string", "enum": ["cubic", "linear", "nearest"], "description": "Render-time resampling mode for hand landmarks when capture frame rate differs from render frame rate." },
+          "color": { "type": "string" },
+          "mesh_color": { "type": "string" },
+          "joint_count": { "type": "integer" },
+          "samples": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["time"],
+              "properties": {
+                "time": { "type": "number" },
+                "landmarks": {
+                  "type": "array",
+                  "description": "MediaPipe landmark order: wrist, thumb, index, middle, ring, pinky.",
+                  "items": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 }
+                },
+                "joints": {
+                  "type": "array",
+                  "description": "Alias accepted by the runtime for older preprocessors.",
+                  "items": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "mediapipe_hands": {
+      "type": "array",
+      "description": "Alternative frame-first MediaPipe export: frames contain hands with handedness and landmarks; runtime normalizes this into hand_tracks.",
+      "items": {
+        "type": "object",
+        "required": ["time", "hands"],
+        "properties": {
+          "time": { "type": "number" },
+          "hands": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": { "type": "string" },
+                "label": { "type": "string" },
+                "handedness": { "type": "string" },
+                "landmarks": {
+                  "type": "array",
+                  "items": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "objects": {
+      "type": "array",
+      "description": "YOLO/manual object detections or semantic tools used in the session.",
+      "items": {
+        "type": "object",
+        "required": ["id", "position"],
+        "properties": {
+          "id": { "type": "string" },
+          "label": { "type": "string" },
+          "primitive": { "type": "string", "enum": ["box", "sphere", "cylinder"] },
+          "model_path": { "type": "string", "description": "Optional Godot Mesh resource replacing primitive." },
+          "position": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 },
+          "size": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 },
+          "color": { "type": "string" }
+        }
+      }
+    },
+    "surface_regions": {
+      "type": "array",
+      "description": "Segmented sand drawings/highlightable regions.",
+      "items": {
+        "type": "object",
+        "required": ["id", "position", "size"],
+        "properties": {
+          "id": { "type": "string" },
+          "label": { "type": "string" },
+          "position": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 },
+          "size": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+          "rotation_degrees": { "type": "number" },
+          "start": { "type": "number" },
+          "end": { "type": "number" },
+          "color": { "type": "string" }
+        }
+      }
+    },
+    "gesture_events": {
+      "type": "array",
+      "description": "Segmented gesture events following the coding scheme.",
+      "items": {
+        "type": "object",
+        "required": ["id", "kind", "start", "end"],
+        "properties": {
+          "id": { "type": "string" },
+          "label": { "type": "string" },
+          "kind": { "type": "string", "enum": ["drawing", "pointing", "independent", "other"] },
+          "start": { "type": "number" },
+          "end": { "type": "number" },
+          "target": { "type": "string" }
+        }
+      }
+    },
+    "references": {
+      "type": "array",
+      "description": "Referential links between hand, annotations, sand regions, and objects.",
+      "items": {
+        "type": "object",
+        "required": ["id", "source", "target", "start", "end"],
+        "properties": {
+          "id": { "type": "string" },
+          "source": { "type": "string" },
+          "target": { "type": "string" },
+          "start": { "type": "number" },
+          "end": { "type": "number" },
+          "color": { "type": "string" }
+        }
+      }
+    },
+    "study_tasks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "prompt"],
+        "properties": {
+          "id": { "type": "string" },
+          "prompt": { "type": "string" }
+        }
+      }
+    }
+  }
+}

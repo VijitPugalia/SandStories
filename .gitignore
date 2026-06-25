@@ -30,6 +30,8 @@ __pycache__/
 /Godot/assets/sessions/
 /Godot/assets/processed_sessions/
 /Godot/assets/experiments/
+/Godot/weights/
+/Godot/*.pt
 /Godot/*.log
 /Godot/*.tmp
 /Godot/*.bak

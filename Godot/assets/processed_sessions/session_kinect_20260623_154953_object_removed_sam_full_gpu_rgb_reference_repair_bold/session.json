@@ -1,0 +1,86 @@
+{
+  "id": "kinect_kinect_20260623_154953_object_removed",
+  "title": "Kinect libfreenect recording kinect_20260623_154953 - object removed",
+  "duration": 23.767706155776978,
+  "data_sources": {
+    "use_video_streams": false,
+    "depth_map": "res://assets/processed_sessions/session_kinect_20260623_154953_object_removed_sam_full_gpu_rgb_reference_repair_bold/clean_depth_000714.png",
+    "detail_depth_map": "res://assets/processed_sessions/session_kinect_20260623_154953_object_removed_sam_full_gpu_rgb_reference_repair_bold/detail_depth_000714.png",
+    "texture_map": "res://assets/processed_sessions/session_kinect_20260623_154953_object_removed_sam_full_gpu_rgb_reference_repair_bold/clean_rgb_000714.png",
+    "surface_mask": "res://assets/processed_sessions/session_kinect_20260623_154953_object_removed_sam_full_gpu_rgb_reference_repair_bold/surface_mask.png",
+    "occlusion_mask": "res://assets/processed_sessions/session_kinect_20260623_154953_object_removed_sam_full_gpu_rgb_reference_repair_bold/valid_mask_000714.png",
+    "processed_manifest": "res://assets/processed_sessions/session_kinect_20260623_154953_object_removed_sam_full_gpu_rgb_reference_repair_bold/processed_manifest.json",
+    "audio": "",
+    "calibration": {
+      "depth_uv_offset": [
+        0.0,
+        0.0
+      ],
+      "texture_uv_offset": [
+        0.0,
+        0.0
+      ],
+      "depth_uv_scale": [
+        1.0,
+        1.0
+      ],
+      "texture_uv_scale": [
+        1.0,
+        1.0
+      ],
+      "height_scale": -1.9,
+      "material_strength": 0.65
+    }
+  },
+  "production_session": {
+    "schemaVersion": 1,
+    "deviceModel": "Kinect v1",
+    "sourceFolder": "/home/baleine/from-118/SandStoriesRemote/recordings/kinect_20260623_154953",
+    "processedFrameCount": 714,
+    "experiment": "libfreenect_record_raw_depth_decode",
+    "objectRemoval": {
+      "method": "yolo_world_boxes_plus_optional_sam_masks_then_inpaint",
+      "classes": [
+        "hand",
+        "arm",
+        "human hand",
+        "pen",
+        "pencil",
+        "stylus",
+        "tool"
+      ],
+      "yoloModel": "yolov8s-world.pt",
+      "samCheckpoint": "/tmp/opencode/sam_vit_b_01ec64.pth",
+      "device": "cuda",
+      "maskDilatePixels": 9,
+      "depthMaskDilatePixels": 24,
+      "depthIncludeDetectionBoxes": false,
+      "depthTemporalRadius": 1,
+      "depthReferenceRepair": true,
+      "depthReferenceThreshold": 22,
+      "depthReferenceMinArea": 120,
+      "depthReferenceDilatePixels": 8,
+      "rgbReferenceRepair": true,
+      "rgbMaskDilatePixels": 4,
+      "rgbTemporalRadius": 1,
+      "rgbIncludeDepthMask": true,
+      "rgbReferenceAlpha": 0.12,
+      "rgbFeatherPixels": 14,
+      "inpaintRadius": 5.0,
+      "maxSurfaceOverlapRatio": 0.18,
+      "surfaceTrimColRatio": 0.7,
+      "surfaceTrimRowRatio": 0.22,
+      "startFrame": 0,
+      "frameStep": 1,
+      "totalRemovedObjectPixels": 5011150,
+      "note": "Masks are applied only inside the detected sand surface and inpainted before downstream reconstruction."
+    }
+  },
+  "gesture_events": [],
+  "study_tasks": [
+    {
+      "id": "kinect_surface_review",
+      "prompt": "Review Kinect raw depth reconstruction of sand relief."
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+numpy
+Pillow
+scipy
+opencv-python-headless
+ultralytics
+segment-anything
+
+# Install CPU torch separately before this file:
+# python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+# YOLO-World may also need:
+# python -m pip install git+https://github.com/ultralytics/CLIP.git
+# Optional SAM checkpoint used for tighter masks:
+# https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth

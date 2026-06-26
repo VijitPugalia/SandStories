@@ -103,7 +103,7 @@ struct ContentView: View {
                             .foregroundStyle(Color.white)
                             .tracking(2.0)
                         
-                        Text("Raise open palm to resume recording")
+                        Text("Tap play or raise open palm to resume recording")
                             .font(.subheadline)
                             .foregroundStyle(Color.white.opacity(0.8))
                     }
@@ -182,7 +182,6 @@ struct ContentView: View {
         .onChange(of: experimentSettings.previewEnabled) { _, _ in
             Task { await liveKitPreviewManager.connect(settings: experimentSettings) }
         }
-        .animation(.spring(duration: 0.35, bounce: 0.22), value: recordingCoordinator.isCaptureRecording)
     }
 
     // MARK: - Top
@@ -200,6 +199,8 @@ struct ContentView: View {
             HStack(spacing: 8) {
                 locationOverlay
                     .layoutPriority(1)
+
+                meshVisualizationPill
 
                 if !recordingCoordinator.isCaptureRecording && !recordingCoordinator.isBenchmarkRunning && !recordingCoordinator.isDepthDiagnosticRunning {
                     depthDiagnosticModePill
@@ -246,23 +247,23 @@ struct ContentView: View {
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: destinationSystemImage)
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(Color.accentColor)
-                    .frame(width: 28, height: 28)
-                Text(destinationShortLabel)
                     .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 22, height: 22)
+                Text(destinationShortLabel)
+                    .font(.footnote.weight(.semibold))
                     .foregroundStyle(Color(uiColor: .label))
                     .lineLimit(1)
                     .minimumScaleFactor(0.82)
                     .multilineTextAlignment(.leading)
                 Spacer(minLength: 0)
             }
-            .padding(.leading, 12)
-            .padding(.trailing, 14)
-            .padding(.vertical, 9)
-            .frame(minHeight: 42)
-            .frame(maxWidth: 220, alignment: .leading)
-            .glassPanel(cornerRadius: 21, blurStyle: .systemUltraThinMaterial, shadowRadius: 12, shadowYOffset: 5)
+            .padding(.leading, 10)
+            .padding(.trailing, 12)
+            .padding(.vertical, 7)
+            .frame(minHeight: 38)
+            .frame(maxWidth: 168, alignment: .leading)
+            .glassPanel(cornerRadius: 19, blurStyle: .systemUltraThinMaterial, shadowRadius: 10, shadowYOffset: 4)
         }
         .buttonStyle(.plain)
         .accessibilityLabel(recordingCoordinator.destinationLabel)
@@ -343,6 +344,34 @@ struct ContentView: View {
             .allowsHitTesting(false)
     }
 
+    private var meshVisualizationPill: some View {
+        let isSupported = ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh)
+        return Button {
+            guard isSupported else { return }
+            withAnimation(.spring(duration: 0.25, bounce: 0.16)) {
+                recordingCoordinator.isMeshVisualizationEnabled.toggle()
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: recordingCoordinator.isMeshVisualizationEnabled ? "cube.fill" : "cube")
+                    .font(.caption.weight(.bold))
+                Text(recordingCoordinator.isMeshVisualizationEnabled ? "Mesh On" : "Mesh Off")
+                    .font(.caption.weight(.bold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.78)
+            }
+            .foregroundStyle(recordingCoordinator.isMeshVisualizationEnabled ? Color.accentColor : Color(uiColor: .secondaryLabel))
+            .padding(.horizontal, 11)
+            .padding(.vertical, 7)
+            .glassPanel(cornerRadius: 15, blurStyle: .systemUltraThinMaterial, shadowRadius: 8, shadowYOffset: 3)
+        }
+        .buttonStyle(.plain)
+        .disabled(!isSupported)
+        .opacity(isSupported ? 1 : 0.42)
+        .accessibilityLabel(recordingCoordinator.isMeshVisualizationEnabled ? "Turn mesh visualization off" : "Turn mesh visualization on")
+        .accessibilityHint("Shows or hides the LiDAR scene mesh overlay.")
+    }
+
     private var depthDiagnosticModePill: some View {
         Button {
             withAnimation(.spring(duration: 0.3, bounce: 0.18)) {
@@ -352,9 +381,10 @@ struct ContentView: View {
             HStack(spacing: 6) {
                 Image(systemName: recordingCoordinator.isDepthDiagnosticRawOnly ? "waveform.path.ecg" : "waveform.path")
                     .font(.caption.weight(.bold))
-                Text(recordingCoordinator.isDepthDiagnosticRawOnly ? "Raw" : "Raw+S")
+                Text(recordingCoordinator.isDepthDiagnosticRawOnly ? "Raw Depth" : "Raw+Smooth")
                     .font(.caption.weight(.bold))
                     .lineLimit(1)
+                    .minimumScaleFactor(0.78)
             }
             .foregroundStyle(Color.accentColor)
             .padding(.horizontal, 11)
@@ -382,7 +412,7 @@ struct ContentView: View {
 
     private var bottomChrome: some View {
         VStack(spacing: 18) {
-            recordFloatingButton
+            recordingControls
 
             HStack(spacing: 12) {
                 clearToolbarButton
@@ -391,18 +421,71 @@ struct ContentView: View {
                 uploadToolbarButton
                 shareToolbarButton
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .frame(maxWidth: 360)
-            .glassPanel(cornerRadius: 30, blurStyle: .systemUltraThinMaterial, shadowRadius: 22, shadowYOffset: 10)
-            .padding(.horizontal, 20)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .frame(maxWidth: 390)
+            .glassPanel(cornerRadius: 28, blurStyle: .systemUltraThinMaterial, shadowRadius: 20, shadowYOffset: 9)
+            .padding(.horizontal, 16)
         }
         .padding(.bottom, 12)
         .safeAreaPadding(.bottom, 8)
     }
 
+    private var recordingControls: some View {
+        HStack(spacing: 22) {
+            pauseFloatingButton
+            recordFloatingButton
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var pauseFloatingButton: some View {
+        let isDisabled = !recordingCoordinator.isCaptureRecording
+        return Button {
+            Task {
+                await recordingCoordinator.togglePauseCaptureSession()
+            }
+        } label: {
+            ZStack {
+                Circle()
+                    .fill(Color.clear)
+                    .frame(width: 58, height: 58)
+                    .background {
+                        VisualEffectBlur(style: .systemUltraThinMaterial)
+                            .clipShape(Circle())
+                    }
+                    .overlay {
+                        Circle()
+                            .stroke(
+                                LinearGradient(
+                                    colors: [
+                                        Color.white.opacity(0.34),
+                                        Color.white.opacity(0.08),
+                                        Color.black.opacity(0.16)
+                                    ],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                ),
+                                lineWidth: 1
+                            )
+                    }
+                    .shadow(color: Color.black.opacity(0.24), radius: 16, y: 7)
+
+                Image(systemName: recordingCoordinator.isCapturePaused ? "play.fill" : "pause.fill")
+                    .font(.system(size: 22, weight: .bold))
+                    .foregroundStyle(recordingCoordinator.isCapturePaused ? Color.accentColor : Color(uiColor: .label))
+            }
+            .frame(width: 58, height: 58)
+        }
+        .buttonStyle(.plain)
+        .disabled(isDisabled)
+        .opacity(isDisabled ? 0.36 : 1)
+        .accessibilityLabel(recordingCoordinator.isCapturePaused ? "Resume session recording" : "Pause session recording")
+    }
+
     private var recordFloatingButton: some View {
-        Button {
+        let isDisabled = !recordingCoordinator.isCaptureRecording && (recordingCoordinator.isBenchmarkRunning || recordingCoordinator.isDepthDiagnosticRunning)
+        return Button {
             Task {
                 await recordingCoordinator.toggleRecording()
             }
@@ -453,16 +536,18 @@ struct ContentView: View {
         .buttonStyle(.plain)
         .frame(minWidth: 44, minHeight: 44)
         .accessibilityLabel(recordingCoordinator.isCaptureRecording ? "Stop session recording" : "Start session recording")
-        .disabled(recordingCoordinator.isBenchmarkRunning || recordingCoordinator.isDepthDiagnosticRunning)
-        .opacity((recordingCoordinator.isBenchmarkRunning || recordingCoordinator.isDepthDiagnosticRunning) ? 0.5 : 1)
+        .disabled(isDisabled)
+        .opacity(isDisabled ? 0.5 : 1)
     }
 
     private var clearToolbarButton: some View {
         toolDockButton(
+            title: "Clear",
             systemImage: "paintbrush.pointed",
             accessibilityLabel: "Clear strokes",
             foregroundStyle: Color(uiColor: .label),
-            isDisabled: false
+            isDisabled: false,
+            isHighlighted: false
         ) {
             Task {
                 await recordingCoordinator.handPoseManager.clearStrokes()
@@ -472,10 +557,12 @@ struct ContentView: View {
 
     private var benchmarkToolbarButton: some View {
         toolDockButton(
+            title: recordingCoordinator.isBenchmarkRunning ? "Run" : "Bench",
             systemImage: "speedometer",
             accessibilityLabel: "Run 15 second depth capture benchmark",
             foregroundStyle: recordingCoordinator.isBenchmarkRunning ? Color(uiColor: .secondaryLabel) : Color.accentColor,
-            isDisabled: recordingCoordinator.isCaptureRecording || recordingCoordinator.isBenchmarkRunning || recordingCoordinator.isDepthDiagnosticRunning
+            isDisabled: recordingCoordinator.isCaptureRecording || recordingCoordinator.isBenchmarkRunning || recordingCoordinator.isDepthDiagnosticRunning,
+            isHighlighted: recordingCoordinator.isBenchmarkRunning
         ) {
             Task {
                 await recordingCoordinator.runDepthBenchmark()
@@ -485,10 +572,12 @@ struct ContentView: View {
 
     private var diagnosticToolbarButton: some View {
         toolDockButton(
+            title: recordingCoordinator.isDepthDiagnosticRunning ? "Run" : "Depth",
             systemImage: recordingCoordinator.isDepthDiagnosticRawOnly ? "waveform.path.ecg" : "waveform.path",
             accessibilityLabel: "Run 20 second depth diagnostic capture",
             foregroundStyle: recordingCoordinator.isDepthDiagnosticRunning ? Color(uiColor: .secondaryLabel) : Color.accentColor,
-            isDisabled: recordingCoordinator.isCaptureRecording || recordingCoordinator.isBenchmarkRunning || recordingCoordinator.isDepthDiagnosticRunning
+            isDisabled: recordingCoordinator.isCaptureRecording || recordingCoordinator.isBenchmarkRunning || recordingCoordinator.isDepthDiagnosticRunning,
+            isHighlighted: recordingCoordinator.isDepthDiagnosticRunning || recordingCoordinator.isDepthDiagnosticRawOnly
         ) {
             Task {
                 await recordingCoordinator.runDepthDiagnostic()
@@ -501,10 +590,12 @@ struct ContentView: View {
 
     private var shareToolbarButton: some View {
         toolDockButton(
+            title: "Share",
             systemImage: "square.and.arrow.up",
             accessibilityLabel: "Share last session",
             foregroundStyle: Color.accentColor,
-            isDisabled: false
+            isDisabled: false,
+            isHighlighted: false
         ) {
             Task {
                 guard let folder = recordingCoordinator.lastSessionFolderURL else {
@@ -521,33 +612,50 @@ struct ContentView: View {
 
     private var uploadToolbarButton: some View {
         toolDockButton(
+            title: "Upload",
             systemImage: recordingCoordinator.uploadSettings.enabled ? "icloud.and.arrow.up.fill" : "icloud.and.arrow.up",
             accessibilityLabel: "Configure automatic upload",
             foregroundStyle: recordingCoordinator.uploadSettings.enabled ? Color.accentColor : Color(uiColor: .label),
-            isDisabled: recordingCoordinator.isCaptureRecording
+            isDisabled: recordingCoordinator.isCaptureRecording,
+            isHighlighted: recordingCoordinator.uploadSettings.enabled
         ) {
             showUploadSheet = true
         }
     }
 
     private func toolDockButton(
+        title: String,
         systemImage: String,
         accessibilityLabel: String,
         foregroundStyle: Color,
         isDisabled: Bool,
+        isHighlighted: Bool,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            Image(systemName: systemImage)
-                .font(.system(size: 21, weight: .semibold))
-                .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(foregroundStyle)
-                .frame(width: 46, height: 46)
-                .background {
-                    Circle()
-                        .fill(Color(uiColor: .secondarySystemFill).opacity(0.28))
+            VStack(spacing: 3) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 18, weight: .semibold))
+                    .symbolRenderingMode(.hierarchical)
+                    .frame(width: 23, height: 22)
+                Text(title)
+                    .font(.system(size: 10, weight: .semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+            }
+            .foregroundStyle(foregroundStyle)
+            .frame(width: 58, height: 52)
+            .background {
+                if isHighlighted {
+                    Capsule(style: .continuous)
+                        .fill(Color(uiColor: .secondarySystemFill).opacity(0.55))
+                        .overlay {
+                            Capsule(style: .continuous)
+                                .stroke(Color.white.opacity(0.22), lineWidth: 1)
+                        }
                 }
-                .contentShape(Circle())
+            }
+            .contentShape(Rectangle())
         }
         .buttonStyle(LiquidButtonStyle())
         .disabled(isDisabled)
@@ -575,7 +683,7 @@ struct ContentView: View {
     }
 }
 
-// MARK: - AR container (unchanged capture configuration)
+// MARK: - AR container
 
 struct ARViewContainer: UIViewRepresentable {
     @ObservedObject var recordingCoordinator: RecordingCoordinator
@@ -583,6 +691,7 @@ struct ARViewContainer: UIViewRepresentable {
     @MainActor
     final class Coordinator {
         let multiplexer: ARSessionDelegateMultiplexer
+        var meshVisualizationEnabled: Bool?
 
         init(
             depth: DepthCaptureManager,
@@ -606,13 +715,15 @@ struct ARViewContainer: UIViewRepresentable {
     func makeUIView(context: Context) -> ARView {
         let arView = ARView(frame: .zero, cameraMode: .ar, automaticallyConfigureSession: false)
 
-        // LiDAR scene mesh overlay: colored triangle mesh that visualizes scanned geometry.
-        arView.debugOptions.insert(.showSceneUnderstanding)
-
         arView.session.delegate = context.coordinator.multiplexer
         recordingCoordinator.handPoseManager.setARView(arView)
 
-        configureAndRunSession(for: arView)
+        configureAndRunSession(
+            for: arView,
+            meshVisualizationEnabled: recordingCoordinator.isMeshVisualizationEnabled,
+            options: [.resetTracking, .removeExistingAnchors]
+        )
+        context.coordinator.meshVisualizationEnabled = recordingCoordinator.isMeshVisualizationEnabled
         recordingCoordinator.depthCaptureManager.setRecording(recordingCoordinator.isCaptureRecording)
 
         Task { await recordingCoordinator.locationCaptureManager.startCapture() }
@@ -622,6 +733,14 @@ struct ARViewContainer: UIViewRepresentable {
     @MainActor
     func updateUIView(_ uiView: ARView, context: Context) {
         recordingCoordinator.depthCaptureManager.setRecording(recordingCoordinator.isCaptureRecording)
+        if context.coordinator.meshVisualizationEnabled != recordingCoordinator.isMeshVisualizationEnabled {
+            configureAndRunSession(
+                for: uiView,
+                meshVisualizationEnabled: recordingCoordinator.isMeshVisualizationEnabled,
+                options: []
+            )
+            context.coordinator.meshVisualizationEnabled = recordingCoordinator.isMeshVisualizationEnabled
+        }
     }
 
     @MainActor
@@ -630,7 +749,11 @@ struct ARViewContainer: UIViewRepresentable {
     }
 
     @MainActor
-    private func configureAndRunSession(for arView: ARView) {
+    private func configureAndRunSession(
+        for arView: ARView,
+        meshVisualizationEnabled: Bool,
+        options: ARSession.RunOptions
+    ) {
         guard ARWorldTrackingConfiguration.isSupported else { return }
 
         let configuration = ARWorldTrackingConfiguration()
@@ -643,12 +766,14 @@ struct ARViewContainer: UIViewRepresentable {
             configuration.frameSemantics.insert(.smoothedSceneDepth)
         }
 
-        // Build the LiDAR scene mesh so the colored mesh overlay has geometry to draw.
-        if ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh) {
+        if meshVisualizationEnabled, ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh) {
             configuration.sceneReconstruction = .mesh
+            arView.debugOptions.insert(.showSceneUnderstanding)
+        } else {
+            arView.debugOptions.remove(.showSceneUnderstanding)
         }
 
-        arView.session.run(configuration, options: [.resetTracking, .removeExistingAnchors])
+        arView.session.run(configuration, options: options)
     }
 }
 

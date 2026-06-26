@@ -1,6 +1,6 @@
 # Continuous integration (GitHub Actions)
 
-Build SandStories on **GitHub-hosted macOS** (no local Mac required). Each successful run on `main` produces a downloadable **`SandStories.ipa`** artifact.
+Build SandStories on **GitHub-hosted macOS** (no local Mac required). Each successful push to `main` produces a private, direct **`SandStories.ipa`** release asset and keeps the workflow artifact as a backup.
 
 Workflow: [`.github/workflows/build-ipa.yml`](../.github/workflows/build-ipa.yml)
 
@@ -10,13 +10,26 @@ Workflow: [`.github/workflows/build-ipa.yml`](../.github/workflows/build-ipa.yml
 2. Install **xtool** from the pinned release zip ([`scripts/ci-setup-xtool-macos.sh`](../scripts/ci-setup-xtool-macos.sh))
 3. Run [`scripts/build_release_ipa.sh`](../scripts/build_release_ipa.sh)
 4. Upload `xtool/SandStories.ipa` as a workflow artifact
+5. On pushes to `main`, replace the private `latest-ipa` release asset with the newest `SandStories.ipa`
 
 No `DARWIN_SDK_TARBALL_URL` secret is required for this workflow.
 
-**Pull requests** also build and upload a short-lived IPA artifact (7 days).  
-**Pushes to `main`** and **manual runs** keep artifacts for 30 days.
+**Pull requests** build and upload a short-lived IPA artifact (7 days).
+**Pushes to `main`** publish the direct `latest-ipa` release asset and keep artifacts for 30 days.
+**Manual runs** keep artifacts for 30 days, but do not update the rolling release.
 
 ## Download the IPA
+
+### Fast iPhone path
+
+1. On iPhone Safari, log into GitHub with access to this private repo.
+2. Bookmark: <https://github.com/VijitPugalia/SandStories/releases/download/latest-ipa/SandStories.ipa>
+3. After the **Build IPA** action succeeds on `main`, open the bookmark.
+4. Download `SandStories.ipa`, then import/open it in **LiveContainer** or **SideStore**.
+
+This avoids downloading the GitHub Actions ZIP artifact, unzipping it, and transferring the IPA through Windows. iOS still requires a manual import/install confirmation.
+
+### Backup artifact path
 
 1. Open your repo on GitHub → **Actions**
 2. Click the latest **Build IPA** run
@@ -75,4 +88,6 @@ See [README Phase 3](../README.md) for storage-format benchmarks; CI here is ind
 | `xtool.app.zip` download fails | Check [xtool releases](https://github.com/xtool-org/xtool/releases) and `XTOOL_VERSION` in `.github/xtool-version.env` |
 | `missing Resources/AppIcon.png` | Commit the app icon under `Resources/` |
 | `xcrun -sdk iphoneos` fails | GitHub `macos-15` image issue — try `macos-14` in the workflow |
+| `latest-ipa` release is missing | Confirm the successful run was a `push` to `main`; PR and manual runs only upload artifacts |
+| iPhone direct download asks for login | Log into GitHub in Safari because the repo and release asset are private |
 | Build OK on WSL, CI fails | macOS CI uses Xcode SDK; WSL uses xtool cross-compile — both are supported |

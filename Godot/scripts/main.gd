@@ -73,7 +73,10 @@ var depth_video_player: VideoStreamPlayer
 var texture_video_player: VideoStreamPlayer
 var processed_surface_frames: Array = []
 var processed_surface_base_dir := ""
+var external_session_base_dir := ""
 var surface_frame_index := -1
+var surface_texture_cache := {}
+var surface_texture_pending := {}
 var hand_tracks: Array = []
 var hand_track_roots := {}
 var hand_model_nodes := {}
@@ -180,7 +183,7 @@ func _process(delta: float) -> void:
 			playhead = duration
 			is_playing = false
 			play_button.text = "Play"
-		time_slider.value = playhead
+		time_slider.set_value_no_signal(playhead)
 		_update_scene_from_time()
 
 
@@ -548,7 +551,7 @@ func _build_ui() -> void:
 	_add_surface_slider(calibration, "depth_v", "Depth V", -1.0, 1.0, 0.001, 0.0)
 	_add_surface_slider(calibration, "texture_u", "Texture U", -1.0, 1.0, 0.001, 0.0)
 	_add_surface_slider(calibration, "texture_v", "Texture V", -1.0, 1.0, 0.001, 0.0)
-	_add_surface_slider(calibration, "displacement", "Height", 0.0, 3.0, 0.01, 1.0)
+	_add_surface_slider(calibration, "displacement", "Height", -8.0, 8.0, 0.01, 1.0)
 	_add_surface_slider(calibration, "material_strength", "Map blend", 0.0, 1.0, 0.01, 0.0)
 	_add_surface_frame_controls(calibration)
 
@@ -860,28 +863,110 @@ func _add_surface_frame_controls(parent: Control) -> void:
 
 
 func _load_session(path: String) -> void:
+	if _is_http_path(path):
+		_load_remote_session(path)
+		return
+
 	var file := FileAccess.open(path, FileAccess.READ)
 	if file == null:
 		push_error("Cannot open session file: " + path)
 		return
 
 	var parsed = JSON.parse_string(file.get_as_text())
+	await _apply_session_payload(parsed, path, "")
+
+
+func _load_remote_session(path: String) -> void:
+	var text := await _http_get_text(path)
+	if text == "":
+		return
+	var parsed = JSON.parse_string(text)
+	await _apply_session_payload(parsed, path, path.get_base_dir())
+
+
+func _apply_session_payload(parsed, path: String, remote_base_dir: String) -> void:
 	if typeof(parsed) != TYPE_DICTIONARY:
 		push_error("Invalid session JSON: " + path)
 		return
 
 	session = parsed
 	data_sources = session.get("data_sources", {})
-	_load_processed_surface_frames()
+	external_session_base_dir = remote_base_dir
+	if external_session_base_dir != "":
+		_rebase_external_data_sources()
+	surface_texture_cache.clear()
+	surface_texture_pending.clear()
+	await _load_processed_surface_frames()
 	use_video_streams = bool(data_sources.get("use_video_streams", false))
 	_apply_session_calibration_defaults()
 	if video_stream_toggle != null:
 		video_stream_toggle.set_pressed_no_signal(use_video_streams)
 	duration = float(session.get("duration", 1.0))
+	if duration <= 0.0 and not processed_surface_frames.is_empty():
+		var last_frame: Dictionary = processed_surface_frames[processed_surface_frames.size() - 1]
+		duration = max(0.0, float(last_frame.get("time", 0.0)))
 	time_slider.max_value = duration
 	_build_session_nodes()
 	_update_source_status()
 	_log_event("session_loaded", {"path": path, "duration": duration})
+	if _web_query_flag("autoplay"):
+		is_playing = true
+		if play_button != null:
+			play_button.text = "Pause"
+
+
+func _is_http_path(path: String) -> bool:
+	return path.begins_with("http://") or path.begins_with("https://")
+
+
+func _web_query_flag(key: String) -> bool:
+	if not OS.has_feature("web"):
+		return false
+	var value: Variant = JavaScriptBridge.eval("new URLSearchParams(location.search).get('%s')" % key)
+	return str(value).to_lower() in ["1", "true", "yes"]
+
+
+func _http_get(path: String) -> PackedByteArray:
+	var request := HTTPRequest.new()
+	add_child(request)
+	var error := request.request(path)
+	if error != OK:
+		request.queue_free()
+		push_error("HTTP request failed to start: " + path)
+		return PackedByteArray()
+	var result: Array = await request.request_completed
+	request.queue_free()
+	var response_code := int(result[1])
+	if response_code < 200 or response_code >= 300:
+		push_error("HTTP request failed %d: %s" % [response_code, path])
+		return PackedByteArray()
+	return result[3]
+
+
+func _http_get_text(path: String) -> String:
+	var body := await _http_get(path)
+	if body.is_empty():
+		return ""
+	return body.get_string_from_utf8()
+
+
+func _rebase_external_data_sources() -> void:
+	for key in data_sources.keys():
+		var value = data_sources[key]
+		if typeof(value) == TYPE_STRING:
+			data_sources[key] = _external_asset_path(str(value))
+
+
+func _external_asset_path(path: String) -> String:
+	if path == "" or _is_http_path(path) or path.begins_with("user://"):
+		return path
+	if external_session_base_dir == "":
+		return path
+	if path.begins_with("res://assets/processed_sessions/"):
+		return external_session_base_dir.path_join(path.get_file())
+	if not path.begins_with("res://"):
+		return external_session_base_dir.path_join(path)
+	return path
 
 
 func _load_processed_surface_frames() -> void:
@@ -890,6 +975,9 @@ func _load_processed_surface_frames() -> void:
 	surface_frame_index = -1
 
 	var manifest_path := str(data_sources.get("processed_manifest", ""))
+	if _is_http_path(manifest_path):
+		await _load_remote_processed_surface_frames(manifest_path)
+		return
 	if manifest_path == "" or not FileAccess.file_exists(manifest_path):
 		_update_surface_frame_ui()
 		return
@@ -903,6 +991,22 @@ func _load_processed_surface_frames() -> void:
 		_update_surface_frame_ui()
 		return
 
+	_apply_processed_surface_manifest(parsed, manifest_path)
+
+
+func _load_remote_processed_surface_frames(manifest_path: String) -> void:
+	var text := await _http_get_text(manifest_path)
+	if text == "":
+		_update_surface_frame_ui()
+		return
+	var parsed = JSON.parse_string(text)
+	if typeof(parsed) != TYPE_DICTIONARY:
+		_update_surface_frame_ui()
+		return
+	_apply_processed_surface_manifest(parsed, manifest_path)
+
+
+func _apply_processed_surface_manifest(parsed: Dictionary, manifest_path: String) -> void:
 	processed_surface_base_dir = manifest_path.get_base_dir()
 	var frames: Array = parsed.get("frames", [])
 	for frame in frames:
@@ -916,12 +1020,12 @@ func _load_processed_surface_frames() -> void:
 		_update_surface_frame_ui()
 		return
 
-	var selected := processed_surface_frames.size() - 1
-	var current_depth := str(data_sources.get("depth_map", ""))
+	var selected := 0
 	for index in range(processed_surface_frames.size()):
 		var frame: Dictionary = processed_surface_frames[index]
-		if _surface_frame_path(frame, "cleanDepth") == current_depth:
+		if float(frame.get("time", 0.0)) <= playhead:
 			selected = index
+		else:
 			break
 	_set_surface_frame(selected, false)
 
@@ -930,7 +1034,7 @@ func _surface_frame_path(frame: Dictionary, key: String) -> String:
 	var value := str(frame.get(key, ""))
 	if value == "":
 		return ""
-	if value.begins_with("res://") or value.begins_with("user://"):
+	if _is_http_path(value) or value.begins_with("res://") or value.begins_with("user://"):
 		return value
 	if processed_surface_base_dir == "":
 		return value
@@ -1597,12 +1701,27 @@ func _add_triangle(surface_tool: SurfaceTool, a: Vector3, b: Vector3, c: Vector3
 
 
 func _update_scene_from_time() -> void:
+	_update_surface_frame_from_time()
 	_update_hand()
 	_update_annotations()
 	_update_highlights()
 	_update_referential_links()
 	_update_active_gesture()
 	time_label.text = "%.2f / %.2f" % [playhead, duration]
+
+
+func _update_surface_frame_from_time() -> void:
+	if processed_surface_frames.size() <= 1:
+		return
+	var target_index := 0
+	for index in range(processed_surface_frames.size()):
+		var frame: Dictionary = processed_surface_frames[index]
+		if float(frame.get("time", 0.0)) <= playhead:
+			target_index = index
+		else:
+			break
+	if target_index != surface_frame_index:
+		_set_surface_frame(target_index)
 
 
 func _update_hand() -> void:
@@ -2295,20 +2414,11 @@ func _reload_static_surface_textures() -> void:
 	static_surface_texture = null
 	static_surface_mask_texture = null
 
-	if ResourceLoader.exists(depth_path):
-		var depth_map := load(depth_path)
-		if depth_map is Texture2D:
-			static_depth_texture = depth_map
-	if ResourceLoader.exists(texture_path):
-		var texture_map := load(texture_path)
-		if texture_map is Texture2D:
-			static_surface_texture = texture_map
+	static_depth_texture = _load_surface_texture(depth_path)
+	static_surface_texture = _load_surface_texture(texture_path)
 
 	var mask_path := str(data_sources.get("surface_mask", ""))
-	if mask_path != "" and ResourceLoader.exists(mask_path):
-		var mask_map := load(mask_path)
-		if mask_map is Texture2D:
-			static_surface_mask_texture = mask_map
+	static_surface_mask_texture = _load_surface_texture(mask_path)
 
 	if heightmap_material != null:
 		if static_depth_texture != null:
@@ -2323,14 +2433,51 @@ func _reload_static_surface_textures() -> void:
 			heightmap_material.set_shader_parameter("use_surface_mask", false)
 
 
+func _load_surface_texture(path: String) -> Texture2D:
+	if path == "":
+		return null
+	if surface_texture_cache.has(path):
+		return surface_texture_cache[path]
+	if _is_http_path(path):
+		if not surface_texture_pending.has(path):
+			surface_texture_pending[path] = true
+			_load_remote_surface_texture(path)
+		return null
+	if not ResourceLoader.exists(path):
+		return null
+	var texture := load(path)
+	if not texture is Texture2D:
+		return null
+	surface_texture_cache[path] = texture
+	return texture
+
+
+func _load_remote_surface_texture(path: String) -> void:
+	var body := await _http_get(path)
+	surface_texture_pending.erase(path)
+	if body.is_empty():
+		return
+	var image := Image.new()
+	var error := image.load_png_from_buffer(body)
+	if error != OK:
+		push_error("Cannot decode remote PNG: " + path)
+		return
+	var texture := ImageTexture.create_from_image(image)
+	surface_texture_cache[path] = texture
+	if _source_path("depth_map", SAND_HEIGHTMAP_PATH) == path or _source_path("texture_map", SAND_TEXTURE_PATH) == path or _source_path("surface_mask", "") == path:
+		_reload_static_surface_textures()
+		_apply_surface_texture_source()
+
+
 func _heightmap_material() -> Material:
 	if not ResourceLoader.exists(SAND_DEPTH_SHADER_PATH):
 		return null
 	var depth_path := _source_path("depth_map", SAND_HEIGHTMAP_PATH)
 	var texture_path := _source_path("texture_map", SAND_TEXTURE_PATH)
-	if not ResourceLoader.exists(depth_path):
+	var uses_remote_surface := _is_http_path(depth_path) or _is_http_path(texture_path)
+	if not uses_remote_surface and not ResourceLoader.exists(depth_path):
 		return null
-	if not ResourceLoader.exists(texture_path):
+	if not uses_remote_surface and not ResourceLoader.exists(texture_path):
 		return null
 
 	var shader := load(SAND_DEPTH_SHADER_PATH)
@@ -2341,7 +2488,7 @@ func _heightmap_material() -> Material:
 	material.shader = shader
 	heightmap_material = material
 	_reload_static_surface_textures()
-	if static_depth_texture == null or static_surface_texture == null:
+	if not uses_remote_surface and (static_depth_texture == null or static_surface_texture == null):
 		heightmap_material = null
 		return null
 	material.set_shader_parameter("arg_1", 11.625)

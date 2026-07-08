@@ -15,7 +15,17 @@ struct ContentView: View {
     @State private var exportFolderURL: URL?
     @State private var recordingStartDate: Date?
     @State private var showGestureGuide = false
+    @State private var selectedDockItem: DockItem = .record
     private let shareExportManager = ShareExportManager()
+
+    private enum DockItem {
+        case clear
+        case pause
+        case record
+        case benchmark
+        case diagnostic
+        case more
+    }
 
     var body: some View {
         ZStack {
@@ -31,6 +41,7 @@ struct ContentView: View {
                 bottomChrome
             }
             .padding(.top, 8)
+            .zIndex(2)
 
             if showGestureGuide {
                 VStack(alignment: .leading, spacing: 14) {
@@ -120,6 +131,8 @@ struct ContentView: View {
                     .shadow(color: Color.black.opacity(0.3), radius: 25, y: 10)
                 }
                 .transition(.opacity.combined(with: .scale(scale: 0.95)))
+                .allowsHitTesting(false)
+                .zIndex(1)
             }
         }
         .sheet(isPresented: $showStorageSheet) {
@@ -427,7 +440,8 @@ struct ContentView: View {
             diagnosticToolbarButton
             moreToolbarButton
         }
-        .padding(8)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 8)
         .frame(maxWidth: 430)
         .liquidGlassDock()
         .padding(.horizontal, 16)
@@ -439,6 +453,8 @@ struct ContentView: View {
     private var pauseFloatingButton: some View {
         let isDisabled = !recordingCoordinator.isCaptureRecording
         return liquidDockButton(
+            item: .pause,
+            title: recordingCoordinator.isCapturePaused ? "Resume" : "Pause",
             systemImage: recordingCoordinator.isCapturePaused ? "play.fill" : "pause.fill",
             accessibilityLabel: recordingCoordinator.isCapturePaused ? "Resume session recording" : "Pause session recording",
             foregroundStyle: recordingCoordinator.isCapturePaused ? Color.accentColor : Color(uiColor: .label),
@@ -453,57 +469,26 @@ struct ContentView: View {
 
     private var recordFloatingButton: some View {
         let isDisabled = !recordingCoordinator.isCaptureRecording && (recordingCoordinator.isBenchmarkRunning || recordingCoordinator.isDepthDiagnosticRunning)
-        return Button {
+        return liquidDockButton(
+            item: .record,
+            title: recordingCoordinator.isCaptureRecording ? "Stop" : "Record",
+            systemImage: recordingCoordinator.isCaptureRecording ? "stop.fill" : "record.circle.fill",
+            accessibilityLabel: recordingCoordinator.isCaptureRecording ? "Stop session recording" : "Start session recording",
+            foregroundStyle: recordingCoordinator.isCaptureRecording ? Color(uiColor: .systemRed) : Color.accentColor,
+            isDisabled: isDisabled,
+            isHighlighted: recordingCoordinator.isCaptureRecording,
+            expandedWidth: 92
+        ) {
             Task {
                 await recordingCoordinator.toggleRecording()
             }
-        } label: {
-            ZStack {
-                Circle()
-                    .fill(recordingCoordinator.isCaptureRecording ? Color(uiColor: .systemRed).opacity(0.16) : Color.accentColor.opacity(0.18))
-
-                Circle()
-                    .stroke(
-                        LinearGradient(
-                            colors: [
-                                Color.white.opacity(0.72),
-                                Color.white.opacity(0.18),
-                                Color.black.opacity(0.10)
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ),
-                        lineWidth: 1
-                    )
-
-                if recordingCoordinator.isCaptureRecording {
-                    Image(systemName: "stop.fill")
-                        .font(.title3.weight(.bold))
-                        .symbolRenderingMode(.palette)
-                        .foregroundStyle(Color(uiColor: .systemRed), Color(uiColor: .tertiaryLabel))
-                } else {
-                    Image(systemName: "record.circle.fill")
-                        .font(.title.weight(.semibold))
-                        .symbolRenderingMode(.hierarchical)
-                        .foregroundStyle(Color.accentColor)
-                }
-            }
-            .frame(width: 64, height: 64)
-            .background {
-                VisualEffectBlur(style: recordingCoordinator.isCaptureRecording ? .systemThinMaterial : .systemMaterial)
-                    .clipShape(Circle())
-            }
-            .shadow(color: Color.black.opacity(0.18), radius: 18, y: 8)
-            .contentShape(Circle())
         }
-        .buttonStyle(LiquidButtonStyle())
-        .accessibilityLabel(recordingCoordinator.isCaptureRecording ? "Stop session recording" : "Start session recording")
-        .disabled(isDisabled)
-        .opacity(isDisabled ? 0.5 : 1)
     }
 
     private var clearToolbarButton: some View {
         liquidDockButton(
+            item: .clear,
+            title: "Clear",
             systemImage: "paintbrush.pointed",
             accessibilityLabel: "Clear strokes",
             foregroundStyle: Color(uiColor: .label),
@@ -518,6 +503,8 @@ struct ContentView: View {
 
     private var benchmarkToolbarButton: some View {
         liquidDockButton(
+            item: .benchmark,
+            title: "Bench",
             systemImage: "speedometer",
             accessibilityLabel: "Run 15 second depth capture benchmark",
             foregroundStyle: recordingCoordinator.isBenchmarkRunning ? Color(uiColor: .secondaryLabel) : Color.accentColor,
@@ -532,6 +519,8 @@ struct ContentView: View {
 
     private var diagnosticToolbarButton: some View {
         liquidDockButton(
+            item: .diagnostic,
+            title: "Depth",
             systemImage: recordingCoordinator.isDepthDiagnosticRawOnly ? "waveform.path.ecg" : "waveform.path",
             accessibilityLabel: "Run 20 second depth diagnostic capture",
             foregroundStyle: recordingCoordinator.isDepthDiagnosticRunning ? Color(uiColor: .secondaryLabel) : Color.accentColor,
@@ -550,6 +539,9 @@ struct ContentView: View {
     private var moreToolbarButton: some View {
         Menu {
             Button {
+                withAnimation(.spring(response: 0.34, dampingFraction: 0.78)) {
+                    selectedDockItem = .more
+                }
                 showUploadSheet = true
             } label: {
                 Label("Upload Settings", systemImage: recordingCoordinator.uploadSettings.enabled ? "icloud.and.arrow.up.fill" : "icloud.and.arrow.up")
@@ -557,6 +549,9 @@ struct ContentView: View {
             .disabled(recordingCoordinator.isCaptureRecording)
 
             Button {
+                withAnimation(.spring(response: 0.34, dampingFraction: 0.78)) {
+                    selectedDockItem = .more
+                }
                 Task {
                     guard let folder = recordingCoordinator.lastSessionFolderURL else {
                         print("Share: no session folder yet - record a session first.")
@@ -571,26 +566,50 @@ struct ContentView: View {
                 Label("Export Last Session", systemImage: "square.and.arrow.up")
             }
         } label: {
-            dockIcon(
+            dockControl(
+                item: .more,
+                title: "More",
                 systemImage: "ellipsis",
                 foregroundStyle: recordingCoordinator.uploadSettings.enabled ? Color.accentColor : Color(uiColor: .label),
                 isHighlighted: recordingCoordinator.uploadSettings.enabled
             )
         }
+        .simultaneousGesture(
+            TapGesture().onEnded {
+                withAnimation(.spring(response: 0.34, dampingFraction: 0.78)) {
+                    selectedDockItem = .more
+                }
+            }
+        )
         .buttonStyle(LiquidButtonStyle())
         .accessibilityLabel("More capture actions")
     }
 
     private func liquidDockButton(
+        item: DockItem,
+        title: String,
         systemImage: String,
         accessibilityLabel: String,
         foregroundStyle: Color,
         isDisabled: Bool,
         isHighlighted: Bool,
+        expandedWidth: CGFloat = 88,
         action: @escaping () -> Void
     ) -> some View {
-        Button(action: action) {
-            dockIcon(systemImage: systemImage, foregroundStyle: foregroundStyle, isHighlighted: isHighlighted)
+        Button {
+            withAnimation(.spring(response: 0.34, dampingFraction: 0.78)) {
+                selectedDockItem = item
+            }
+            action()
+        } label: {
+            dockControl(
+                item: item,
+                title: title,
+                systemImage: systemImage,
+                foregroundStyle: foregroundStyle,
+                isHighlighted: isHighlighted,
+                expandedWidth: expandedWidth
+            )
         }
         .buttonStyle(LiquidButtonStyle())
         .disabled(isDisabled)
@@ -598,31 +617,50 @@ struct ContentView: View {
         .accessibilityLabel(accessibilityLabel)
     }
 
-    private func dockIcon(
+    private func dockControl(
+        item: DockItem,
+        title: String,
         systemImage: String,
         foregroundStyle: Color,
-        isHighlighted: Bool
+        isHighlighted: Bool,
+        expandedWidth: CGFloat = 88
     ) -> some View {
-        Image(systemName: systemImage)
-            .font(.body.weight(.semibold))
-            .symbolRenderingMode(.hierarchical)
-            .foregroundStyle(foregroundStyle)
-            .frame(width: 44, height: 44)
-            .background {
-                Circle()
-                    .fill(isHighlighted ? Color(uiColor: .secondarySystemFill).opacity(0.76) : Color(uiColor: .systemFill).opacity(0.34))
+        let isSelected = selectedDockItem == item
+        let tint = isHighlighted || isSelected
+
+        return HStack(spacing: isSelected ? 7 : 0) {
+            Image(systemName: systemImage)
+                .font(.body.weight(.semibold))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(foregroundStyle)
+                .frame(width: 22, height: 22)
+
+            if isSelected {
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(foregroundStyle)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
+                    .transition(.opacity.combined(with: .move(edge: .trailing)))
+            }
+        }
+        .frame(width: isSelected ? expandedWidth : 42, height: 46)
+        .background {
+            if isSelected {
+                Capsule(style: .continuous)
+                    .fill(Color(uiColor: .secondarySystemFill).opacity(0.72))
                     .background {
                         VisualEffectBlur(style: .systemUltraThinMaterial)
-                            .clipShape(Circle())
+                            .clipShape(Capsule(style: .continuous))
                     }
                     .overlay {
-                        Circle()
+                        Capsule(style: .continuous)
                             .stroke(
                                 LinearGradient(
                                     colors: [
-                                        Color.white.opacity(isHighlighted ? 0.62 : 0.36),
-                                        Color.white.opacity(0.08),
-                                        Color.black.opacity(0.08)
+                                        Color.white.opacity(0.58),
+                                        Color.white.opacity(0.10),
+                                        Color.black.opacity(0.10)
                                     ],
                                     startPoint: .topLeading,
                                     endPoint: .bottomTrailing
@@ -631,7 +669,10 @@ struct ContentView: View {
                             )
                     }
             }
-            .contentShape(Circle())
+        }
+        .opacity(tint ? 1 : 0.74)
+        .contentShape(Capsule(style: .continuous))
+        .animation(.spring(response: 0.34, dampingFraction: 0.78), value: isSelected)
     }
 
     // MARK: - Export (same zip + activity flow as before)

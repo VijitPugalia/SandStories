@@ -190,23 +190,25 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top, spacing: 8) {
                 destinationPill
-                Spacer(minLength: 4)
-                gestureGuideButton
+                    .layoutPriority(1)
+                Spacer(minLength: 8)
                 sessionStatusHUD
             }
             .padding(.horizontal, 16)
 
-            HStack(spacing: 8) {
-                locationOverlay
-                    .layoutPriority(1)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    gestureGuideButton
+                    meshVisualizationPill
 
-                meshVisualizationPill
+                    if !recordingCoordinator.isCaptureRecording && !recordingCoordinator.isBenchmarkRunning && !recordingCoordinator.isDepthDiagnosticRunning {
+                        depthDiagnosticModePill
+                    }
 
-                if !recordingCoordinator.isCaptureRecording && !recordingCoordinator.isBenchmarkRunning && !recordingCoordinator.isDepthDiagnosticRunning {
-                    depthDiagnosticModePill
+                    locationOverlay
                 }
+                .padding(.horizontal, 16)
             }
-            .padding(.horizontal, 16)
 
             if let warn = recordingCoordinator.warningBanner {
                 statusGlassText(warn)
@@ -245,25 +247,29 @@ struct ContentView: View {
             guard !recordingCoordinator.isCaptureRecording else { return }
             showStorageSheet = true
         } label: {
-            HStack(spacing: 10) {
+            HStack(spacing: 12) {
                 Image(systemName: destinationSystemImage)
-                    .font(.subheadline.weight(.semibold))
+                    .font(.body.weight(.semibold))
                     .foregroundStyle(Color.accentColor)
-                    .frame(width: 22, height: 22)
-                Text(destinationShortLabel)
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(Color(uiColor: .label))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.82)
-                    .multilineTextAlignment(.leading)
+                    .frame(width: 28, height: 28)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Save Location")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(Color(uiColor: .secondaryLabel))
+                    Text(destinationShortLabel)
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(Color(uiColor: .label))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.82)
+                        .multilineTextAlignment(.leading)
+                }
                 Spacer(minLength: 0)
             }
-            .padding(.leading, 10)
-            .padding(.trailing, 12)
-            .padding(.vertical, 7)
-            .frame(minHeight: 38)
-            .frame(maxWidth: 168, alignment: .leading)
-            .glassPanel(cornerRadius: 19, blurStyle: .systemUltraThinMaterial, shadowRadius: 10, shadowYOffset: 4)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .frame(minHeight: 52)
+            .frame(maxWidth: 220, alignment: .leading)
+            .glassPanel(cornerRadius: 18, blurStyle: .systemThinMaterial, shadowRadius: 10, shadowYOffset: 4)
         }
         .buttonStyle(.plain)
         .accessibilityLabel(recordingCoordinator.destinationLabel)
@@ -337,9 +343,9 @@ struct ContentView: View {
             .foregroundStyle(Color(uiColor: .secondaryLabel))
             .lineLimit(1)
             .minimumScaleFactor(0.72)
-            .padding(.horizontal, 11)
-            .padding(.vertical, 7)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .frame(minHeight: 44)
             .glassPanel(cornerRadius: 15, blurStyle: .systemUltraThinMaterial, shadowRadius: 8, shadowYOffset: 3)
             .allowsHitTesting(false)
     }
@@ -352,18 +358,19 @@ struct ContentView: View {
                 recordingCoordinator.isMeshVisualizationEnabled.toggle()
             }
         } label: {
-            HStack(spacing: 6) {
+            HStack(spacing: 8) {
                 Image(systemName: recordingCoordinator.isMeshVisualizationEnabled ? "cube.fill" : "cube")
-                    .font(.caption.weight(.bold))
-                Text(recordingCoordinator.isMeshVisualizationEnabled ? "Mesh On" : "Mesh Off")
-                    .font(.caption.weight(.bold))
+                    .font(.body.weight(.semibold))
+                Text(recordingCoordinator.isMeshVisualizationEnabled ? "Hide Mesh" : "Show Mesh")
+                    .font(.subheadline.weight(.semibold))
                     .lineLimit(1)
-                    .minimumScaleFactor(0.78)
+                    .minimumScaleFactor(0.85)
             }
             .foregroundStyle(recordingCoordinator.isMeshVisualizationEnabled ? Color.accentColor : Color(uiColor: .secondaryLabel))
-            .padding(.horizontal, 11)
-            .padding(.vertical, 7)
-            .glassPanel(cornerRadius: 15, blurStyle: .systemUltraThinMaterial, shadowRadius: 8, shadowYOffset: 3)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .frame(minHeight: 44)
+            .glassPanel(cornerRadius: 16, blurStyle: .systemThinMaterial, shadowRadius: 8, shadowYOffset: 3)
         }
         .buttonStyle(.plain)
         .disabled(!isSupported)
@@ -378,18 +385,19 @@ struct ContentView: View {
                 recordingCoordinator.isDepthDiagnosticRawOnly.toggle()
             }
         } label: {
-            HStack(spacing: 6) {
+            HStack(spacing: 8) {
                 Image(systemName: recordingCoordinator.isDepthDiagnosticRawOnly ? "waveform.path.ecg" : "waveform.path")
-                    .font(.caption.weight(.bold))
-                Text(recordingCoordinator.isDepthDiagnosticRawOnly ? "Raw Depth" : "Raw+Smooth")
-                    .font(.caption.weight(.bold))
+                    .font(.body.weight(.semibold))
+                Text(recordingCoordinator.isDepthDiagnosticRawOnly ? "Raw Depth Only" : "Raw + Smoothed")
+                    .font(.subheadline.weight(.semibold))
                     .lineLimit(1)
-                    .minimumScaleFactor(0.78)
+                    .minimumScaleFactor(0.85)
             }
             .foregroundStyle(Color.accentColor)
-            .padding(.horizontal, 11)
-            .padding(.vertical, 7)
-            .glassPanel(cornerRadius: 15, blurStyle: .systemUltraThinMaterial, shadowRadius: 8, shadowYOffset: 3)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .frame(minHeight: 44)
+            .glassPanel(cornerRadius: 16, blurStyle: .systemThinMaterial, shadowRadius: 8, shadowYOffset: 3)
         }
         .buttonStyle(.plain)
         .accessibilityLabel(recordingCoordinator.isDepthDiagnosticRawOnly ? "Depth diagnostic raw only" : "Depth diagnostic raw and smoothed")
@@ -411,76 +419,36 @@ struct ContentView: View {
     // MARK: - Bottom
 
     private var bottomChrome: some View {
-        VStack(spacing: 18) {
-            recordingControls
-
-            HStack(spacing: 12) {
-                clearToolbarButton
-                benchmarkToolbarButton
-                diagnosticToolbarButton
-                uploadToolbarButton
-                shareToolbarButton
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .frame(maxWidth: 390)
-            .glassPanel(cornerRadius: 28, blurStyle: .systemUltraThinMaterial, shadowRadius: 20, shadowYOffset: 9)
-            .padding(.horizontal, 16)
-        }
-        .padding(.bottom, 12)
-        .safeAreaPadding(.bottom, 8)
-    }
-
-    private var recordingControls: some View {
-        HStack(spacing: 22) {
+        HStack(spacing: 8) {
+            clearToolbarButton
             pauseFloatingButton
             recordFloatingButton
+            benchmarkToolbarButton
+            diagnosticToolbarButton
+            moreToolbarButton
         }
-        .frame(maxWidth: .infinity)
+        .padding(8)
+        .frame(maxWidth: 430)
+        .liquidGlassDock()
+        .padding(.horizontal, 16)
+        .padding(.bottom, 10)
+        .safeAreaPadding(.bottom, 8)
+        .accessibilityElement(children: .contain)
     }
 
     private var pauseFloatingButton: some View {
         let isDisabled = !recordingCoordinator.isCaptureRecording
-        return Button {
+        return liquidDockButton(
+            systemImage: recordingCoordinator.isCapturePaused ? "play.fill" : "pause.fill",
+            accessibilityLabel: recordingCoordinator.isCapturePaused ? "Resume session recording" : "Pause session recording",
+            foregroundStyle: recordingCoordinator.isCapturePaused ? Color.accentColor : Color(uiColor: .label),
+            isDisabled: isDisabled,
+            isHighlighted: recordingCoordinator.isCapturePaused
+        ) {
             Task {
                 await recordingCoordinator.togglePauseCaptureSession()
             }
-        } label: {
-            ZStack {
-                Circle()
-                    .fill(Color.clear)
-                    .frame(width: 58, height: 58)
-                    .background {
-                        VisualEffectBlur(style: .systemUltraThinMaterial)
-                            .clipShape(Circle())
-                    }
-                    .overlay {
-                        Circle()
-                            .stroke(
-                                LinearGradient(
-                                    colors: [
-                                        Color.white.opacity(0.34),
-                                        Color.white.opacity(0.08),
-                                        Color.black.opacity(0.16)
-                                    ],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                ),
-                                lineWidth: 1
-                            )
-                    }
-                    .shadow(color: Color.black.opacity(0.24), radius: 16, y: 7)
-
-                Image(systemName: recordingCoordinator.isCapturePaused ? "play.fill" : "pause.fill")
-                    .font(.system(size: 22, weight: .bold))
-                    .foregroundStyle(recordingCoordinator.isCapturePaused ? Color.accentColor : Color(uiColor: .label))
-            }
-            .frame(width: 58, height: 58)
         }
-        .buttonStyle(.plain)
-        .disabled(isDisabled)
-        .opacity(isDisabled ? 0.36 : 1)
-        .accessibilityLabel(recordingCoordinator.isCapturePaused ? "Resume session recording" : "Pause session recording")
     }
 
     private var recordFloatingButton: some View {
@@ -492,57 +460,50 @@ struct ContentView: View {
         } label: {
             ZStack {
                 Circle()
-                    .fill(Color.clear)
-                    .frame(width: 76, height: 76)
-                    .background {
-                        VisualEffectBlur(
-                            style: recordingCoordinator.isCaptureRecording
-                                ? .systemThinMaterial
-                                : .systemUltraThinMaterial
-                        )
-                        .clipShape(Circle())
-                    }
-                    .overlay {
-                        Circle()
-                            .stroke(
-                                LinearGradient(
-                                    colors: [
-                                        Color.white.opacity(0.36),
-                                        Color.white.opacity(0.08),
-                                        Color.black.opacity(0.18)
-                                    ],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                ),
-                                lineWidth: 1
-                            )
-                    }
-                    .shadow(color: Color.black.opacity(0.32), radius: 22, y: 10)
+                    .fill(recordingCoordinator.isCaptureRecording ? Color(uiColor: .systemRed).opacity(0.16) : Color.accentColor.opacity(0.18))
+
+                Circle()
+                    .stroke(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(0.72),
+                                Color.white.opacity(0.18),
+                                Color.black.opacity(0.10)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 1
+                    )
 
                 if recordingCoordinator.isCaptureRecording {
-                    Image(systemName: "stop.circle.fill")
-                        .font(.system(size: 40))
+                    Image(systemName: "stop.fill")
+                        .font(.title3.weight(.bold))
                         .symbolRenderingMode(.palette)
                         .foregroundStyle(Color(uiColor: .systemRed), Color(uiColor: .tertiaryLabel))
                 } else {
-                    Image(systemName: "record.circle")
-                        .font(.system(size: 40))
+                    Image(systemName: "record.circle.fill")
+                        .font(.title.weight(.semibold))
                         .symbolRenderingMode(.hierarchical)
                         .foregroundStyle(Color.accentColor)
                 }
             }
-            .frame(width: 76, height: 76)
+            .frame(width: 64, height: 64)
+            .background {
+                VisualEffectBlur(style: recordingCoordinator.isCaptureRecording ? .systemThinMaterial : .systemMaterial)
+                    .clipShape(Circle())
+            }
+            .shadow(color: Color.black.opacity(0.18), radius: 18, y: 8)
+            .contentShape(Circle())
         }
-        .buttonStyle(.plain)
-        .frame(minWidth: 44, minHeight: 44)
+        .buttonStyle(LiquidButtonStyle())
         .accessibilityLabel(recordingCoordinator.isCaptureRecording ? "Stop session recording" : "Start session recording")
         .disabled(isDisabled)
         .opacity(isDisabled ? 0.5 : 1)
     }
 
     private var clearToolbarButton: some View {
-        toolDockButton(
-            title: "Clear",
+        liquidDockButton(
             systemImage: "paintbrush.pointed",
             accessibilityLabel: "Clear strokes",
             foregroundStyle: Color(uiColor: .label),
@@ -556,8 +517,7 @@ struct ContentView: View {
     }
 
     private var benchmarkToolbarButton: some View {
-        toolDockButton(
-            title: recordingCoordinator.isBenchmarkRunning ? "Run" : "Bench",
+        liquidDockButton(
             systemImage: "speedometer",
             accessibilityLabel: "Run 15 second depth capture benchmark",
             foregroundStyle: recordingCoordinator.isBenchmarkRunning ? Color(uiColor: .secondaryLabel) : Color.accentColor,
@@ -571,8 +531,7 @@ struct ContentView: View {
     }
 
     private var diagnosticToolbarButton: some View {
-        toolDockButton(
-            title: recordingCoordinator.isDepthDiagnosticRunning ? "Run" : "Depth",
+        liquidDockButton(
             systemImage: recordingCoordinator.isDepthDiagnosticRawOnly ? "waveform.path.ecg" : "waveform.path",
             accessibilityLabel: "Run 20 second depth diagnostic capture",
             foregroundStyle: recordingCoordinator.isDepthDiagnosticRunning ? Color(uiColor: .secondaryLabel) : Color.accentColor,
@@ -588,43 +547,41 @@ struct ContentView: View {
         }
     }
 
-    private var shareToolbarButton: some View {
-        toolDockButton(
-            title: "Share",
-            systemImage: "square.and.arrow.up",
-            accessibilityLabel: "Share last session",
-            foregroundStyle: Color.accentColor,
-            isDisabled: false,
-            isHighlighted: false
-        ) {
-            Task {
-                guard let folder = recordingCoordinator.lastSessionFolderURL else {
-                    print("Share: no session folder yet - record a session first.")
-                    return
-                }
-                await MainActor.run {
-                    exportFolderURL = folder
-                    showExportSheet = true
-                }
+    private var moreToolbarButton: some View {
+        Menu {
+            Button {
+                showUploadSheet = true
+            } label: {
+                Label("Upload Settings", systemImage: recordingCoordinator.uploadSettings.enabled ? "icloud.and.arrow.up.fill" : "icloud.and.arrow.up")
             }
+            .disabled(recordingCoordinator.isCaptureRecording)
+
+            Button {
+                Task {
+                    guard let folder = recordingCoordinator.lastSessionFolderURL else {
+                        print("Share: no session folder yet - record a session first.")
+                        return
+                    }
+                    await MainActor.run {
+                        exportFolderURL = folder
+                        showExportSheet = true
+                    }
+                }
+            } label: {
+                Label("Export Last Session", systemImage: "square.and.arrow.up")
+            }
+        } label: {
+            dockIcon(
+                systemImage: "ellipsis",
+                foregroundStyle: recordingCoordinator.uploadSettings.enabled ? Color.accentColor : Color(uiColor: .label),
+                isHighlighted: recordingCoordinator.uploadSettings.enabled
+            )
         }
+        .buttonStyle(LiquidButtonStyle())
+        .accessibilityLabel("More capture actions")
     }
 
-    private var uploadToolbarButton: some View {
-        toolDockButton(
-            title: "Upload",
-            systemImage: recordingCoordinator.uploadSettings.enabled ? "icloud.and.arrow.up.fill" : "icloud.and.arrow.up",
-            accessibilityLabel: "Configure automatic upload",
-            foregroundStyle: recordingCoordinator.uploadSettings.enabled ? Color.accentColor : Color(uiColor: .label),
-            isDisabled: recordingCoordinator.isCaptureRecording,
-            isHighlighted: recordingCoordinator.uploadSettings.enabled
-        ) {
-            showUploadSheet = true
-        }
-    }
-
-    private func toolDockButton(
-        title: String,
+    private func liquidDockButton(
         systemImage: String,
         accessibilityLabel: String,
         foregroundStyle: Color,
@@ -633,34 +590,48 @@ struct ContentView: View {
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            VStack(spacing: 3) {
-                Image(systemName: systemImage)
-                    .font(.system(size: 18, weight: .semibold))
-                    .symbolRenderingMode(.hierarchical)
-                    .frame(width: 23, height: 22)
-                Text(title)
-                    .font(.system(size: 10, weight: .semibold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
-            }
-            .foregroundStyle(foregroundStyle)
-            .frame(width: 58, height: 52)
-            .background {
-                if isHighlighted {
-                    Capsule(style: .continuous)
-                        .fill(Color(uiColor: .secondarySystemFill).opacity(0.55))
-                        .overlay {
-                            Capsule(style: .continuous)
-                                .stroke(Color.white.opacity(0.22), lineWidth: 1)
-                        }
-                }
-            }
-            .contentShape(Rectangle())
+            dockIcon(systemImage: systemImage, foregroundStyle: foregroundStyle, isHighlighted: isHighlighted)
         }
         .buttonStyle(LiquidButtonStyle())
         .disabled(isDisabled)
         .opacity(isDisabled ? 0.42 : 1)
         .accessibilityLabel(accessibilityLabel)
+    }
+
+    private func dockIcon(
+        systemImage: String,
+        foregroundStyle: Color,
+        isHighlighted: Bool
+    ) -> some View {
+        Image(systemName: systemImage)
+            .font(.body.weight(.semibold))
+            .symbolRenderingMode(.hierarchical)
+            .foregroundStyle(foregroundStyle)
+            .frame(width: 44, height: 44)
+            .background {
+                Circle()
+                    .fill(isHighlighted ? Color(uiColor: .secondarySystemFill).opacity(0.76) : Color(uiColor: .systemFill).opacity(0.34))
+                    .background {
+                        VisualEffectBlur(style: .systemUltraThinMaterial)
+                            .clipShape(Circle())
+                    }
+                    .overlay {
+                        Circle()
+                            .stroke(
+                                LinearGradient(
+                                    colors: [
+                                        Color.white.opacity(isHighlighted ? 0.62 : 0.36),
+                                        Color.white.opacity(0.08),
+                                        Color.black.opacity(0.08)
+                                    ],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                ),
+                                lineWidth: 1
+                            )
+                    }
+            }
+            .contentShape(Circle())
     }
 
     // MARK: - Export (same zip + activity flow as before)
@@ -758,12 +729,19 @@ struct ARViewContainer: UIViewRepresentable {
 
         let configuration = ARWorldTrackingConfiguration()
 
-        if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) {
+        let supportsSceneDepth = ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth)
+        let supportsSmoothedSceneDepth = ARWorldTrackingConfiguration.supportsFrameSemantics(.smoothedSceneDepth)
+
+        if supportsSceneDepth {
             configuration.frameSemantics.insert(.sceneDepth)
         }
 
-        if ARWorldTrackingConfiguration.supportsFrameSemantics(.smoothedSceneDepth) {
+        if supportsSmoothedSceneDepth {
             configuration.frameSemantics.insert(.smoothedSceneDepth)
+        }
+
+        if !supportsSceneDepth && !supportsSmoothedSceneDepth {
+            recordingCoordinator.warningBanner = "LiDAR depth unavailable on this device; use a LiDAR-capable iPhone or iPad for depth capture."
         }
 
         if meshVisualizationEnabled, ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh) {
@@ -786,18 +764,19 @@ extension ContentView {
                 showGestureGuide.toggle()
             }
         } label: {
-            Image(systemName: "hand.raised.fill")
-                .font(.body.weight(.semibold))
-                .foregroundStyle(showGestureGuide ? Color.white : Color.accentColor)
-                .frame(width: 44, height: 44)
-                .background {
-                    VisualEffectBlur(style: showGestureGuide ? .systemMaterial : .systemThinMaterial)
-                        .clipShape(Circle())
-                }
-                .overlay {
-                    Circle()
-                        .stroke(Color(uiColor: .label).opacity(0.15), lineWidth: 1)
-                }
+            HStack(spacing: 8) {
+                Image(systemName: "hand.raised.fill")
+                    .font(.body.weight(.semibold))
+                Text(showGestureGuide ? "Hide Gestures" : "Gestures")
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+            }
+            .foregroundStyle(showGestureGuide ? Color.accentColor : Color(uiColor: .label))
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .frame(minHeight: 44)
+            .glassPanel(cornerRadius: 16, blurStyle: .systemThinMaterial, shadowRadius: 8, shadowYOffset: 3)
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Show gestures guide")

@@ -130,7 +130,14 @@ struct CaptureSessionManifest: Codable, Sendable {
         var writerCaptureCalls: Int
         var framesSkippedWriting: Int
         var framesSkippedMotion: Int
+        var framesSkippedWarmup: Int? = nil
+        var framesSkippedLowQuality: Int? = nil
         var framesWritten: Int
+        var selectedDepthSource: String? = nil
+        var lastDepthValidPixelRatio: Float? = nil
+        var lastDepthMinMeters: Float? = nil
+        var lastDepthMedianMeters: Float? = nil
+        var lastDepthMaxMeters: Float? = nil
         var rawDepthFramesAvailable: Int
         var smoothedDepthFramesAvailable: Int
         var confidenceFramesAvailable: Int
@@ -174,11 +181,16 @@ struct V2StreamFrameRecord: Codable, Sendable {
     var monotonicElapsedSeconds: Double
     var width: Int
     var height: Int
+    var selectedDepthSource: String? = nil
     var sourceDepthPixelFormat: String
     var depthBytesPerRow: Int?
     var storedDepthFormat: String
     var depthByteOffset: UInt64
     var depthByteCount: Int
+    var depthValidPixelRatio: Float? = nil
+    var depthMinMeters: Float? = nil
+    var depthMedianMeters: Float? = nil
+    var depthMaxMeters: Float? = nil
     var smoothedDepthByteOffset: UInt64?
     var smoothedDepthByteCount: Int?
     var smoothedDepthPixelFormat: String?
@@ -191,9 +203,15 @@ struct V2StreamFrameRecord: Codable, Sendable {
     var confidenceWidth: Int?
     var confidenceHeight: Int?
     var confidenceBytesPerRow: Int?
+    var confidenceAvailable: Bool? = nil
+    var confidenceLowCount: Int? = nil
+    var confidenceMediumCount: Int? = nil
+    var confidenceHighCount: Int? = nil
     var rgbPresentationTimeSeconds: Double?
     var cameraTransformColumnMajor: [Float]
     var cameraIntrinsicsColumnMajor: [Float]
+    var cameraIntrinsicsReference: String? = nil
+    var rgbCameraIntrinsicsColumnMajor: [Float]? = nil
     var cameraImageResolutionWidth: Int
     var cameraImageResolutionHeight: Int
     var enabledFrameSemantics: [String]?

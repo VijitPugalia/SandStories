@@ -43,62 +43,6 @@ struct ContentView: View {
             .padding(.top, 8)
             .zIndex(2)
 
-            if showGestureGuide {
-                VStack(alignment: .leading, spacing: 14) {
-                    HStack {
-                        Text("Gestures")
-                            .font(.headline.weight(.bold))
-                        Spacer()
-                        Button {
-                            withAnimation(.spring(duration: 0.3, bounce: 0.15)) { showGestureGuide = false }
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .font(.title2)
-                                .foregroundStyle(Color(uiColor: .secondaryLabel))
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    
-                    Divider()
-                    
-                    VStack(alignment: .leading, spacing: 8) {
-                        InteractiveGestureRow(
-                            icon: "hand.raised.fill",
-                            gestureName: "Open Palm (hold 3s)",
-                            actionDescription: "Pause / Resume Recording",
-                            isEnabled: $recordingCoordinator.isPauseGestureEnabled
-                        )
-                        InteractiveGestureRow(
-                            icon: "hand.wave.fill",
-                            gestureName: "Wave Hand (3 times)",
-                            actionDescription: "Stop Recording Session",
-                            isEnabled: $recordingCoordinator.isStopGestureEnabled
-                        )
-                        InteractiveGestureRow(
-                            icon: "hand.point.up.left.fill",
-                            gestureName: "One-Finger Triple Tap",
-                            actionDescription: "Mark Segment",
-                            isEnabled: $recordingCoordinator.isMarkGestureEnabled
-                        )
-                    }
-                }
-                .padding(16)
-                .background {
-                    VisualEffectBlur(style: .systemMaterial)
-                        .clipShape(RoundedRectangle(cornerRadius: 20))
-                }
-                .overlay {
-                    RoundedRectangle(cornerRadius: 20)
-                        .stroke(Color(uiColor: .label).opacity(0.15), lineWidth: 1)
-                }
-                .shadow(color: Color.black.opacity(0.15), radius: 15, y: 5)
-                .frame(maxWidth: 310)
-                .padding(.horizontal, 16)
-                .padding(.top, 80) // Below top HUD
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-                .transition(.opacity.combined(with: .move(edge: .top)))
-            }
-
             if recordingCoordinator.isCapturePaused {
                 ZStack {
                     Color.black.opacity(0.35)
@@ -223,6 +167,12 @@ struct ContentView: View {
                 .padding(.horizontal, 16)
             }
 
+            if showGestureGuide {
+                gestureGuidePanel
+                    .padding(.horizontal, 16)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+
             if let warn = recordingCoordinator.warningBanner {
                 statusGlassText(warn)
                     .padding(.horizontal, 16)
@@ -255,6 +205,32 @@ struct ContentView: View {
         }
     }
 
+    private var gestureGuidePanel: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            InteractiveGestureRow(
+                icon: "hand.raised.fill",
+                gestureName: "Open Palm (hold 3s)",
+                actionDescription: "Pause / Resume Recording",
+                isEnabled: $recordingCoordinator.isPauseGestureEnabled
+            )
+            InteractiveGestureRow(
+                icon: "hand.wave.fill",
+                gestureName: "Wave Hand (3 times)",
+                actionDescription: "Stop Recording Session",
+                isEnabled: $recordingCoordinator.isStopGestureEnabled
+            )
+            InteractiveGestureRow(
+                icon: "hand.point.up.left.fill",
+                gestureName: "One-Finger Triple Tap",
+                actionDescription: "Mark Segment",
+                isEnabled: $recordingCoordinator.isMarkGestureEnabled
+            )
+        }
+        .padding(12)
+        .frame(maxWidth: 464, alignment: .leading)
+        .glassPanel(cornerRadius: 22, blurStyle: .systemUltraThinMaterial, shadowRadius: 12, shadowYOffset: 5)
+    }
+
     private var destinationPill: some View {
         Button {
             guard !recordingCoordinator.isCaptureRecording else { return }
@@ -268,7 +244,7 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Save Location")
                         .font(.caption2.weight(.semibold))
-                        .foregroundStyle(Color(uiColor: .secondaryLabel))
+                        .foregroundStyle(Color(uiColor: .label).opacity(0.78))
                     Text(destinationShortLabel)
                         .font(.footnote.weight(.semibold))
                         .foregroundStyle(Color(uiColor: .label))
@@ -282,12 +258,12 @@ struct ContentView: View {
             .padding(.vertical, 10)
             .frame(minHeight: 52)
             .frame(maxWidth: 220, alignment: .leading)
-            .glassPanel(cornerRadius: 18, blurStyle: .systemThinMaterial, shadowRadius: 10, shadowYOffset: 4)
+            .glassPanel(cornerRadius: 18, blurStyle: .systemUltraThinMaterial, shadowRadius: 12, shadowYOffset: 5)
         }
         .buttonStyle(.plain)
         .accessibilityLabel(recordingCoordinator.destinationLabel)
         .disabled(recordingCoordinator.isCaptureRecording)
-        .opacity(recordingCoordinator.isCaptureRecording ? 0.5 : 1)
+        .opacity(recordingCoordinator.isCaptureRecording ? 0.82 : 1)
     }
 
     private var destinationSystemImage: String {
@@ -648,7 +624,7 @@ struct ContentView: View {
         .background {
             if isSelected {
                 Capsule(style: .continuous)
-                    .fill(Color(uiColor: .secondarySystemFill).opacity(0.72))
+                    .fill(Color(uiColor: .systemFill).opacity(0.28))
                     .background {
                         VisualEffectBlur(style: .systemUltraThinMaterial)
                             .clipShape(Capsule(style: .continuous))
@@ -843,7 +819,7 @@ struct InteractiveGestureRow: View {
                     .frame(width: 28, height: 28)
                     .background {
                         Circle()
-                            .fill(isEnabled ? Color.accentColor.opacity(0.15) : Color(uiColor: .quaternarySystemFill))
+                            .fill(isEnabled ? Color.accentColor.opacity(0.10) : Color(uiColor: .systemFill).opacity(0.18))
                     }
                 
                 VStack(alignment: .leading, spacing: 2) {
@@ -865,7 +841,7 @@ struct InteractiveGestureRow: View {
             .padding(.horizontal, 12)
             .background {
                 RoundedRectangle(cornerRadius: 14)
-                    .fill(isEnabled ? Color.accentColor.opacity(0.05) : Color.clear)
+                    .fill(isEnabled ? Color.accentColor.opacity(0.03) : Color.clear)
             }
             .contentShape(Rectangle())
         }

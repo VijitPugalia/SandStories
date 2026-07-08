@@ -41,12 +41,12 @@ struct GlassPanelModifier: ViewModifier {
                 ZStack {
                     VisualEffectBlur(style: blurStyle)
                     // Premium frosted glass tint
-                    Color.white.opacity(colorScheme == .dark ? 0.09 : 0.12)
+                    Color.white.opacity(colorScheme == .dark ? 0.045 : 0.065)
                     LinearGradient(
                         colors: [
-                            Color.white.opacity(colorScheme == .dark ? 0.12 : 0.22),
+                            Color.white.opacity(colorScheme == .dark ? 0.075 : 0.14),
                             Color.clear,
-                            Color.black.opacity(colorScheme == .dark ? 0.12 : 0.03)
+                            Color.black.opacity(colorScheme == .dark ? 0.08 : 0.02)
                         ],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
@@ -115,15 +115,15 @@ struct LiquidGlassDockModifier: ViewModifier {
         content
             .background {
                 Capsule(style: .continuous)
-                    .fill(Color(uiColor: .systemFill).opacity(colorScheme == .dark ? 0.38 : 0.30))
+                    .fill(Color(uiColor: .systemFill).opacity(colorScheme == .dark ? 0.18 : 0.14))
                     .background {
                         ZStack {
                             VisualEffectBlur(style: .systemThinMaterial)
                             LinearGradient(
                                 colors: [
-                                    Color.white.opacity(colorScheme == .dark ? 0.16 : 0.34),
+                                    Color.white.opacity(colorScheme == .dark ? 0.09 : 0.20),
                                     Color.white.opacity(0.06),
-                                    Color.black.opacity(colorScheme == .dark ? 0.28 : 0.08)
+                                    Color.black.opacity(colorScheme == .dark ? 0.16 : 0.04)
                                 ],
                                 startPoint: .topLeading,
                                 endPoint: .bottomTrailing
@@ -159,7 +159,7 @@ struct LiquidGlassDockModifier: ViewModifier {
                             .padding(1)
                     }
             }
-            .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.30 : 0.14), radius: 24, x: 0, y: 12)
+            .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.24 : 0.10), radius: 24, x: 0, y: 12)
     }
 }
 extension View {

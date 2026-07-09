@@ -2,7 +2,7 @@
 
 Capture sand storytelling sessions as synchronized LiDAR depth, RGB video frames, audio, and 3D stroke data.
 
-SandStories is an iOS AR capture app for research-style recording of sand tray storytelling sessions. It uses ARKit, LiDAR scene depth, camera frames, hand pose input, microphone audio, and location metadata to produce a portable session folder that can be shared, analyzed offline, or automatically uploaded to a receiver service.
+SandStories is an iOS AR capture app for research-style recording of storytelling sessions. It uses ARKit, LiDAR scene depth, camera frames, hand pose input, microphone audio, and location metadata to produce a portable session folder that can be shared, analyzed offline, or automatically uploaded to a receiver service.
 
 ```text
 iPhone ARKit + LiDAR  ──▶  Session Writer  ──▶  manifest.json + depth/RGB/audio/strokes
@@ -43,7 +43,7 @@ flowchart LR
 | --- | --- |
 | LiDAR-capable iPhone/iPad | Required for ARKit scene depth capture |
 | iOS 17+ device | Physical device only for real capture |
-| Sand tray / storytelling surface | Subject being captured |
+| Storytelling surface | Subject being captured |
 | Optional external SSD or Files folder | Used for longer sessions or easier transfer |
 | Mac/Linux/Windows machine | Used for Python visualization and offline analysis |
 

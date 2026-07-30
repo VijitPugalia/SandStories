@@ -388,18 +388,27 @@ func _set_camera_preset(preset: String) -> void:
 
 func _build_world() -> void:
 	var light := DirectionalLight3D.new()
-	light.name = "Sun"
-	light.rotation_degrees = Vector3(-55, 35, 0)
-	light.light_energy = 2.8
+	light.name = "RakingKey"
+	light.rotation_degrees = Vector3(-28, -42, 0)
+	light.light_color = Color(1.0, 0.91, 0.78)
+	light.light_energy = 1.65
+	light.shadow_enabled = true
 	add_child(light)
+
+	var fill_light := DirectionalLight3D.new()
+	fill_light.name = "CoolFill"
+	fill_light.rotation_degrees = Vector3(-62, 132, 0)
+	fill_light.light_color = Color(0.68, 0.80, 1.0)
+	fill_light.light_energy = 0.34
+	add_child(fill_light)
 
 	var environment := WorldEnvironment.new()
 	var env := Environment.new()
 	env.background_mode = Environment.BG_COLOR
-	env.background_color = Color(0.78, 0.82, 0.78)
+	env.background_color = Color(0.58, 0.63, 0.60)
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	env.ambient_light_color = Color(0.65, 0.68, 0.62)
-	env.ambient_light_energy = 0.8
+	env.ambient_light_color = Color(0.55, 0.60, 0.64)
+	env.ambient_light_energy = 0.30
 	environment.environment = env
 	add_child(environment)
 

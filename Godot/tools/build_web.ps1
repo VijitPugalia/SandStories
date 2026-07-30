@@ -119,7 +119,24 @@ window.__sandstories_log = [];
     $Html = $Html.Replace('$GODOT_URL', 'index.js')
     $Html = $Html.Replace('$GODOT_CONFIG', $Config)
     $Html = $Html.Replace('$GODOT_THREADS_ENABLED', 'false')
-    Set-Content -LiteralPath (Join-Path $BuildDir "index.html") -Value $Html -Encoding UTF8
+    $IndexHtml = Join-Path $BuildDir "index.html"
+    $HtmlWritten = $false
+    for ($Attempt = 1; $Attempt -le 20; $Attempt++) {
+        try {
+            Set-Content -LiteralPath $IndexHtml -Value $Html -Encoding UTF8
+            $HtmlWritten = $true
+            break
+        }
+        catch [System.IO.IOException] {
+            if ($Attempt -eq 20) {
+                throw
+            }
+            Start-Sleep -Milliseconds 100
+        }
+    }
+    if (-not $HtmlWritten) {
+        throw "Failed to write Web entry point: $IndexHtml"
+    }
 
     Get-ChildItem $BuildDir | Sort-Object Name | Select-Object Name, Length
 }

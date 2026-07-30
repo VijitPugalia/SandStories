@@ -1,12 +1,14 @@
 shader_type spatial;
-render_mode cull_back, blend_mix, depth_prepass_alpha;
+render_mode cull_back, depth_draw_opaque;
 uniform float arg_1 = 1.0f;
 uniform float arg_2 = 1.0f;
 uniform float background = 0.5f;
 uniform float eps_0 = 0.02f;
 uniform float eps_1 = 0.08f;
 uniform float displacement_scale = 1.0f;
+uniform float baseline_height_offset = 0.0f;
 uniform float material_strength = 0.0f;
+uniform float depth_view_slope_strength = 1.35f;
 uniform vec3 base_sand_color = vec3(0.66, 0.64, 0.58);
 uniform vec2 depth_uv_offset = vec2(0.0, 0.0);
 uniform vec2 depth_uv_scale = vec2(1.0, 1.0);
@@ -62,24 +64,53 @@ void vertex() {
 	float mask = sample_surface_mask(UV);
 	float h = check_depth(UV);
 	h = mix(background, h, mask);
+	h += baseline_height_offset * mask;
 	VERTEX.y -= (h / arg_1) * displacement_scale;
 	
 }
 
 void fragment() {
 	vec2 texture_uv = UV * texture_uv_scale + texture_uv_offset;
-    vec4 tex = texture(texture_map, texture_uv);
+	vec4 tex = texture(texture_map, texture_uv);
 	float mask = sample_surface_mask(UV);
+	if (mask < 0.5) {
+		discard;
+	}
 	float h = check_depth(UV);
+	h += baseline_height_offset * mask;
 	float relief = h - background;
-	float shade = clamp(0.90 + relief * 0.42 - abs(relief) * 0.18, 0.60, 1.08);
+	float shade = clamp(0.96 + relief * 0.22 - abs(relief) * 0.08, 0.76, 1.08);
 	float grain = dot(tex.rgb, vec3(0.299, 0.587, 0.114));
 	vec3 subtle_texture = base_sand_color * mix(0.78, 1.14, grain);
 	vec3 material_color = mix(subtle_texture, tex.rgb, 0.55);
 	vec3 mapped_color = mix(base_sand_color, material_color, clamp(material_strength, 0.0, 1.0));
-	ALBEDO = mapped_color * shade;
-	ROUGHNESS = 0.92;
-	ALPHA = mask;
+
+	// The height map displaces the PlaneMesh in vertex(), but the source mesh
+	// still carries a flat up-facing normal. Reconstruct the real triangle
+	// normal from the displaced view-space position so raking lights reveal
+	// grooves and ridges instead of shading the surface as one flat card.
+	vec3 flat_normal = normalize(NORMAL);
+	vec3 geometric_normal = normalize(cross(dFdx(VERTEX), dFdy(VERTEX)));
+	if (dot(geometric_normal, flat_normal) < 0.0) {
+		geometric_normal = -geometric_normal;
+	}
+	NORMAL = normalize(mix(flat_normal, geometric_normal, 0.94));
+
+	// When Map blend is zero, turn the neutral material into a depth diagnostic
+	// view. The cue is derived only from the rendered geometry: slope
+	// darkening under the raking lights. It fades out before the RGB material
+	// reaches its normal session strength.
+	float depth_view = 1.0 - smoothstep(0.0, 0.62, material_strength);
+	float slope = clamp(1.0 - dot(NORMAL, flat_normal), 0.0, 1.0);
+	float slope_shade = clamp(
+		1.04 - slope * depth_view_slope_strength,
+		0.50,
+		1.08
+	);
+
+	ALBEDO = mapped_color * shade * mix(1.0, slope_shade, depth_view);
+	ROUGHNESS = mix(0.86, 0.94, depth_view);
+	SPECULAR = mix(0.28, 0.12, depth_view);
 }
 
 //void light() {

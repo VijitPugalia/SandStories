@@ -1,0 +1,50 @@
+{
+  "id": "best_hybrid_reconstruction_000171",
+  "title": "Frame 000171 - best local hybrid reconstruction",
+  "duration": 1.0,
+  "reconstruction_demo": true,
+  "reconstruction_methods": [
+    {
+      "label": "Hybrid (recommended)",
+      "depth_map": "res://data/best_reconstruction/hybrid_depth_000171.png",
+      "note": "V4.2 geometry retained outside occlusions; locally aligned VDA-small only fills masked regions."
+    },
+    {
+      "label": "V4.2 baseline",
+      "depth_map": "res://data/best_reconstruction/v42_depth_000171.png",
+      "note": "Best temporal stability and strongest retained fine relief."
+    },
+    {
+      "label": "Depth Anything V2",
+      "depth_map": "res://data/best_reconstruction/dav2_depth_000171.png",
+      "note": "Lowest visible-frame error, but less temporally stable and smoother at relief edges."
+    }
+  ],
+  "data_sources": {
+    "use_video_streams": false,
+    "depth_map": "res://data/best_reconstruction/hybrid_depth_000171.png",
+    "texture_map": "res://data/best_reconstruction/clean_rgb_000171.png",
+    "surface_mask": "res://data/best_reconstruction/surface_mask.png",
+    "calibration": {
+      "depth_uv_offset": [0.0, 0.0],
+      "texture_uv_offset": [0.0, 0.0],
+      "depth_uv_scale": [1.0, 1.0],
+      "texture_uv_scale": [1.0, 1.0],
+      "height_scale": -5.8,
+      "material_strength": 1.0
+    }
+  },
+  "surface_width": 24,
+  "surface_depth": 18,
+  "surface_scale": 0.25,
+  "surface_heights": [],
+  "objects": [],
+  "annotations": [],
+  "gesture_events": [],
+  "study_tasks": [
+    {
+      "id": "hybrid_reconstruction_review",
+      "prompt": "Rotate the reconstructed surface and compare RGB, solid geometry, and wireframe modes."
+    }
+  ]
+}

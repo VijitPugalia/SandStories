@@ -1,13 +1,44 @@
 param(
-    [string]$GodotExe = "C:\Users\lj200\Documents\Tools\Godot_v4.5.1-stable_mono_win64\Godot_v4.5.1-stable_win64_console.exe",
+    [string]$GodotExe = $env:GODOT_BIN,
     [string]$ProjectDir = (Resolve-Path "$PSScriptRoot\..").Path,
-    [string]$TemplateZip = "C:\Users\lj200\AppData\Roaming\Godot\export_templates\4.5.1.stable\web_nothreads_release.zip"
+    [string]$TemplateZip = $env:GODOT_WEB_TEMPLATE
 )
 
 $ErrorActionPreference = "Stop"
 
 $BuildDir = Join-Path $ProjectDir "build\web"
-$TempDir = Join-Path $env:TEMP "sandstories_godot_web_template"
+$TempDir = Join-Path ([IO.Path]::GetTempPath()) (
+    "sandstories_godot_web_template_{0}" -f [Guid]::NewGuid().ToString("N")
+)
+
+if (-not $GodotExe) {
+    $GodotCommand = Get-Command godot4, godot -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($null -eq $GodotCommand) {
+        throw "Godot was not found. Pass -GodotExe or set GODOT_BIN."
+    }
+    $GodotExe = $GodotCommand.Source
+}
+if (-not (Test-Path -LiteralPath $GodotExe -PathType Leaf)) {
+    throw "Godot executable does not exist: $GodotExe"
+}
+
+if (-not $TemplateZip) {
+    $GodotVersion = (& $GodotExe --version | Select-Object -First 1).Trim()
+    if ($LASTEXITCODE -ne 0 -or $GodotVersion -notmatch '^(\d+\.\d+\.\d+\.[^.]+)') {
+        throw "Could not determine the Godot export-template version."
+    }
+    $TemplateZip = Join-Path $env:APPDATA (
+        "Godot\export_templates\{0}\web_nothreads_release.zip" -f $Matches[1]
+    )
+}
+if (-not (Test-Path -LiteralPath $TemplateZip -PathType Leaf)) {
+    throw (
+        "Web export template does not exist: $TemplateZip. " +
+        "Install the matching Godot templates, pass -TemplateZip, or set " +
+        "GODOT_WEB_TEMPLATE."
+    )
+}
 
 New-Item -ItemType Directory -Force $BuildDir | Out-Null
 
@@ -16,29 +47,27 @@ if ($LASTEXITCODE -ne 0) {
     throw "Godot pack export failed with exit code $LASTEXITCODE"
 }
 
-if (Test-Path $TempDir) {
-    Remove-Item -LiteralPath $TempDir -Recurse -Force
-}
-New-Item -ItemType Directory -Force $TempDir | Out-Null
-Expand-Archive -LiteralPath $TemplateZip -DestinationPath $TempDir -Force
+try {
+    New-Item -ItemType Directory -Force $TempDir | Out-Null
+    Expand-Archive -LiteralPath $TemplateZip -DestinationPath $TempDir -Force
 
-Copy-Item -LiteralPath (Join-Path $TempDir "godot.js") -Destination (Join-Path $BuildDir "index.js") -Force
-Copy-Item -LiteralPath (Join-Path $TempDir "godot.wasm") -Destination (Join-Path $BuildDir "index.wasm") -Force
-Copy-Item -LiteralPath (Join-Path $TempDir "godot.audio.worklet.js") -Destination (Join-Path $BuildDir "index.audio.worklet.js") -Force
-Copy-Item -LiteralPath (Join-Path $TempDir "godot.audio.position.worklet.js") -Destination (Join-Path $BuildDir "index.audio.position.worklet.js") -Force
-Copy-Item -LiteralPath (Join-Path $TempDir "godot.service.worker.js") -Destination (Join-Path $BuildDir "index.service.worker.js") -Force
-Copy-Item -LiteralPath (Join-Path $TempDir "godot.offline.html") -Destination (Join-Path $BuildDir "index.offline.html") -Force
+    Copy-Item -LiteralPath (Join-Path $TempDir "godot.js") -Destination (Join-Path $BuildDir "index.js") -Force
+    Copy-Item -LiteralPath (Join-Path $TempDir "godot.wasm") -Destination (Join-Path $BuildDir "index.wasm") -Force
+    Copy-Item -LiteralPath (Join-Path $TempDir "godot.audio.worklet.js") -Destination (Join-Path $BuildDir "index.audio.worklet.js") -Force
+    Copy-Item -LiteralPath (Join-Path $TempDir "godot.audio.position.worklet.js") -Destination (Join-Path $BuildDir "index.audio.position.worklet.js") -Force
+    Copy-Item -LiteralPath (Join-Path $TempDir "godot.service.worker.js") -Destination (Join-Path $BuildDir "index.service.worker.js") -Force
+    Copy-Item -LiteralPath (Join-Path $TempDir "godot.offline.html") -Destination (Join-Path $BuildDir "index.offline.html") -Force
 
-$PckSize = (Get-Item (Join-Path $BuildDir "index.pck")).Length
-$WasmSize = (Get-Item (Join-Path $BuildDir "index.wasm")).Length
-$JsSize = (Get-Item (Join-Path $BuildDir "index.js")).Length
+    $PckSize = (Get-Item (Join-Path $BuildDir "index.pck")).Length
+    $WasmSize = (Get-Item (Join-Path $BuildDir "index.wasm")).Length
+    $JsSize = (Get-Item (Join-Path $BuildDir "index.js")).Length
 
-$Config = '{"args":[],"canvasResizePolicy":2,"executable":"index","mainPack":"index.pck","experimentalVK":false,"fileSizes":{"index.pck":' + $PckSize + ',"index.wasm":' + $WasmSize + ',"index.js":' + $JsSize + '},"focusCanvas":true,"gdextensionLibs":[],"serviceWorker":"","ensureCrossOriginIsolationHeaders":false}'
+    $Config = '{"args":[],"canvasResizePolicy":2,"executable":"index","mainPack":"index.pck","experimentalVK":false,"fileSizes":{"index.pck":' + $PckSize + ',"index.wasm":' + $WasmSize + ',"index.js":' + $JsSize + '},"focusCanvas":true,"gdextensionLibs":[],"serviceWorker":"","ensureCrossOriginIsolationHeaders":false}'
 
-$Html = Get-Content -Raw (Join-Path $TempDir "godot.html")
-$Html = $Html.Replace('$GODOT_PROJECT_NAME', 'Sand Stories Prototype')
-$Html = $Html.Replace('$GODOT_SPLASH_COLOR', '#000000')
-$HeadInclude = @'
+    $Html = Get-Content -Raw (Join-Path $TempDir "godot.html")
+    $Html = $Html.Replace('$GODOT_PROJECT_NAME', 'Sand Stories Prototype')
+    $Html = $Html.Replace('$GODOT_SPLASH_COLOR', '#000000')
+    $HeadInclude = @'
 <script>
 window.__sandstories_log = [];
 (function () {
@@ -84,12 +113,35 @@ window.__sandstories_log = [];
 }());
 </script>
 '@
-$Html = $Html.Replace('$GODOT_HEAD_INCLUDE', $HeadInclude)
-$Html = $Html.Replace('$GODOT_SPLASH_CLASSES', 'show-image--false fullsize--false use-filter--false')
-$Html = $Html.Replace('$GODOT_SPLASH', '')
-$Html = $Html.Replace('$GODOT_URL', 'index.js')
-$Html = $Html.Replace('$GODOT_CONFIG', $Config)
-$Html = $Html.Replace('$GODOT_THREADS_ENABLED', 'false')
-Set-Content -LiteralPath (Join-Path $BuildDir "index.html") -Value $Html -Encoding UTF8
+    $Html = $Html.Replace('$GODOT_HEAD_INCLUDE', $HeadInclude)
+    $Html = $Html.Replace('$GODOT_SPLASH_CLASSES', 'show-image--false fullsize--false use-filter--false')
+    $Html = $Html.Replace('$GODOT_SPLASH', '')
+    $Html = $Html.Replace('$GODOT_URL', 'index.js')
+    $Html = $Html.Replace('$GODOT_CONFIG', $Config)
+    $Html = $Html.Replace('$GODOT_THREADS_ENABLED', 'false')
+    $IndexHtml = Join-Path $BuildDir "index.html"
+    $HtmlWritten = $false
+    for ($Attempt = 1; $Attempt -le 20; $Attempt++) {
+        try {
+            Set-Content -LiteralPath $IndexHtml -Value $Html -Encoding UTF8
+            $HtmlWritten = $true
+            break
+        }
+        catch [System.IO.IOException] {
+            if ($Attempt -eq 20) {
+                throw
+            }
+            Start-Sleep -Milliseconds 100
+        }
+    }
+    if (-not $HtmlWritten) {
+        throw "Failed to write Web entry point: $IndexHtml"
+    }
 
-Get-ChildItem $BuildDir | Sort-Object Name | Select-Object Name, Length
+    Get-ChildItem $BuildDir | Sort-Object Name | Select-Object Name, Length
+}
+finally {
+    if (Test-Path -LiteralPath $TempDir) {
+        Remove-Item -LiteralPath $TempDir -Recurse -Force
+    }
+}

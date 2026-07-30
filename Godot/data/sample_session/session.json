@@ -782,6 +782,61 @@
       "prompt": "Explain which gesture refers to which drawing or object."
     }
   ],
+  "experiment": {
+    "protocolId": "sandstories_proposal_v1",
+    "readyForDataCollection": false,
+    "readinessNotes": [
+      "Synthetic interface-training session only.",
+      "Narration audio is not available, so the no-audio contrast is invalid."
+    ],
+    "summaryPrompt": "Summarise the route, camp, and water-resource knowledge communicated by this demonstration.",
+    "stage1Questions": [
+      {
+        "id": "resource_location",
+        "type": "choice",
+        "prompt": "Where is the water/resource point relative to the centre of the sand surface?",
+        "options": [
+          "Upper-left area",
+          "Upper-right area",
+          "Lower-left area",
+          "At the centre"
+        ],
+        "evidencePrompt": "Describe the visual evidence used to locate the resource."
+      },
+      {
+        "id": "pointing_target",
+        "type": "choice",
+        "prompt": "What does the later pointing gesture refer to?",
+        "options": [
+          "The camp",
+          "The water/resource point",
+          "The route origin",
+          "No visible target"
+        ],
+        "evidencePrompt": "State the time and modality that support this interpretation."
+      }
+    ],
+    "stage2Questions": [
+      {
+        "id": "route_relation",
+        "type": "choice",
+        "prompt": "Which sand-surface segment is linked to the early drawing gesture?",
+        "options": [
+          "The route trace",
+          "The water region",
+          "The camp object",
+          "No segment"
+        ],
+        "evidencePrompt": "Explain how the gesture label or referential link supports the answer."
+      },
+      {
+        "id": "water_relation",
+        "type": "short",
+        "prompt": "Explain the relation between the later hand gesture, the water object, and the highlighted water region.",
+        "evidencePrompt": "Mark and describe the strongest timestamped evidence."
+      }
+    ]
+  },
   "hand_tracks": [
     {
       "id": "right_hand",

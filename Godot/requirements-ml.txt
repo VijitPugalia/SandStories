@@ -4,6 +4,7 @@ scipy
 opencv-python-headless
 ultralytics
 segment-anything
+mediapipe
 
 # Install CPU torch separately before this file:
 # python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu

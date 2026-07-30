@@ -4,6 +4,12 @@ Godot 4 scaffold for the sand stories probing system described in the proposal.
 
 ## Detailed Docs
 
+- `docs/RGBD_RECONSTRUCTION_WORKFLOW.md`: concise provenance and dependency
+  boundaries for the selected RGB, sand depth, MANO hand, and v21b RGB-only
+  shadow-removal probe.
+- `docs/AGENT_HANDOFF.md`: authoritative current handoff for the Kinect,
+  Any2Full, ProPainter, and Godot reconstruction work. Read this first before
+  continuing experiments.
 - `docs/ARCHITECTURE.zh.md`: architecture, runtime layers, data flow, WebGL export, and next engineering steps.
 - `docs/EXPLANATION.zh.md`: practical explanation for connecting real depth/material streams, MediaPipe hand landmarks, objects, and annotation links.
 
@@ -23,6 +29,9 @@ Godot 4 scaffold for the sand stories probing system described in the proposal.
 - Stage 1 condition selector for baseline, no audio, no gestures, no objects, and no sand surface.
 - Stage 2 annotation mode that enables explicit links and highlights for polysemiotic analysis.
 - Study task panel with evidence-marking and response-draft logging.
+- Proposal-aligned six-phase experiment runner for consent, participant
+  covariates, common training, interpretation/evidence tasks, Likert and raw
+  NASA-TLX ratings, and anonymous JSON export.
 - Two synced fixed-view proxy panes: top-down and front-view.
 - Browser-friendly camera controls: left drag orbit, Shift/middle drag pan, wheel/Q/E zoom, WASD/arrow pan, R/1/2/3 presets.
 - Bundled Noto Sans SC UI/Label3D font for Chinese names, CJK annotations, and WebGL text rendering.
@@ -37,6 +46,8 @@ Godot 4 scaffold for the sand stories probing system described in the proposal.
 - `project.godot`: Godot project config.
 - `scenes/Main.tscn`: main scene entry point.
 - `scripts/main.gd`: runtime scene, UI, playback, logging, and data loading.
+- `scripts/experiment_runner.gd`: participant-facing Stage 1/Stage 2 workflow
+  and submission payload builder.
 - `assets/models/hands.obj`: imported hand model from the previous shader/model test project.
 - `assets/models/hand_left.obj`: split single left-hand mesh.
 - `assets/models/hand_right.obj`: split single right-hand mesh.
@@ -51,6 +62,8 @@ Godot 4 scaffold for the sand stories probing system described in the proposal.
 - Optional `assets/video/texture_stream.ogv`: material/RGB video stream used by the heightmap material.
 - `data/sample_session/session.json`: sample data matching the prototype schema.
 - `data/session_schema.json`: import contract for processed RGB-D, gesture, object, annotation, and task data.
+- `data/experiment_protocol.json`: proposal-derived study design, conditions,
+  training tasks, cohorts, and questionnaire dimensions.
 - `docs/ARCHITECTURE.zh.md`: detailed Chinese architecture document.
 - `docs/EXPLANATION.zh.md`: detailed Chinese integration and explanation document.
 - `tools/split_hands_obj.py`: splits the original double-hand OBJ into independent left/right meshes.
@@ -81,12 +94,59 @@ Supported `condition` values are `baseline`, `no_audio`, `no_gestures`, `no_obje
 
 `unicode=1` enables a CJK smoke test with 40 Chinese participant names, Chinese task text, Chinese 3D annotations, and a Unicode log event.
 
+## Proposal-aligned Experiment Runner
+
+Add `study=stage1`, `study=stage2`, or `study=pilot` to enter the
+participant-facing runner:
+
+```text
+index.html?study=pilot&participant=qa001
+index.html?study=stage1&participant=p001
+index.html?study=stage1&participant=p001&condition=no_gestures
+index.html?study=stage2&participant=p201
+```
+
+Stage 1 uses the complete representation for training, then deterministically
+assigns one of the five between-subjects conditions from the anonymous
+participant code and protocol ID. `condition=...` is a fixed override for QA;
+it is not recommended as the production allocation mechanism. The assigned
+modality is hidden and its toggle is locked only when the main task begins.
+Stage 1 also removes the fixed reference views, as specified in the proposal.
+
+Stage 2 enables the full representation, explicit annotations/referential
+links, expert/practitioner/non-expert grouping, Stage 2 training tasks,
+annotation-usefulness ratings, observer notes, and interview notes.
+
+The runner records phase durations, profile covariates, summary and
+comprehension responses, evidence text, marked 3D view/timestamp/layer state,
+Likert responses, the six raw NASA-TLX dimensions, and runtime interaction
+events. Native runs write:
+
+```text
+user://experiment_submissions/<run-id>.json
+```
+
+Web runs also download the same anonymous JSON package in the browser.
+`study=pilot` visibly marks the run as interface validation and sets
+`readyForDataCollection` from the session's actual modalities and validated
+experiment content.
+
+The current sample and accepted v20d hand session are deliberately marked
+**not ready for research data collection**. Before recruitment, add real
+narration audio, complete object/tool observations, creator-validated
+interpretations and questions, approved participant information/consent text,
+and production server-side allocation/storage. A browser download and
+deterministic hash assignment are suitable for pilot QA, not balanced remote
+recruitment.
+
 ## Data Interface
 
 Session files are designed as the boundary between capture/post-processing and the Godot study probe:
 
 - `data_sources.depth_map` and `data_sources.texture_map` are the aligned static SandMap depth/material images used by default.
 - `data_sources.depth_video` and `data_sources.texture_video` are synced OGV streams that can replace the static maps with the UI toggle or `?video=1`.
+- `data_sources.audio` is an optional local or remote OGG/MP3 narration stream
+  synchronized to the shared playhead.
 - `participants` accepts UTF-8 strings or objects with `display_name`; Chinese names are rendered in the Study Inspector.
 - `hand_tracks` is the preferred multi-hand format, with one independent track per hand and MediaPipe-style 21-point landmarks.
 - `mediapipe_hands` is an accepted frame-first MediaPipe export that the runtime normalizes into `hand_tracks`.
@@ -94,6 +154,8 @@ Session files are designed as the boundary between capture/post-processing and t
 - `objects` accepts YOLO/manual detections with `primitive` or optional `model_path` for custom meshes.
 - `surface_regions`, `gesture_events`, and `references` encode the Zlatev-style annotation/highlight/link layer.
 - `study_tasks` drives the participant-facing task list.
+- `experiment` declares the protocol ID, readiness flag/notes, summary prompt,
+  and Stage 1/Stage 2 comprehension questions used by the experiment runner.
 
 ## Run
 
@@ -152,6 +214,37 @@ web_nothreads_debug.zip
 web_nothreads_release.zip
 ```
 
+## Start the local review server
+
+From the `Godot` directory, run:
+
+```powershell
+.\tools\start_review_server.ps1
+```
+
+This serves the current Web build and bundled Godot assets from
+`http://localhost:8845`. If `../../tmp/opencode` exists, it is exposed as the
+dynamic processed-session root as well. The script prints ready-to-open links
+for pilot mode, Stage 1, and Stage 2. Press `Ctrl+C` to stop it.
+
+To print a link for a dynamic review session, provide its directory and name:
+
+```powershell
+.\tools\start_review_server.ps1 `
+  -DynamicSessionsDir C:\path\to\processed_sessions `
+  -SessionName session_kinect_example
+```
+
+To leave it running in the background:
+
+```powershell
+.\tools\start_review_server.ps1 -Background
+```
+
+Logs are written to `build/web/diagnostics/review_server.*.log`. The server
+binds to `127.0.0.1` by default; use an explicit
+`-BindAddress 0.0.0.0` only when LAN access is intentionally required.
+
 ## Test Stream Generation
 
 The current checked-in `.ogv` streams were generated from the archived AVI as placeholders:
@@ -168,5 +261,6 @@ Replace those with real synced depth/material streams when capture output is rea
 - Replace `surface_heights` with frame-based height maps for animated sand changes.
 - Add top-down/front video panes and audio playback once source media files exist.
 - Replace the current fixed-view proxy panes with actual top-down/front video streams once source media files exist.
-- Add URL/query-param driven assignment for online Stage 1 conditions.
+- Add server-side balanced Stage 1 allocation and encrypted/approved submission
+  storage before real online recruitment.
 - Replace sample annotations with exported ELAN/Zlatev-style events.

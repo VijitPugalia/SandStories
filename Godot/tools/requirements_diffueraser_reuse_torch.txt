@@ -1,0 +1,21 @@
+# DiffuEraser inference dependencies. Torch, torchvision, torchaudio and their
+# CUDA runtime are inherited read-only from the isolated EffectErase venv on
+# Amadeus (Torch 2.5.1 + CUDA 12.1) to avoid downloading a duplicate 2.3.1
+# runtime. All application-level packages remain isolated in the DiffuEraser
+# venv at the official repository versions.
+diffusers==0.29.2
+accelerate==0.25.0
+opencv-python==4.9.0.80
+imageio==2.34.1
+matplotlib
+transformers==4.41.1
+einops==0.8.0
+datasets==2.19.1
+numpy==1.26.4
+pillow==10.4.0
+tqdm==4.66.4
+urllib3==2.2.2
+zipp==3.19.2
+peft==0.13.2
+scipy==1.13.1
+av==14.0.1

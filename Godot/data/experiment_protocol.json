@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "id": "sandstories_proposal_v1",
+  "title": "Digitising Sand Stories",
+  "stage1": {
+    "design": "online_between_subjects",
+    "conditions": [
+      "baseline",
+      "no_audio",
+      "no_gestures",
+      "no_objects",
+      "no_sand"
+    ],
+    "targetParticipants": 100
+  },
+  "stage2": {
+    "design": "in_person_within_subject_observational",
+    "groups": [
+      "Non-expert",
+      "Practitioner",
+      "Expert"
+    ],
+    "targetParticipantsPerGroup": "3-4"
+  },
+  "trainingTasks": [
+    "Orbit, pan, and zoom the 3D scene.",
+    "Play, pause, and seek on the timeline.",
+    "Toggle at least one available modality layer."
+  ],
+  "stage2TrainingTasks": [
+    "Retrieve information that is hidden from the current camera angle.",
+    "Identify a highlighted sand-surface segment.",
+    "Use a gesture label or referential link to identify its target."
+  ],
+  "questionnaire": {
+    "likertRange": [
+      1,
+      7
+    ],
+    "nasaTlxDimensions": [
+      "mentalDemand",
+      "physicalDemand",
+      "temporalDemand",
+      "performance",
+      "effort",
+      "frustration"
+    ]
+  }
+}

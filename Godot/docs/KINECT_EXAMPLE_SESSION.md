@@ -45,3 +45,22 @@ python tools/remove_foreground_objects.py \
 ```
 
 The RGB cleanup is intentionally aggressive for this example. It removes more hand/finger contamination on the sand surface, but reference patches can still show visible tone boundaries.
+
+## MediaPipe Virtual Hands
+
+The cleaned example can render virtual hands from a sidecar generated from the original, uncleaned RGB-D session:
+
+`assets/processed_sessions/session_kinect_20260623_154953_object_removed_sam_full_gpu_rgb_reference_repair_bold/hand_tracks_mediapipe.json`
+
+The sidecar stores Godot-space `hand_tracks` plus per-frame MediaPipe debug data. The track points are MediaPipe RGB landmarks projected onto the same 5.5 x 5.5 Godot sand plane and lifted with the matching per-frame depth/height image. This is an overlay aligned to the current heightmap shader, not a calibrated Kinect millimetre-space skeletal reconstruction.
+
+Generate or refresh it with:
+
+```bash
+python tools/extract_mediapipe_hands.py \
+  assets/processed_sessions/session_kinect_20260623_154953 \
+  --output assets/processed_sessions/session_kinect_20260623_154953_object_removed_sam_full_gpu_rgb_reference_repair_bold/hand_tracks_mediapipe.json \
+  --attach-session assets/processed_sessions/session_kinect_20260623_154953_object_removed_sam_full_gpu_rgb_reference_repair_bold
+```
+
+Use the original session as the source because the cleaned example has the hands removed from RGB. The `--attach-session` argument updates the cleaned `session.json` with `data_sources.hand_tracks`, so Godot loads the sidecar before building the existing virtual hand renderer.

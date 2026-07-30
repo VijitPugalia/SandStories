@@ -1,11 +1,12 @@
 shader_type spatial;
-render_mode cull_back, blend_mix, depth_prepass_alpha;
+render_mode cull_back, depth_draw_opaque;
 uniform float arg_1 = 1.0f;
 uniform float arg_2 = 1.0f;
 uniform float background = 0.5f;
 uniform float eps_0 = 0.02f;
 uniform float eps_1 = 0.08f;
 uniform float displacement_scale = 1.0f;
+uniform float baseline_height_offset = 0.0f;
 uniform float material_strength = 0.0f;
 uniform vec3 base_sand_color = vec3(0.66, 0.64, 0.58);
 uniform vec2 depth_uv_offset = vec2(0.0, 0.0);
@@ -62,15 +63,20 @@ void vertex() {
 	float mask = sample_surface_mask(UV);
 	float h = check_depth(UV);
 	h = mix(background, h, mask);
+	h += baseline_height_offset * mask;
 	VERTEX.y -= (h / arg_1) * displacement_scale;
 	
 }
 
 void fragment() {
 	vec2 texture_uv = UV * texture_uv_scale + texture_uv_offset;
-    vec4 tex = texture(texture_map, texture_uv);
+	vec4 tex = texture(texture_map, texture_uv);
 	float mask = sample_surface_mask(UV);
+	if (mask < 0.5) {
+		discard;
+	}
 	float h = check_depth(UV);
+	h += baseline_height_offset * mask;
 	float relief = h - background;
 	float shade = clamp(0.90 + relief * 0.42 - abs(relief) * 0.18, 0.60, 1.08);
 	float grain = dot(tex.rgb, vec3(0.299, 0.587, 0.114));
@@ -79,7 +85,6 @@ void fragment() {
 	vec3 mapped_color = mix(base_sand_color, material_color, clamp(material_strength, 0.0, 1.0));
 	ALBEDO = mapped_color * shade;
 	ROUGHNESS = 0.92;
-	ALPHA = mask;
 }
 
 //void light() {

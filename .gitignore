@@ -35,6 +35,13 @@ __pycache__/
 /Godot/*.log
 /Godot/*.tmp
 /Godot/*.bak
+/Godot/tools/*.pth
+
+# Local research outputs and presentation drafts
+/tmp/
+/Godot/docs/SandStories_v21b_RGB_Depth_Workflow.pptx
+/Godot/docs/SandStories_v21b_RGB_Depth_Workflow_EN_Minimal.pptx
+/Godot/docs/SandStories_v21b_RGB_Depth_Workflow_EN_Minimal_v[2-4].pptx
 
 # Agent & IDE directories/files
 .claude/

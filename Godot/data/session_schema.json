@@ -219,6 +219,53 @@
           "prompt": { "type": "string" }
         }
       }
+    },
+    "experiment": {
+      "type": "object",
+      "description": "Creator-authored task content and readiness metadata for the proposal-aligned experiment runner.",
+      "properties": {
+        "protocolId": { "type": "string" },
+        "readyForDataCollection": { "type": "boolean" },
+        "readinessNotes": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "summaryPrompt": { "type": "string" },
+        "stage1Questions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "type", "prompt", "evidencePrompt"],
+            "properties": {
+              "id": { "type": "string" },
+              "type": { "type": "string", "enum": ["choice", "short"] },
+              "prompt": { "type": "string" },
+              "options": {
+                "type": "array",
+                "items": { "type": "string" }
+              },
+              "evidencePrompt": { "type": "string" }
+            }
+          }
+        },
+        "stage2Questions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "type", "prompt", "evidencePrompt"],
+            "properties": {
+              "id": { "type": "string" },
+              "type": { "type": "string", "enum": ["choice", "short"] },
+              "prompt": { "type": "string" },
+              "options": {
+                "type": "array",
+                "items": { "type": "string" }
+              },
+              "evidencePrompt": { "type": "string" }
+            }
+          }
+        }
+      }
     }
   }
 }

@@ -4,15 +4,27 @@ const DEFAULT_SESSION_PATH := "res://data/sample_session/session.json"
 const LOG_PATH := "user://interaction_log.jsonl"
 const HAND_MODEL_LEFT_PATH := "res://assets/models/hand_left.obj"
 const HAND_MODEL_RIGHT_PATH := "res://assets/models/hand_right.obj"
+const HAND_RIG_LEFT_PATH := "res://assets/models/godot_humanoid_hands/LeftHandHumanoid.gltf"
+const HAND_RIG_RIGHT_PATH := "res://assets/models/godot_humanoid_hands/RightHandHumanoid.gltf"
 const SAND_SHADER_PATH := "res://assets/shaders/sand_surface.gdshader"
 const SAND_DEPTH_SHADER_PATH := "res://assets/shaders/sand_depth.gdshader"
 const HAND_HOLOGRAM_SHADER_PATH := "res://assets/shaders/hologram_hand.gdshader"
+const TOPDOWN_HAND_OVERLAY_SHADER_PATH := "res://assets/shaders/topdown_hand_overlay.gdshader"
+const TOPDOWN_HAND_RGBD_SHADER_PATH := "res://assets/shaders/topdown_hand_rgbd.gdshader"
+const TOPDOWN_HAND_RGBD_SHELL_SHADER_PATH := "res://assets/shaders/topdown_hand_rgbd_shell.gdshader"
+const MANO_HAND_BEAUTY_SHADER_PATH := "res://assets/shaders/mano_hand_beauty.gdshader"
+const EXPERIMENT_RUNNER_SCRIPT_PATH := "res://scripts/experiment_runner.gd"
+const EXPERIMENT_PROTOCOL_PATH := "res://data/experiment_protocol.json"
+const EXPERIMENT_SUBMISSION_DIR := "user://experiment_submissions"
 const CJK_FONT_PATH := "res://assets/fonts/NotoSansSC-VF.ttf"
 const FONT_WEIGHT_AXIS := 0x77676874 # "wght"
 const SAND_HEIGHTMAP_PATH := "res://assets/heightmaps/sand2_heightmap_square_lowfreq.png"
 const SAND_TEXTURE_PATH := "res://assets/source_images/sand2_original_square.png"
 const SAND_DEPTH_VIDEO_PATH := "res://assets/video/depth_stream.ogv"
 const SAND_TEXTURE_VIDEO_PATH := "res://assets/video/texture_stream.ogv"
+const SURFACE_PREFETCH_AHEAD := 12
+const SURFACE_CACHE_BEHIND := 3
+const SURFACE_AUTOPLAY_BUFFER_FRAMES := 8
 const MEDIAPIPE_HAND_BONES := [
 	[0, 1], [1, 2], [2, 3], [3, 4],
 	[0, 5], [5, 6], [6, 7], [7, 8],
@@ -29,12 +41,21 @@ const VIRTUAL_HAND_SEGMENTS := [
 	[0, 17], [17, 18], [18, 19], [19, 20]
 ]
 const VIRTUAL_HAND_TIPS := [4, 8, 12, 16, 20]
+const VIRTUAL_HAND_KNUCKLES := [0, 5, 9, 13, 17]
+const VIRTUAL_HAND_PALM_OUTLINE := [0, 5, 9, 13, 17]
 const HAND_PALM_TRIANGLES := [
 	[0, 5, 9],
 	[0, 9, 13],
-	[0, 13, 17],
-	[5, 9, 13],
-	[5, 13, 17]
+	[0, 13, 17]
+]
+const SESSION_PRESETS := [
+	{"label": "Sample study session", "path": DEFAULT_SESSION_PATH},
+	{"label": "Kinect raw RGB-D", "path": "res://assets/processed_sessions/session_kinect_20260623_154953/session.json"},
+	{"label": "Temporal smooth", "path": "res://assets/processed_sessions/session_kinect_20260623_154953_temporal_smooth_godot/session.json"},
+	{"label": "Balanced detail", "path": "res://assets/processed_sessions/session_kinect_20260623_154953_last12_balanced_detail_godot/session.json"},
+	{"label": "SAM RGB repair bold", "path": "res://assets/processed_sessions/session_kinect_20260623_154953_object_removed_sam_full_gpu_rgb_reference_repair_bold/session.json"},
+	{"label": "RGB-delta depth v44", "path": "res://assets/processed_sessions/session_kinect_20260623_154953_object_removed_rgb_delta_depth_v44/session.json"},
+	{"label": "Posterior contact intent82", "path": "res://assets/processed_sessions/session_kinect_20260623_154953_object_removed_posterior_repair_core_target_contact_intent82/session.json"}
 ]
 
 var session := {}
@@ -51,6 +72,7 @@ var is_rotating := false
 var is_panning := false
 var last_mouse_position := Vector2.ZERO
 var use_video_streams := false
+var audio_user_enabled := true
 var unicode_smoke_test_enabled := false
 var ui_font: Font
 var ui_font_strong: Font
@@ -66,23 +88,38 @@ var relation_layer: Node3D
 var sand_mesh_instance: MeshInstance3D
 var heightmap_surface_node: MeshInstance3D
 var heightmap_material: ShaderMaterial
+var topdown_hand_surface_node: MeshInstance3D
+var topdown_hand_material: ShaderMaterial
+var mano_hand_surface_node: MeshInstance3D
+var mano_hand_material: Material
 var static_depth_texture: Texture2D
 var static_surface_texture: Texture2D
 var static_surface_mask_texture: Texture2D
+var static_topdown_hand_texture: Texture2D
+var static_topdown_hand_geometry_texture: Texture2D
 var depth_video_player: VideoStreamPlayer
 var texture_video_player: VideoStreamPlayer
+var audio_player: AudioStreamPlayer
 var processed_surface_frames: Array = []
 var processed_surface_base_dir := ""
 var external_session_base_dir := ""
+var current_session_path := ""
+var session_load_generation := 0
 var surface_frame_index := -1
+var surface_frame_pending_index := -1
+var surface_baseline_height_offset := 0.0
 var surface_texture_cache := {}
 var surface_texture_pending := {}
+var mano_mesh_cache := {}
+var mano_mesh_pending := {}
 var hand_tracks: Array = []
 var hand_track_roots := {}
 var hand_model_nodes := {}
 var hand_joint_nodes := {}
 var hand_bone_nodes := {}
 var hand_virtual_nodes := {}
+var hand_rig_nodes := {}
+var hand_tool_nodes := {}
 var hand_rendered_points := {}
 var object_nodes: Array[MeshInstance3D] = []
 var annotation_nodes: Array[Node3D] = []
@@ -95,6 +132,7 @@ var current_condition := "baseline"
 var play_button: Button
 var time_slider: HSlider
 var time_label: Label
+var session_option: OptionButton
 var condition_option: OptionButton
 var task_label: Label
 var participant_label: Label
@@ -120,6 +158,12 @@ var layer_toggles := {}
 var surface_sliders := {}
 var focus_mode := false
 var reference_views_visible := false
+var experiment_runner
+var experiment_mode := false
+var experiment_stage := ""
+var experiment_protocol := {}
+var experiment_event_buffer: Array = []
+var researcher_controls: Array[Control] = []
 var surface_controls := {
 	"depth_u": 0.0,
 	"depth_v": 0.0,
@@ -134,9 +178,18 @@ func _ready() -> void:
 	_load_text_font()
 	_build_world()
 	_build_ui()
-	_load_session(DEFAULT_SESSION_PATH)
-	_apply_launch_params()
+	await _load_session(DEFAULT_SESSION_PATH)
+	await _apply_launch_params()
+	var launch_study := _launch_value("study").to_lower()
+	if launch_study in ["stage1", "pilot"]:
+		# Stage 1 must train on the complete representation before revealing
+		# the assigned ablation condition. The Web query parser may already
+		# have read ?condition=..., so explicitly restore the baseline here.
+		current_condition = "baseline"
+	elif launch_study == "stage2":
+		current_condition = "stage2"
 	_apply_condition(current_condition)
+	_configure_experiment_mode()
 	_update_scene_from_time()
 	_update_camera()
 	_log_event("prototype_ready", {})
@@ -183,6 +236,8 @@ func _process(delta: float) -> void:
 			playhead = duration
 			is_playing = false
 			play_button.text = "Play"
+			_set_surface_stream_playing(false)
+			_sync_audio_playback()
 		time_slider.set_value_no_signal(playhead)
 		_update_scene_from_time()
 
@@ -438,6 +493,7 @@ func _build_ui() -> void:
 	condition_option.item_selected.connect(_on_condition_selected)
 	_style_button(condition_option, "toolbar")
 	top_row.add_child(condition_option)
+	researcher_controls.append(condition_option)
 
 	focus_button = Button.new()
 	focus_button.text = "Focus 3D"
@@ -460,6 +516,7 @@ func _build_ui() -> void:
 	_apply_text_style(source_status_label, ui_font_strong, 14)
 	source_status_label.add_theme_color_override("font_color", Color(0.83, 0.87, 0.8))
 	top_row.add_child(source_status_label)
+	researcher_controls.append(source_status_label)
 
 	var panel := PanelContainer.new()
 	panel.name = "ModalityRail"
@@ -492,10 +549,26 @@ func _build_ui() -> void:
 	section_title.add_theme_color_override("font_color", Color(0.93, 0.91, 0.82))
 	root.add_child(section_title)
 
+	var session_title := Label.new()
+	session_title.text = "RGB-D Version"
+	_apply_text_style(session_title, ui_font_strong, 17)
+	session_title.add_theme_color_override("font_color", Color(0.58, 0.72, 0.69))
+	root.add_child(session_title)
+	researcher_controls.append(session_title)
+
+	session_option = OptionButton.new()
+	for preset in SESSION_PRESETS:
+		session_option.add_item(str(preset.get("label", "Session")))
+	session_option.item_selected.connect(_on_session_selected)
+	_style_button(session_option, "toolbar")
+	root.add_child(session_option)
+	researcher_controls.append(session_option)
+
 	_add_layer_toggle(root, "sand", "RGB-D sand surface", true)
 	_add_layer_toggle(root, "heightmap_surface", "Use reconstructed depth map", true)
 	_add_layer_toggle(root, "gestures", "Virtual hand / gestures", true)
 	_add_layer_toggle(root, "objects", "Objects / tools", true)
+	_add_layer_toggle(root, "audio", "Narration audio", true)
 	_add_layer_toggle(root, "annotations", "Annotations + links", false)
 
 	var source_title := Label.new()
@@ -503,6 +576,7 @@ func _build_ui() -> void:
 	_apply_text_style(source_title, ui_font_strong, 17)
 	source_title.add_theme_color_override("font_color", Color(0.58, 0.72, 0.69))
 	root.add_child(source_title)
+	researcher_controls.append(source_title)
 
 	video_stream_toggle = CheckBox.new()
 	video_stream_toggle.text = "Synced OGV depth/material"
@@ -510,11 +584,13 @@ func _build_ui() -> void:
 	video_stream_toggle.toggled.connect(func(value: bool) -> void:
 		use_video_streams = value
 		_apply_surface_texture_source()
+		_set_surface_stream_playing(is_playing and use_video_streams)
 		_update_source_status()
 		_log_event("surface_source_toggle", {"use_video_streams": use_video_streams})
 	)
 	_style_checkbox(video_stream_toggle)
 	root.add_child(video_stream_toggle)
+	researcher_controls.append(video_stream_toggle)
 
 	var reset_button := Button.new()
 	reset_button.text = "Reset camera (R)"
@@ -535,11 +611,13 @@ func _build_ui() -> void:
 	_apply_text_style(hand_status_label, ui_font_strong, 14)
 	hand_status_label.add_theme_color_override("font_color", Color(0.63, 0.77, 0.74))
 	root.add_child(hand_status_label)
+	researcher_controls.append(hand_status_label)
 
 	var calibration := VBoxContainer.new()
 	calibration.name = "Calibration"
 	calibration.add_theme_constant_override("separation", 5)
 	root.add_child(calibration)
+	researcher_controls.append(calibration)
 
 	var surface_label := Label.new()
 	surface_label.text = "Depth / Material Fit"
@@ -563,6 +641,7 @@ func _build_ui() -> void:
 	root.add_child(hint)
 
 	_build_study_panel(hud_root)
+	_build_experiment_panel(hud_root)
 	if DisplayServer.get_name() != "headless":
 		_build_fixed_views(hud_root)
 
@@ -579,6 +658,7 @@ func _build_ui() -> void:
 	lower_dock_panel.offset_right = -430
 	lower_dock_panel.offset_bottom = -16
 	hud_root.add_child(lower_dock_panel)
+	researcher_controls.append(lower_dock_panel)
 
 	var lower_hint := Label.new()
 	lower_hint.text = "Viewport dock: split hand meshes + MediaPipe 21pt skeletons are live. Focus 3D opens the full reconstruction."
@@ -709,6 +789,38 @@ func _build_study_panel(canvas: Control) -> void:
 	root.add_child(submit_button)
 
 
+func _build_experiment_panel(canvas: Control) -> void:
+	if not ResourceLoader.exists(EXPERIMENT_RUNNER_SCRIPT_PATH):
+		return
+	var runner_script := load(EXPERIMENT_RUNNER_SCRIPT_PATH)
+	if not runner_script is Script:
+		return
+	experiment_runner = runner_script.new()
+	experiment_runner.visible = false
+	experiment_runner.anchor_left = 1.0
+	experiment_runner.anchor_top = 0.0
+	experiment_runner.anchor_right = 1.0
+	experiment_runner.anchor_bottom = 1.0
+	experiment_runner.offset_left = -500
+	experiment_runner.offset_top = 86
+	experiment_runner.offset_right = -16
+	experiment_runner.offset_bottom = -118
+	experiment_runner.condition_requested.connect(
+		_on_experiment_condition_requested
+	)
+	experiment_runner.evidence_requested.connect(
+		_on_experiment_evidence_requested
+	)
+	experiment_runner.submission_ready.connect(
+		_on_experiment_submission_ready
+	)
+	experiment_runner.event_emitted.connect(
+		func(event_name: String, payload: Dictionary) -> void:
+			_log_event(event_name, payload)
+	)
+	canvas.add_child(experiment_runner)
+
+
 func _build_fixed_views(canvas: Control) -> void:
 	var views_panel := PanelContainer.new()
 	views_panel.name = "FixedViewsPanel"
@@ -742,7 +854,7 @@ func _make_viewport_camera(view_name: String, camera_position: Vector3, target: 
 	var viewport := SubViewport.new()
 	viewport.name = view_name
 	viewport.size = Vector2i(300, 210)
-	viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
 	viewport.transparent_bg = false
 	viewport.world_3d = get_world_3d()
 	add_child(viewport)
@@ -754,7 +866,7 @@ func _make_viewport_camera(view_name: String, camera_position: Vector3, target: 
 	var direction := (target - camera_position).normalized()
 	var up := Vector3.FORWARD if abs(direction.dot(Vector3.UP)) > 0.95 else Vector3.UP
 	view_camera.look_at_from_position(camera_position, target, up)
-	viewport.camera_3d = view_camera
+	view_camera.current = true
 	return viewport
 
 
@@ -863,8 +975,10 @@ func _add_surface_frame_controls(parent: Control) -> void:
 
 
 func _load_session(path: String) -> void:
+	session_load_generation += 1
+	var generation := session_load_generation
 	if _is_http_path(path):
-		_load_remote_session(path)
+		await _load_remote_session(path, generation)
 		return
 
 	var file := FileAccess.open(path, FileAccess.READ)
@@ -873,21 +987,40 @@ func _load_session(path: String) -> void:
 		return
 
 	var parsed = JSON.parse_string(file.get_as_text())
-	await _apply_session_payload(parsed, path, "")
+	await _apply_session_payload(parsed, path, "", generation)
 
 
-func _load_remote_session(path: String) -> void:
+func _load_remote_session(path: String, generation: int) -> void:
 	var text := await _http_get_text(path)
-	if text == "":
+	if generation != session_load_generation or text == "":
 		return
 	var parsed = JSON.parse_string(text)
-	await _apply_session_payload(parsed, path, path.get_base_dir())
+	await _apply_session_payload(
+		parsed,
+		path,
+		path.get_base_dir(),
+		generation
+	)
 
 
-func _apply_session_payload(parsed, path: String, remote_base_dir: String) -> void:
+func _apply_session_payload(
+	parsed,
+	path: String,
+	remote_base_dir: String,
+	generation: int
+) -> void:
+	if generation != session_load_generation:
+		return
 	if typeof(parsed) != TYPE_DICTIONARY:
 		push_error("Invalid session JSON: " + path)
 		return
+
+	playhead = 0.0
+	is_playing = false
+	if time_slider != null:
+		time_slider.set_value_no_signal(0.0)
+	if play_button != null:
+		play_button.text = "Play"
 
 	session = parsed
 	data_sources = session.get("data_sources", {})
@@ -896,7 +1029,18 @@ func _apply_session_payload(parsed, path: String, remote_base_dir: String) -> vo
 		_rebase_external_data_sources()
 	surface_texture_cache.clear()
 	surface_texture_pending.clear()
-	await _load_processed_surface_frames()
+	mano_mesh_cache.clear()
+	mano_mesh_pending.clear()
+	surface_frame_pending_index = -1
+	await _load_processed_surface_frames(generation)
+	if generation != session_load_generation:
+		return
+	await _load_external_hand_tracks(generation)
+	if generation != session_load_generation:
+		return
+	await _load_session_audio(generation)
+	if generation != session_load_generation:
+		return
 	use_video_streams = bool(data_sources.get("use_video_streams", false))
 	_apply_session_calibration_defaults()
 	if video_stream_toggle != null:
@@ -907,12 +1051,57 @@ func _apply_session_payload(parsed, path: String, remote_base_dir: String) -> vo
 		duration = max(0.0, float(last_frame.get("time", 0.0)))
 	time_slider.max_value = duration
 	_build_session_nodes()
+	_prefetch_surface_window(surface_frame_index)
+	await _wait_for_initial_surface_textures(15000, generation)
+	if generation != session_load_generation:
+		return
 	_update_source_status()
 	_log_event("session_loaded", {"path": path, "duration": duration})
-	if _web_query_flag("autoplay"):
+	if _should_autoplay_session(path):
+		await _wait_for_surface_buffer(
+			SURFACE_AUTOPLAY_BUFFER_FRAMES,
+			15000,
+			generation
+		)
+		if generation != session_load_generation:
+			return
 		is_playing = true
 		if play_button != null:
 			play_button.text = "Pause"
+		_set_surface_stream_playing(use_video_streams)
+		_sync_audio_playback(true)
+	current_session_path = path
+	_update_session_selector(path)
+
+
+func _on_session_selected(index: int) -> void:
+	if index < 0 or index >= SESSION_PRESETS.size():
+		return
+	var path := _runtime_session_path(str(SESSION_PRESETS[index].get("path", "")))
+	if path == "":
+		return
+	playhead = 0.0
+	if time_slider != null:
+		time_slider.set_value_no_signal(0.0)
+	_load_session(path)
+
+
+func _runtime_session_path(path: String) -> String:
+	if path == "" or _is_http_path(path) or path.begins_with("user://"):
+		return path
+	if OS.has_feature("web") and external_session_base_dir != "" and path.begins_with("res://assets/processed_sessions/"):
+		return external_session_base_dir.get_base_dir().path_join(path.trim_prefix("res://assets/processed_sessions/"))
+	return path
+
+
+func _update_session_selector(path: String) -> void:
+	if session_option == null:
+		return
+	for index in range(SESSION_PRESETS.size()):
+		var preset_path := str(SESSION_PRESETS[index].get("path", ""))
+		if path == preset_path or path.ends_with(preset_path.trim_prefix("res://assets/processed_sessions/")):
+			session_option.select(index)
+			return
 
 
 func _is_http_path(path: String) -> bool:
@@ -920,10 +1109,21 @@ func _is_http_path(path: String) -> bool:
 
 
 func _web_query_flag(key: String) -> bool:
+	return _web_query_value(key).to_lower() in ["1", "true", "yes"]
+
+
+func _web_query_value(key: String) -> String:
 	if not OS.has_feature("web"):
-		return false
+		return ""
 	var value: Variant = JavaScriptBridge.eval("new URLSearchParams(location.search).get('%s')" % key)
-	return str(value).to_lower() in ["1", "true", "yes"]
+	return "" if value == null else str(value)
+
+
+func _should_autoplay_session(path: String) -> bool:
+	if not _web_query_flag("autoplay"):
+		return false
+	var requested_session := _web_query_value("session")
+	return requested_session == "" or requested_session == path
 
 
 func _http_get(path: String) -> PackedByteArray:
@@ -969,14 +1169,17 @@ func _external_asset_path(path: String) -> String:
 	return path
 
 
-func _load_processed_surface_frames() -> void:
+func _load_processed_surface_frames(generation: int) -> void:
 	processed_surface_frames.clear()
 	processed_surface_base_dir = ""
 	surface_frame_index = -1
+	surface_baseline_height_offset = 0.0
 
 	var manifest_path := str(data_sources.get("processed_manifest", ""))
 	if _is_http_path(manifest_path):
-		await _load_remote_processed_surface_frames(manifest_path)
+		await _load_remote_processed_surface_frames(manifest_path, generation)
+		return
+	if generation != session_load_generation:
 		return
 	if manifest_path == "" or not FileAccess.file_exists(manifest_path):
 		_update_surface_frame_ui()
@@ -994,9 +1197,12 @@ func _load_processed_surface_frames() -> void:
 	_apply_processed_surface_manifest(parsed, manifest_path)
 
 
-func _load_remote_processed_surface_frames(manifest_path: String) -> void:
+func _load_remote_processed_surface_frames(
+	manifest_path: String,
+	generation: int
+) -> void:
 	var text := await _http_get_text(manifest_path)
-	if text == "":
+	if generation != session_load_generation or text == "":
 		_update_surface_frame_ui()
 		return
 	var parsed = JSON.parse_string(text)
@@ -1030,6 +1236,110 @@ func _apply_processed_surface_manifest(parsed: Dictionary, manifest_path: String
 	_set_surface_frame(selected, false)
 
 
+func _load_external_hand_tracks(generation: int) -> void:
+	var hand_tracks_path := str(data_sources.get("hand_tracks", ""))
+	if hand_tracks_path == "":
+		return
+	var resolved_path := hand_tracks_path
+	if not _is_http_path(resolved_path) and not resolved_path.begins_with("res://") and not resolved_path.begins_with("user://") and processed_surface_base_dir != "":
+		resolved_path = processed_surface_base_dir.path_join(resolved_path)
+	var parsed
+	if _is_http_path(resolved_path):
+		var text := await _http_get_text(resolved_path)
+		if generation != session_load_generation or text == "":
+			return
+		parsed = JSON.parse_string(text)
+	else:
+		if not FileAccess.file_exists(resolved_path):
+			return
+		var file := FileAccess.open(resolved_path, FileAccess.READ)
+		if file == null:
+			return
+		parsed = JSON.parse_string(file.get_as_text())
+	if generation != session_load_generation:
+		return
+	if typeof(parsed) == TYPE_DICTIONARY:
+		if parsed.has("hand_tracks"):
+			session["hand_tracks"] = parsed.get("hand_tracks", [])
+		elif parsed.has("mediapipe_hands"):
+			session["mediapipe_hands"] = parsed.get("mediapipe_hands", [])
+	elif typeof(parsed) == TYPE_ARRAY:
+		session["hand_tracks"] = parsed
+
+
+func _load_session_audio(generation: int) -> void:
+	_dispose_audio_player()
+	var audio_path := str(data_sources.get("audio", ""))
+	if audio_path == "":
+		_update_audio_toggle_state()
+		return
+	var stream: AudioStream
+	if _is_http_path(audio_path):
+		var body := await _http_get(audio_path)
+		if generation != session_load_generation or body.is_empty():
+			return
+		var lower_path := audio_path.to_lower()
+		if lower_path.ends_with(".ogg") or lower_path.ends_with(".oga"):
+			stream = AudioStreamOggVorbis.load_from_buffer(body)
+		elif lower_path.ends_with(".mp3"):
+			stream = AudioStreamMP3.load_from_buffer(body)
+		else:
+			push_warning(
+				"Remote narration must be OGG Vorbis or MP3: " + audio_path
+			)
+			return
+	elif ResourceLoader.exists(audio_path):
+		var loaded := load(audio_path)
+		if loaded is AudioStream:
+			stream = loaded
+	if generation != session_load_generation or stream == null:
+		_update_audio_toggle_state()
+		return
+	audio_player = AudioStreamPlayer.new()
+	audio_player.name = "NarrationAudio"
+	audio_player.stream = stream
+	audio_player.autoplay = false
+	add_child(audio_player)
+	_update_audio_toggle_state()
+
+
+func _dispose_audio_player() -> void:
+	if audio_player == null:
+		return
+	audio_player.stop()
+	audio_player.queue_free()
+	audio_player = null
+
+
+func _update_audio_toggle_state() -> void:
+	if not layer_toggles.has("audio"):
+		return
+	var toggle: CheckBox = layer_toggles["audio"]
+	toggle.disabled = audio_player == null
+	if audio_player == null:
+		toggle.set_pressed_no_signal(false)
+
+
+func _sync_audio_playback(force_seek := false) -> void:
+	if audio_player == null:
+		return
+	var should_play := (
+		is_playing
+		and audio_user_enabled
+		and current_condition != "no_audio"
+	)
+	if not should_play:
+		if audio_player.playing:
+			audio_player.stream_paused = true
+		return
+	if not audio_player.playing:
+		audio_player.play(playhead)
+	else:
+		audio_player.stream_paused = false
+		if force_seek:
+			audio_player.seek(playhead)
+
+
 func _surface_frame_path(frame: Dictionary, key: String) -> String:
 	var value := str(frame.get(key, ""))
 	if value == "":
@@ -1041,18 +1351,29 @@ func _surface_frame_path(frame: Dictionary, key: String) -> String:
 	return processed_surface_base_dir.path_join(value)
 
 
-func _set_surface_frame(index: int, apply_now := true) -> void:
+func _set_surface_frame(index: int, apply_now := true) -> bool:
 	if processed_surface_frames.is_empty():
 		surface_frame_index = -1
 		_update_surface_frame_ui()
-		return
-	surface_frame_index = clamp(index, 0, processed_surface_frames.size() - 1)
+		return false
+	var requested_index: int = clamp(index, 0, processed_surface_frames.size() - 1)
+	if apply_now:
+		_prefetch_surface_window(requested_index)
+		if not _surface_frame_textures_ready(requested_index):
+			surface_frame_pending_index = requested_index
+			return false
+	surface_frame_pending_index = -1
+	surface_frame_index = requested_index
 	var frame: Dictionary = processed_surface_frames[surface_frame_index]
+	surface_baseline_height_offset = float(frame.get("baselineHeightCorrection", 0.0)) / 255.0
 	var depth_key := "detailDepth" if frame.has("detailDepth") else "cleanDepth"
 	var depth_path := _surface_frame_path(frame, depth_key)
 	var texture_path := _surface_frame_path(frame, "cleanRgb")
 	var occlusion_path := _surface_frame_path(frame, "occlusionMask")
 	var overlay_path := _surface_frame_path(frame, "maskOverlay")
+	var hand_overlay_path := _surface_frame_path(frame, "virtualHandOverlay")
+	var hand_geometry_path := _surface_frame_path(frame, "virtualHandGeometry")
+	var hand_mesh_path := _surface_frame_path(frame, "virtualHandMesh")
 	if depth_path != "":
 		data_sources["depth_map"] = depth_path
 	if texture_path != "":
@@ -1061,16 +1382,111 @@ func _set_surface_frame(index: int, apply_now := true) -> void:
 		data_sources["occlusion_mask"] = occlusion_path
 	if overlay_path != "":
 		data_sources["mask_overlay"] = overlay_path
+	if hand_overlay_path != "":
+		data_sources["virtual_hand_overlay"] = hand_overlay_path
+	if hand_geometry_path != "":
+		data_sources["virtual_hand_geometry"] = hand_geometry_path
+	if hand_mesh_path != "":
+		data_sources["virtual_hand_mesh"] = hand_mesh_path
+	else:
+		data_sources.erase("virtual_hand_mesh")
 	if apply_now:
 		_reload_static_surface_textures()
 		_apply_surface_texture_source()
+		_apply_mano_hand_mesh()
 		_update_source_status()
 		_log_event("surface_frame_selected", {
 			"index": surface_frame_index + 1,
 			"frameIndex": frame.get("frameIndex", surface_frame_index + 1),
 			"time": frame.get("time", 0.0)
 		})
+		_prefetch_surface_window(surface_frame_index + 1)
+		_trim_surface_texture_cache(surface_frame_index)
 	_update_surface_frame_ui()
+	return true
+
+
+func _surface_frame_texture_paths(index: int) -> Array[String]:
+	var paths: Array[String] = []
+	if index < 0 or index >= processed_surface_frames.size():
+		return paths
+	var frame: Dictionary = processed_surface_frames[index]
+	var depth_key := "detailDepth" if frame.has("detailDepth") else "cleanDepth"
+	for key in [
+		depth_key,
+		"cleanRgb",
+		"virtualHandOverlay",
+		"virtualHandGeometry",
+	]:
+		var path := _surface_frame_path(frame, key)
+		if path != "":
+			paths.append(path)
+	return paths
+
+
+func _surface_frame_textures_ready(index: int) -> bool:
+	for path in _surface_frame_texture_paths(index):
+		if _is_http_path(path) and not surface_texture_cache.has(path):
+			return false
+	var mesh_path := _surface_frame_mesh_path(index)
+	if (
+		_is_http_path(mesh_path)
+		and not mano_mesh_cache.has(mesh_path)
+	):
+		return false
+	return true
+
+
+func _surface_frame_mesh_path(index: int) -> String:
+	if index < 0 or index >= processed_surface_frames.size():
+		return ""
+	var frame: Dictionary = processed_surface_frames[index]
+	return _surface_frame_path(frame, "virtualHandMesh")
+
+
+func _prefetch_surface_frame(index: int) -> void:
+	for path in _surface_frame_texture_paths(index):
+		_load_surface_texture(path)
+	var mesh_path := _surface_frame_mesh_path(index)
+	if mesh_path != "":
+		_load_mano_mesh(mesh_path)
+
+
+func _prefetch_surface_window(start_index: int) -> void:
+	if processed_surface_frames.is_empty():
+		return
+	var first: int = clamp(start_index, 0, processed_surface_frames.size() - 1)
+	var end: int = min(processed_surface_frames.size(), first + SURFACE_PREFETCH_AHEAD + 1)
+	for index in range(first, end):
+		_prefetch_surface_frame(index)
+
+
+func _trim_surface_texture_cache(center_index: int) -> void:
+	if processed_surface_frames.is_empty():
+		return
+	var keep: Dictionary = {}
+	var first: int = max(0, center_index - SURFACE_CACHE_BEHIND)
+	var end: int = min(
+		processed_surface_frames.size(),
+		center_index + SURFACE_PREFETCH_AHEAD + 1
+	)
+	for index in range(first, end):
+		for path in _surface_frame_texture_paths(index):
+			keep[path] = true
+	var surface_mask_path := _source_path("surface_mask", "")
+	if surface_mask_path != "":
+		keep[surface_mask_path] = true
+	for path in surface_texture_cache.keys():
+		if not keep.has(path):
+			surface_texture_cache.erase(path)
+	var keep_meshes: Dictionary = {}
+	for index in range(first, end):
+		var mesh_path := _surface_frame_mesh_path(index)
+		if mesh_path != "":
+			keep_meshes[mesh_path] = true
+	for path in mano_mesh_cache.keys():
+		if not keep_meshes.has(path):
+			mano_mesh_cache.erase(path)
 
 
 func _update_surface_frame_ui() -> void:
@@ -1119,7 +1535,7 @@ func _apply_launch_params() -> void:
 	if query.has("session"):
 		var requested_session := str(query["session"])
 		if requested_session != "":
-			_load_session(requested_session)
+			await _load_session(requested_session)
 	if query.has("condition"):
 		var requested := str(query["condition"])
 		var condition_map := {
@@ -1145,6 +1561,268 @@ func _apply_launch_params() -> void:
 		unicode_smoke_test_enabled = str(query["unicode"]).to_lower() in ["1", "true", "yes"]
 	if unicode_smoke_test_enabled:
 		_apply_unicode_smoke_test()
+
+
+func _configure_experiment_mode() -> void:
+	var requested_stage := _launch_value("study").to_lower()
+	if requested_stage == "":
+		return
+	if requested_stage not in ["stage1", "stage2", "pilot"]:
+		push_warning("Unknown study mode: " + requested_stage)
+		return
+	if experiment_runner == null:
+		push_error("Experiment runner is unavailable")
+		return
+	var file := FileAccess.open(EXPERIMENT_PROTOCOL_PATH, FileAccess.READ)
+	if file == null:
+		push_error("Cannot open experiment protocol")
+		return
+	var parsed = JSON.parse_string(file.get_as_text())
+	if typeof(parsed) != TYPE_DICTIONARY:
+		push_error("Invalid experiment protocol JSON")
+		return
+	experiment_protocol = parsed
+	experiment_mode = true
+	experiment_stage = requested_stage
+	_set_experiment_ui_mode()
+	experiment_runner.configure(
+		experiment_protocol,
+		session,
+		{
+			"stage": experiment_stage,
+			"participant": _launch_value("participant"),
+			"condition": _launch_value("condition"),
+		},
+		_experiment_readiness()
+	)
+	_log_event("experiment_mode_enabled", {
+		"stage": experiment_stage,
+		"session": current_session_path,
+	})
+
+
+func _launch_value(key: String) -> String:
+	var web_value := _web_query_value(key)
+	if web_value != "":
+		return web_value
+	var prefix := "--%s=" % key
+	for argument in OS.get_cmdline_user_args():
+		if argument.begins_with(prefix):
+			return argument.trim_prefix(prefix)
+	return ""
+
+
+func _set_experiment_ui_mode() -> void:
+	for control in researcher_controls:
+		if control != null:
+			control.visible = false
+	if study_panel != null:
+		study_panel.visible = false
+	if experiment_runner != null:
+		experiment_runner.visible = true
+	if lower_dock_panel != null:
+		lower_dock_panel.visible = false
+	if reference_views_button != null:
+		reference_views_button.visible = experiment_stage == "stage2"
+	if experiment_stage != "stage2":
+		reference_views_visible = false
+		if fixed_views_panel != null:
+			fixed_views_panel.visible = false
+		_set_reference_viewports_active(false)
+	_apply_experiment_condition_locks()
+
+
+func _experiment_readiness() -> Dictionary:
+	var has_sand: bool = (
+		heightmap_surface_node != null
+		or not processed_surface_frames.is_empty()
+		or not session.get("surface_heights", []).is_empty()
+	)
+	var has_gestures: bool = (
+		not hand_tracks.is_empty()
+		or mano_hand_surface_node != null
+		or str(data_sources.get("virtual_hand_mesh", "")) != ""
+	)
+	var has_objects: bool = not session.get("objects", []).is_empty()
+	var has_audio: bool = audio_player != null
+	var has_annotations: bool = (
+		not session.get("surface_regions", []).is_empty()
+		and not session.get("gesture_events", []).is_empty()
+		and not session.get("references", []).is_empty()
+	)
+	var experiment: Dictionary = session.get("experiment", {})
+	var has_validated_content: bool = bool(
+		experiment.get("readyForDataCollection", false)
+	)
+	var warnings := []
+	if not has_sand:
+		warnings.append("No reconstructed sand modality.")
+	if not has_gestures:
+		warnings.append("No virtual-hand or gesture modality.")
+	if not has_objects:
+		warnings.append("No external-object modality.")
+	if not has_audio:
+		warnings.append("No narration audio; no-audio cannot be compared.")
+	if experiment_stage == "stage2" and not has_annotations:
+		warnings.append(
+			"Stage 2 requires surface segments, gesture events, and references."
+		)
+	if not has_validated_content:
+		warnings.append(
+			"Creator-validated interpretation and questions are not marked ready."
+		)
+	var ready: bool = (
+		has_sand
+		and has_gestures
+		and has_objects
+		and has_audio
+		and has_validated_content
+		and (experiment_stage != "stage2" or has_annotations)
+	)
+	return {
+		"ready": ready,
+		"warnings": warnings,
+		"modalities": {
+			"sand": has_sand,
+			"gestures": has_gestures,
+			"objects": has_objects,
+			"audio": has_audio,
+			"annotations": has_annotations,
+		},
+	}
+
+
+func _on_experiment_condition_requested(value: String) -> void:
+	var valid := [
+		"baseline",
+		"no_audio",
+		"no_gestures",
+		"no_objects",
+		"no_sand",
+		"stage2",
+	]
+	if value not in valid:
+		return
+	current_condition = value
+	if condition_option != null:
+		condition_option.select(valid.find(value))
+	_apply_condition(current_condition)
+	_log_event("experiment_condition_applied", {"condition": value})
+
+
+func _apply_experiment_condition_locks() -> void:
+	if not experiment_mode:
+		return
+	for key in layer_toggles.keys():
+		var toggle: CheckBox = layer_toggles[key]
+		toggle.disabled = false
+	if experiment_stage != "stage2" and layer_toggles.has("annotations"):
+		layer_toggles["annotations"].disabled = true
+	match current_condition:
+		"no_audio":
+			if layer_toggles.has("audio"):
+				layer_toggles["audio"].disabled = true
+		"no_gestures":
+			if layer_toggles.has("gestures"):
+				layer_toggles["gestures"].disabled = true
+		"no_objects":
+			if layer_toggles.has("objects"):
+				layer_toggles["objects"].disabled = true
+		"no_sand":
+			if layer_toggles.has("sand"):
+				layer_toggles["sand"].disabled = true
+			if layer_toggles.has("heightmap_surface"):
+				layer_toggles["heightmap_surface"].disabled = true
+	if audio_player == null and layer_toggles.has("audio"):
+		layer_toggles["audio"].disabled = true
+
+
+func _on_experiment_evidence_requested(question_id: String) -> void:
+	var snapshot := {
+		"playhead": playhead,
+		"cameraYaw": camera_yaw,
+		"cameraPitch": camera_pitch,
+		"cameraDistance": camera_distance,
+		"cameraTarget": [
+			camera_target.x,
+			camera_target.y,
+			camera_target.z,
+		],
+		"layers": {
+			"sand": sand_layer.visible,
+			"gestures": gesture_layer.visible,
+			"objects": object_layer.visible,
+			"audio": audio_user_enabled and current_condition != "no_audio",
+			"annotations": annotation_layer.visible,
+		},
+	}
+	experiment_runner.accept_evidence_snapshot(question_id, snapshot)
+	_log_event("experiment_evidence_marked", {
+		"question_id": question_id,
+		"snapshot": snapshot,
+	})
+
+
+func _on_experiment_submission_ready(payload: Dictionary) -> void:
+	var package := payload.duplicate(true)
+	package["runtime"] = {
+		"godotVersion": Engine.get_version_info().get("string", ""),
+		"sessionPath": current_session_path,
+		"interactionEvents": experiment_event_buffer.duplicate(true),
+	}
+	var absolute_dir := ProjectSettings.globalize_path(
+		EXPERIMENT_SUBMISSION_DIR
+	)
+	var directory_error := DirAccess.make_dir_recursive_absolute(absolute_dir)
+	if directory_error != OK:
+		experiment_runner.set_export_status(
+			"Could not create the local submission directory."
+		)
+		return
+	var filename := "%s.json" % str(package.get("runId", "response"))
+	var user_path := EXPERIMENT_SUBMISSION_DIR.path_join(filename)
+	var output := FileAccess.open(user_path, FileAccess.WRITE)
+	if output == null:
+		experiment_runner.set_export_status(
+			"Could not write the local response package."
+		)
+		return
+	var json_text := JSON.stringify(package, "\t")
+	output.store_string(json_text + "\n")
+	output.close()
+	if OS.has_feature("web"):
+		_download_experiment_json(filename, json_text)
+		experiment_runner.set_export_status(
+			"Response package saved and browser download requested."
+		)
+	else:
+		experiment_runner.set_export_status(
+			"Response package saved to " + user_path
+		)
+	_log_event("experiment_submission_exported", {
+		"run_id": package.get("runId", ""),
+		"path": user_path,
+	})
+
+
+func _download_experiment_json(filename: String, json_text: String) -> void:
+	var encoded := Marshalls.raw_to_base64(json_text.to_utf8_buffer())
+	var script := """
+		(() => {
+			const binary = atob('%s');
+			const bytes = Uint8Array.from(binary, c => c.charCodeAt(0));
+			const blob = new Blob([bytes], {type: 'application/json'});
+			const url = URL.createObjectURL(blob);
+			const anchor = document.createElement('a');
+			anchor.href = url;
+			anchor.download = '%s';
+			document.body.appendChild(anchor);
+			anchor.click();
+			anchor.remove();
+			setTimeout(() => URL.revokeObjectURL(url), 1000);
+		})()
+	""" % [encoded, filename]
+	JavaScriptBridge.eval(script)
 
 
 func _apply_unicode_smoke_test() -> void:
@@ -1202,12 +1880,18 @@ func _build_session_nodes() -> void:
 	_clear_children(gesture_layer)
 	_clear_children(object_layer)
 	_clear_children(annotation_layer)
+	topdown_hand_surface_node = null
+	topdown_hand_material = null
+	mano_hand_surface_node = null
+	mano_hand_material = null
 	hand_tracks = _session_hand_tracks()
 	hand_track_roots.clear()
 	hand_model_nodes.clear()
 	hand_joint_nodes.clear()
 	hand_bone_nodes.clear()
 	hand_virtual_nodes.clear()
+	hand_rig_nodes.clear()
+	hand_tool_nodes.clear()
 	hand_rendered_points.clear()
 	object_nodes.clear()
 	annotation_nodes.clear()
@@ -1228,6 +1912,8 @@ func _build_session_nodes() -> void:
 	sand_mesh_instance.material_override = _sand_material()
 	sand_layer.add_child(sand_mesh_instance)
 	_build_heightmap_surface()
+	_build_topdown_hand_surface()
+	_build_mano_hand_surface()
 
 	_build_hand_tracks()
 	_update_hand_status()
@@ -1346,8 +2032,15 @@ func _build_hand_tracks() -> void:
 		hand_track_roots[track_id] = root
 
 		var color := _color_from_hex(str(track.get("color", "#5ec8d8")))
+		var built_rigged_hand := false
 		if bool(track.get("virtual_hand", true)):
-			_build_virtual_hand_for_track(root, track_id, color)
+			var visual_style := str(track.get("virtual_hand_style", "")).to_lower()
+			if bool(track.get("use_rigged_hand", false)) or "humanoid" in visual_style:
+				built_rigged_hand = _build_rigged_hand_for_track(root, track, color)
+			if not built_rigged_hand:
+				_build_virtual_hand_for_track(root, track_id, color)
+		if bool(track.get("supports_tool_drawing", false)):
+			_build_hand_tool_for_track(root, track_id)
 
 		var model := _build_hand_model_for_track(track)
 		if model != null:
@@ -1388,6 +2081,205 @@ func _build_hand_tracks() -> void:
 		hand_rendered_points[track_id] = []
 
 
+func _build_rigged_hand_for_track(root: Node3D, track: Dictionary, color: Color) -> bool:
+	var handedness := str(track.get("handedness", "right")).to_lower()
+	if handedness not in ["left", "right"]:
+		handedness = "right"
+	var prefix := "Left" if handedness == "left" else "Right"
+	var rig_path := HAND_RIG_LEFT_PATH if handedness == "left" else HAND_RIG_RIGHT_PATH
+	if not ResourceLoader.exists(rig_path):
+		return false
+	var packed := load(rig_path)
+	if not packed is PackedScene:
+		return false
+	var rig_root: Node3D = (packed as PackedScene).instantiate()
+	rig_root.name = "%s_HumanoidGlassHand" % str(track.get("id", "hand"))
+	root.add_child(rig_root)
+
+	var skeleton := _find_hand_skeleton(rig_root)
+	if skeleton == null:
+		rig_root.queue_free()
+		return false
+	_style_rigged_hand_meshes(rig_root, color)
+
+	var chain_specs := [
+		{
+			"bones": [
+				prefix + "ThumbMetacarpal",
+				prefix + "ThumbProximal",
+				prefix + "ThumbDistal",
+				prefix + "ThumbTip"
+			],
+			"points": [1, 2, 3, 4]
+		},
+		{
+			"bones": [
+				prefix + "IndexProximal",
+				prefix + "IndexIntermediate",
+				prefix + "IndexDistal",
+				prefix + "IndexTip"
+			],
+			"points": [5, 6, 7, 8]
+		},
+		{
+			"bones": [
+				prefix + "MiddleProximal",
+				prefix + "MiddleIntermediate",
+				prefix + "MiddleDistal",
+				prefix + "MiddleTip"
+			],
+			"points": [9, 10, 11, 12]
+		},
+		{
+			"bones": [
+				prefix + "RingProximal",
+				prefix + "RingIntermediate",
+				prefix + "RingDistal",
+				prefix + "RingTip"
+			],
+			"points": [13, 14, 15, 16]
+		},
+		{
+			"bones": [
+				prefix + "LittleProximal",
+				prefix + "LittleIntermediate",
+				prefix + "LittleDistal",
+				prefix + "LittleTip"
+			],
+			"points": [17, 18, 19, 20]
+		}
+	]
+	var chains: Array = []
+	for spec in chain_specs:
+		var indices: Array[int] = []
+		var valid := true
+		for bone_name in spec["bones"]:
+			var bone_index := skeleton.find_bone(str(bone_name))
+			if bone_index < 0:
+				valid = false
+				break
+			indices.append(bone_index)
+		if valid:
+			chains.append({"bones": indices, "points": spec["points"]})
+
+	var wrist_index := skeleton.find_bone(prefix + "Hand")
+	var index_mcp := skeleton.find_bone(prefix + "IndexProximal")
+	var middle_mcp := skeleton.find_bone(prefix + "MiddleProximal")
+	var ring_mcp := skeleton.find_bone(prefix + "RingProximal")
+	var little_mcp := skeleton.find_bone(prefix + "LittleProximal")
+	if (
+		wrist_index < 0
+		or index_mcp < 0
+		or middle_mcp < 0
+		or ring_mcp < 0
+		or little_mcp < 0
+		or chains.size() != 5
+	):
+		rig_root.queue_free()
+		return false
+
+	rig_root.visible = false
+	var track_id := str(track.get("id", "hand"))
+	hand_rig_nodes[track_id] = {
+		"root": rig_root,
+		"skeleton": skeleton,
+		"chains": chains,
+		"wrist": wrist_index,
+		"palm_bones": [index_mcp, middle_mcp, ring_mcp, little_mcp],
+		"palm_span_reference": float(
+			track.get("rig_palm_span_reference", 0.0)
+		),
+		"palm_span_valid_min": float(
+			track.get("rig_palm_span_valid_min", 0.0)
+		),
+		"palm_span_valid_max": float(
+			track.get("rig_palm_span_valid_max", 0.0)
+		),
+		"max_orientation_step": deg_to_rad(float(
+			track.get("rig_max_orientation_step_degrees", 42.0)
+		)),
+		"path": rig_path
+	}
+	return true
+
+
+func _find_hand_skeleton(node: Node) -> Skeleton3D:
+	if node is Skeleton3D:
+		return node as Skeleton3D
+	for child in node.get_children():
+		var found := _find_hand_skeleton(child)
+		if found != null:
+			return found
+	return null
+
+
+func _style_rigged_hand_meshes(node: Node, color: Color) -> void:
+	if node is MeshInstance3D:
+		var mesh_node := node as MeshInstance3D
+		mesh_node.material_override = _hologram_material(color, 0.84, 0.4)
+		mesh_node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	for child in node.get_children():
+		_style_rigged_hand_meshes(child, color)
+
+
+func _build_hand_tool_for_track(root: Node3D, track_id: String) -> void:
+	var tool_root := Node3D.new()
+	tool_root.name = track_id + "_DrawingRod"
+	root.add_child(tool_root)
+
+	var shaft := MeshInstance3D.new()
+	shaft.name = track_id + "_RodShaft"
+	var shaft_mesh := CylinderMesh.new()
+	shaft_mesh.height = 1.0
+	shaft_mesh.top_radius = 0.020
+	shaft_mesh.bottom_radius = 0.020
+	shaft_mesh.radial_segments = 14
+	shaft_mesh.rings = 1
+	shaft.mesh = shaft_mesh
+	shaft.material_override = _material(
+		Color("#76563f"),
+		0.58
+	)
+	shaft.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	tool_root.add_child(shaft)
+
+	var tip := MeshInstance3D.new()
+	tip.name = track_id + "_RodTip"
+	var tip_mesh := CylinderMesh.new()
+	tip_mesh.height = 1.0
+	tip_mesh.top_radius = 0.020
+	tip_mesh.bottom_radius = 0.006
+	tip_mesh.radial_segments = 14
+	tip_mesh.rings = 1
+	tip.mesh = tip_mesh
+	tip.material_override = _material(
+		Color("#332d29"),
+		0.38
+	)
+	tip.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	tool_root.add_child(tip)
+
+	var end_cap := MeshInstance3D.new()
+	end_cap.name = track_id + "_RodEnd"
+	var end_mesh := SphereMesh.new()
+	end_mesh.radius = 0.021
+	end_mesh.height = 0.042
+	end_mesh.radial_segments = 14
+	end_mesh.rings = 7
+	end_cap.mesh = end_mesh
+	end_cap.material_override = shaft.material_override
+	end_cap.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	tool_root.add_child(end_cap)
+
+	tool_root.visible = false
+	hand_tool_nodes[track_id] = {
+		"root": tool_root,
+		"shaft": shaft,
+		"tip": tip,
+		"end": end_cap
+	}
+
+
 func _build_hand_model_for_track(track: Dictionary) -> MeshInstance3D:
 	var fallback := HAND_MODEL_LEFT_PATH if str(track.get("handedness", "")).to_lower() == "left" else HAND_MODEL_RIGHT_PATH
 	var model_path := str(track.get("model_path", fallback))
@@ -1415,43 +2307,83 @@ func _build_virtual_hand_for_track(root: Node3D, track_id: String, color: Color)
 
 	var palm := MeshInstance3D.new()
 	palm.name = track_id + "_PalmShell"
-	palm.material_override = _hologram_material(color, 0.28, 1.0)
+	palm.material_override = _hologram_material(color, 0.46, 1.0)
 	virtual_root.add_child(palm)
+
+	var palm_volume := MeshInstance3D.new()
+	palm_volume.name = track_id + "_PalmVolume"
+	var palm_sphere := SphereMesh.new()
+	palm_sphere.radius = 0.5
+	palm_sphere.height = 1.0
+	palm_sphere.radial_segments = 18
+	palm_sphere.rings = 9
+	palm_volume.mesh = palm_sphere
+	palm_volume.material_override = _hologram_material(color, 0.76, 0.82)
+	virtual_root.add_child(palm_volume)
 
 	var segments: Array[MeshInstance3D] = []
 	for segment_index in range(VIRTUAL_HAND_SEGMENTS.size()):
 		var segment := MeshInstance3D.new()
-		segment.name = "%s_HologramSegment%d" % [track_id, segment_index]
-		var cylinder := CylinderMesh.new()
-		cylinder.height = 1.0
-		cylinder.top_radius = _virtual_segment_radius(segment_index)
-		cylinder.bottom_radius = cylinder.top_radius
-		cylinder.radial_segments = 12
-		cylinder.rings = 2
-		segment.mesh = cylinder
-		segment.material_override = _hologram_material(color, 0.36, float(segment_index) * 0.07)
+		segment.name = "%s_SoftSegment%d" % [track_id, segment_index]
+		var capsule := CapsuleMesh.new()
+		capsule.height = 0.18
+		capsule.radius = _virtual_segment_radius(segment_index)
+		capsule.radial_segments = 12
+		capsule.rings = 4
+		segment.mesh = capsule
+		segment.material_override = _hologram_material(color, 0.75, float(segment_index) * 0.07)
 		virtual_root.add_child(segment)
 		segments.append(segment)
 
 	var tips: Array[MeshInstance3D] = []
 	for tip_index in range(VIRTUAL_HAND_TIPS.size()):
 		var tip := MeshInstance3D.new()
-		tip.name = "%s_HologramTip%d" % [track_id, tip_index]
+		tip.name = "%s_SoftTip%d" % [track_id, tip_index]
 		var sphere := SphereMesh.new()
-		sphere.radius = 0.062
-		sphere.height = 0.124
-		sphere.radial_segments = 16
-		sphere.rings = 8
+		var tip_radius := _virtual_joint_radius(int(VIRTUAL_HAND_TIPS[tip_index])) * 0.92
+		sphere.radius = tip_radius
+		sphere.height = tip_radius * 2.0
+		sphere.radial_segments = 12
+		sphere.rings = 6
 		tip.mesh = sphere
-		tip.material_override = _hologram_material(color.lightened(0.18), 0.48, 0.5 + float(tip_index) * 0.11)
+		tip.material_override = _hologram_material(color.lightened(0.04), 0.82, 0.5 + float(tip_index) * 0.11)
 		virtual_root.add_child(tip)
 		tips.append(tip)
+
+	var knuckles: Array[MeshInstance3D] = []
+	for joint_index in VIRTUAL_HAND_KNUCKLES:
+		var knuckle := MeshInstance3D.new()
+		knuckle.name = "%s_SoftKnuckle%d" % [track_id, int(joint_index)]
+		var sphere := SphereMesh.new()
+		var joint_radius := _virtual_joint_radius(int(joint_index))
+		sphere.radius = joint_radius
+		sphere.height = joint_radius * 2.0
+		sphere.radial_segments = 12
+		sphere.rings = 6
+		knuckle.mesh = sphere
+		knuckle.material_override = _hologram_material(color, 0.72, float(joint_index) * 0.05)
+		virtual_root.add_child(knuckle)
+		knuckles.append(knuckle)
+
+	var wrist := MeshInstance3D.new()
+	wrist.name = track_id + "_SoftWrist"
+	var wrist_capsule := CapsuleMesh.new()
+	wrist_capsule.height = 0.24
+	wrist_capsule.radius = 0.080
+	wrist_capsule.radial_segments = 14
+	wrist_capsule.rings = 5
+	wrist.mesh = wrist_capsule
+	wrist.material_override = _hologram_material(color.darkened(0.04), 0.66, 0.35)
+	virtual_root.add_child(wrist)
 
 	hand_virtual_nodes[track_id] = {
 		"root": virtual_root,
 		"palm": palm,
+		"palm_volume": palm_volume,
 		"segments": segments,
-		"tips": tips
+		"tips": tips,
+		"knuckles": knuckles,
+		"wrist": wrist
 	}
 
 
@@ -1462,12 +2394,24 @@ func _virtual_segment_radius(segment_index: int) -> float:
 	var a := int(connection[0])
 	var b := int(connection[1])
 	if a == 0:
-		return 0.055
+		return 0.060
 	if b in VIRTUAL_HAND_TIPS:
-		return 0.032
+		return 0.035 if b == 20 else 0.038
 	if a in [5, 9, 13, 17]:
-		return 0.046
-	return 0.038
+		return 0.044 if a == 17 else 0.050
+	return 0.039 if b in [3, 7, 11, 15, 19] else 0.043
+
+
+func _virtual_joint_radius(index: int) -> float:
+	if index == 0:
+		return 0.075
+	if index in [5, 9, 13]:
+		return 0.058
+	if index == 17:
+		return 0.053
+	if index in VIRTUAL_HAND_TIPS:
+		return 0.038
+	return 0.046
 
 
 func _hologram_material(color: Color, alpha: float, pulse_offset: float) -> Material:
@@ -1478,8 +2422,9 @@ func _hologram_material(color: Color, alpha: float, pulse_offset: float) -> Mate
 			material.shader = shader
 			material.set_shader_parameter("core_color", Color(color.r, color.g, color.b, alpha))
 			material.set_shader_parameter("alpha", alpha)
-			material.set_shader_parameter("pulse_speed", 0.72 + pulse_offset * 0.08)
-			material.set_shader_parameter("scanline_strength", 0.14)
+			material.set_shader_parameter("pulse_speed", 0.18 + pulse_offset * 0.018)
+			material.set_shader_parameter("pulse_offset", pulse_offset)
+			material.set_shader_parameter("scanline_strength", 0.018)
 			return material
 
 	var fallback := StandardMaterial3D.new()
@@ -1577,10 +2522,138 @@ func _build_heightmap_surface() -> void:
 	_apply_surface_texture_source()
 
 
+func _build_topdown_hand_surface() -> void:
+	if str(data_sources.get("virtual_hand_overlay", "")) == "":
+		return
+	var material := _topdown_hand_overlay_material()
+	if material == null:
+		return
+	topdown_hand_material = material
+	var plane := PlaneMesh.new()
+	plane.size = Vector2(5.5, 5.5)
+	var subdivisions := (
+		512
+		if bool(data_sources.get("virtual_hand_measured_shell_v2", false))
+		else (
+			384
+			if str(data_sources.get("virtual_hand_geometry", "")) != ""
+			else 256
+		)
+	)
+	plane.subdivide_width = subdivisions
+	plane.subdivide_depth = subdivisions
+	topdown_hand_surface_node = MeshInstance3D.new()
+	topdown_hand_surface_node.name = "TopdownVirtualHandSurface"
+	topdown_hand_surface_node.mesh = plane
+	topdown_hand_surface_node.material_override = material
+	gesture_layer.add_child(topdown_hand_surface_node)
+
+
+func _build_mano_hand_surface() -> void:
+	var has_mesh := str(data_sources.get("virtual_hand_mesh", "")) != ""
+	if not has_mesh:
+		for frame in processed_surface_frames:
+			if (
+				typeof(frame) == TYPE_DICTIONARY
+				and str(frame.get("virtualHandMesh", "")) != ""
+			):
+				has_mesh = true
+				break
+	if not has_mesh:
+		return
+
+	mano_hand_material = _mano_hand_surface_material()
+	if mano_hand_material == null:
+		return
+
+	mano_hand_surface_node = MeshInstance3D.new()
+	mano_hand_surface_node.name = "ManoRgbdHandSurface"
+	mano_hand_surface_node.material_override = mano_hand_material
+	mano_hand_surface_node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+	mano_hand_surface_node.visible = false
+	gesture_layer.add_child(mano_hand_surface_node)
+	_apply_mano_hand_mesh()
+
+
+func _mano_hand_surface_material() -> Material:
+	var sequence: Dictionary = session.get("mano_rgbd_full_sequence", {})
+	var preset := str(sequence.get("materialPreset", "warm_skin_pbr_v1"))
+	if preset == "soft_peach_porcelain_v1":
+		var shader := load(MANO_HAND_BEAUTY_SHADER_PATH)
+		if shader is Shader:
+			var parameters: Dictionary = sequence.get("materialParameters", {})
+			var material := ShaderMaterial.new()
+			material.shader = shader
+			material.set_shader_parameter(
+				"base_color",
+				Color(str(parameters.get("baseColor", "#f3b49e")))
+			)
+			material.set_shader_parameter(
+				"shadow_color",
+				Color(str(parameters.get("shadowColor", "#b96f67")))
+			)
+			material.set_shader_parameter(
+				"highlight_color",
+				Color(str(parameters.get("highlightColor", "#ffe2d1")))
+			)
+			material.set_shader_parameter(
+				"rim_color",
+				Color(str(parameters.get("rimColor", "#ffede2")))
+			)
+			material.set_shader_parameter(
+				"rim_strength",
+				float(parameters.get("rimStrength", 0.32))
+			)
+			material.set_shader_parameter(
+				"emission_strength",
+				float(parameters.get("emissionStrength", 0.035))
+			)
+			material.set_shader_parameter(
+				"roughness",
+				float(parameters.get("roughness", 0.72))
+			)
+			return material
+
+	var fallback := StandardMaterial3D.new()
+	fallback.albedo_color = Color("#dfad98")
+	fallback.roughness = 0.76
+	fallback.metallic = 0.0
+	fallback.emission_enabled = true
+	fallback.emission = Color("#c98570")
+	fallback.emission_energy_multiplier = 0.24
+	fallback.cull_mode = BaseMaterial3D.CULL_DISABLED
+	fallback.depth_draw_mode = BaseMaterial3D.DEPTH_DRAW_OPAQUE_ONLY
+	return fallback
+
+
 func _build_surface_video_players() -> void:
-	depth_video_player = _build_video_player(_source_path("depth_video", SAND_DEPTH_VIDEO_PATH))
-	texture_video_player = _build_video_player(_source_path("texture_video", SAND_TEXTURE_VIDEO_PATH))
+	_dispose_surface_video_players()
+	var depth_video_path := str(data_sources.get("depth_video", ""))
+	var texture_video_path := str(data_sources.get("texture_video", ""))
+	if depth_video_path != "":
+		depth_video_player = _build_video_player(depth_video_path)
+	if texture_video_path != "":
+		texture_video_player = _build_video_player(texture_video_path)
+	var video_pair_available := (
+		depth_video_player != null and texture_video_player != null
+	)
+	if not video_pair_available:
+		use_video_streams = false
+	if video_stream_toggle != null:
+		video_stream_toggle.disabled = not video_pair_available
+		video_stream_toggle.set_pressed_no_signal(use_video_streams)
 	_apply_surface_texture_source()
+	_set_surface_stream_playing(is_playing and use_video_streams)
+
+
+func _dispose_surface_video_players() -> void:
+	for player in [depth_video_player, texture_video_player]:
+		if player == null:
+			continue
+		player.stop()
+		player.queue_free()
+	depth_video_player = null
+	texture_video_player = null
 
 
 func _build_video_player(path: String) -> VideoStreamPlayer:
@@ -1593,7 +2666,7 @@ func _build_video_player(path: String) -> VideoStreamPlayer:
 
 	var player := VideoStreamPlayer.new()
 	player.stream = stream
-	player.autoplay = true
+	player.autoplay = false
 	player.loop = true
 	player.volume_db = -80.0
 	player.visible = false
@@ -1601,13 +2674,13 @@ func _build_video_player(path: String) -> VideoStreamPlayer:
 	player.position = Vector2(-10000, -10000)
 	player.size = Vector2.ZERO
 	add_child(player)
-	player.play()
 	return player
 
 
 func _apply_surface_texture_source() -> void:
 	if heightmap_material == null:
 		return
+	heightmap_material.set_shader_parameter("baseline_height_offset", surface_baseline_height_offset)
 	if use_video_streams and depth_video_player != null:
 		var depth_texture := depth_video_player.get_video_texture()
 		if depth_texture != null:
@@ -1621,6 +2694,31 @@ func _apply_surface_texture_source() -> void:
 			heightmap_material.set_shader_parameter("texture_map", texture)
 	elif static_surface_texture != null:
 		heightmap_material.set_shader_parameter("texture_map", static_surface_texture)
+	_apply_topdown_hand_texture_source()
+
+
+func _apply_topdown_hand_texture_source() -> void:
+	if topdown_hand_material == null:
+		return
+	topdown_hand_material.set_shader_parameter(
+		"baseline_height_offset",
+		surface_baseline_height_offset
+	)
+	if static_depth_texture != null:
+		topdown_hand_material.set_shader_parameter(
+			"depth_map",
+			static_depth_texture
+		)
+	if static_topdown_hand_texture != null:
+		topdown_hand_material.set_shader_parameter(
+			"hand_overlay",
+			static_topdown_hand_texture
+		)
+	if static_topdown_hand_geometry_texture != null:
+		topdown_hand_material.set_shader_parameter(
+			"hand_geometry",
+			static_topdown_hand_geometry_texture
+		)
 
 
 func _source_path(key: String, fallback: String) -> String:
@@ -1720,8 +2818,13 @@ func _update_surface_frame_from_time() -> void:
 			target_index = index
 		else:
 			break
+	if is_playing and surface_frame_index >= 0:
+		target_index = min(target_index, surface_frame_index + 1)
 	if target_index != surface_frame_index:
-		_set_surface_frame(target_index)
+		if not _set_surface_frame(target_index) and is_playing and surface_frame_index >= 0:
+			var displayed_frame: Dictionary = processed_surface_frames[surface_frame_index]
+			playhead = float(displayed_frame.get("time", playhead))
+			time_slider.set_value_no_signal(playhead)
 
 
 func _update_hand() -> void:
@@ -1733,6 +2836,14 @@ func _update_hand() -> void:
 			continue
 		var samples: Array = track.get("samples", [])
 		var points := _sample_points(track, samples, playhead)
+		var sample_state := _sample_hand_state(track, samples, playhead)
+		var intent := str(sample_state.get("intent", "positioning"))
+		var tool_contact: Variant = _sample_optional_sample_point(
+			track,
+			samples,
+			playhead,
+			"toolContactPoint"
+		)
 		var joints: Array = hand_joint_nodes[track_id]
 		var centre := Vector3.ZERO
 		var visible_joint_count := 0
@@ -1747,7 +2858,9 @@ func _update_hand() -> void:
 			else:
 				joint.visible = false
 		_update_hand_bones(track_id, points, bool(track.get("show_skeleton", false)))
+		_update_rigged_hand(track_id, points, bool(track.get("virtual_hand", true)))
 		_update_virtual_hand(track_id, points, bool(track.get("virtual_hand", true)))
+		_update_hand_tool(track_id, points, intent, tool_contact)
 		_update_hand_model(track_id, points, centre, visible_joint_count, track)
 
 
@@ -1757,6 +2870,12 @@ func _sample_points(track: Dictionary, samples: Array, time: float) -> Array[Vec
 		return points
 	if samples.size() == 1:
 		return _points_from_sample(samples[0])
+
+	var first_time := float(samples[0].get("time", 0.0))
+	var last_time := float(samples[samples.size() - 1].get("time", first_time))
+	var endpoint_hold := float(track.get("endpoint_hold_seconds", 0.05))
+	if time < first_time - endpoint_hold or time > last_time + endpoint_hold:
+		return points
 
 	var bracket := _sample_bracket(samples, time)
 	var left_index := int(bracket.get("left", 0))
@@ -1769,6 +2888,9 @@ func _sample_points(track: Dictionary, samples: Array, time: float) -> Array[Vec
 	var left_time := float(left_sample.get("time", 0.0))
 	var right_time := float(right_sample.get("time", left_time))
 	var span: float = max(0.0001, right_time - left_time)
+	var max_gap_seconds := float(track.get("max_gap_seconds", 0.24))
+	if span > max_gap_seconds:
+		return points
 	var t: float = clamp((time - left_time) / span, 0.0, 1.0)
 	var smooth_t: float = t * t * (3.0 - 2.0 * t)
 	var mode := str(track.get("interpolation", "cubic")).to_lower()
@@ -1801,6 +2923,61 @@ func _sample_bracket(samples: Array, time: float) -> Dictionary:
 	if right_time == INF:
 		right_index = left_index
 	return {"left": left_index, "right": right_index}
+
+
+func _sample_hand_state(
+	track: Dictionary,
+	samples: Array,
+	time: float
+) -> Dictionary:
+	if samples.is_empty():
+		return {}
+	var first_time := float(samples[0].get("time", 0.0))
+	var last_time := float(
+		samples[samples.size() - 1].get("time", first_time)
+	)
+	var endpoint_hold := float(track.get("endpoint_hold_seconds", 0.05))
+	if time < first_time - endpoint_hold or time > last_time + endpoint_hold:
+		return {}
+	var bracket := _sample_bracket(samples, time)
+	var left_index := int(bracket.get("left", 0))
+	var right_index := int(bracket.get("right", left_index))
+	var left_sample: Dictionary = samples[left_index]
+	var right_sample: Dictionary = samples[right_index]
+	var left_time := float(left_sample.get("time", 0.0))
+	var right_time := float(right_sample.get("time", left_time))
+	if right_time - left_time > float(track.get("max_gap_seconds", 0.24)):
+		return {}
+	if abs(time - left_time) <= abs(right_time - time):
+		return left_sample
+	return right_sample
+
+
+func _sample_optional_sample_point(
+	track: Dictionary,
+	samples: Array,
+	time: float,
+	field: String
+) -> Variant:
+	if samples.is_empty():
+		return null
+	var state := _sample_hand_state(track, samples, time)
+	if state.is_empty() or not state.has(field):
+		return null
+	var bracket := _sample_bracket(samples, time)
+	var left_sample: Dictionary = samples[int(bracket.get("left", 0))]
+	var right_sample: Dictionary = samples[int(bracket.get("right", 0))]
+	if not left_sample.has(field) or not right_sample.has(field):
+		return _array_to_vec3(state.get(field, [0.0, 0.0, 0.0]))
+	var left_time := float(left_sample.get("time", 0.0))
+	var right_time := float(right_sample.get("time", left_time))
+	var span: float = max(0.0001, right_time - left_time)
+	var t: float = clamp((time - left_time) / span, 0.0, 1.0)
+	var smooth_t: float = t * t * (3.0 - 2.0 * t)
+	return _array_to_vec3(left_sample[field]).lerp(
+		_array_to_vec3(right_sample[field]),
+		smooth_t
+	)
 
 
 func _points_from_sample(sample: Dictionary) -> Array[Vector3]:
@@ -1859,6 +3036,220 @@ func _update_hand_bones(track_id: String, points: Array[Vector3], show_bones: bo
 			_place_bone_between(bone, points[a], points[b])
 
 
+func _update_rigged_hand(track_id: String, points: Array[Vector3], enabled: bool) -> void:
+	if not hand_rig_nodes.has(track_id):
+		return
+	var rig: Dictionary = hand_rig_nodes[track_id]
+	var rig_root: Node3D = rig.get("root", null)
+	var skeleton: Skeleton3D = rig.get("skeleton", null)
+	if rig_root == null or skeleton == null:
+		return
+	rig_root.visible = enabled and points.size() >= 21
+	if not rig_root.visible:
+		skeleton.clear_bones_global_pose_override()
+		hand_rendered_points.erase(track_id)
+		return
+
+	var palm_bones: Array = rig.get("palm_bones", [])
+	if palm_bones.size() < 4:
+		rig_root.visible = false
+		return
+	var wrist_rest := skeleton.get_bone_global_rest(int(rig.get("wrist", 0))).origin
+	var index_rest := skeleton.get_bone_global_rest(int(palm_bones[0])).origin
+	var middle_rest := skeleton.get_bone_global_rest(int(palm_bones[1])).origin
+	var ring_rest := skeleton.get_bone_global_rest(int(palm_bones[2])).origin
+	var little_rest := skeleton.get_bone_global_rest(int(palm_bones[3])).origin
+	var rest_knuckle_centre := (index_rest + middle_rest + ring_rest + little_rest) * 0.25
+	var target_knuckle_centre := (points[5] + points[9] + points[13] + points[17]) * 0.25
+	var rest_basis := _hand_palm_basis(
+		index_rest - little_rest,
+		rest_knuckle_centre - wrist_rest
+	)
+	var target_width := points[5] - points[17]
+	var target_length := target_knuckle_centre - points[0]
+	var target_basis := _hand_palm_basis(target_width, target_length)
+	var rest_span := index_rest.distance_to(little_rest)
+	var target_span := points[5].distance_to(points[17])
+	if rest_span < 0.001 or target_span < 0.001:
+		rig_root.visible = false
+		return
+	var span_reference := float(
+		rig.get("palm_span_reference", 0.0)
+	)
+	if span_reference > 0.001:
+		var minimum_valid_span := float(
+			rig.get("palm_span_valid_min", span_reference * 0.35)
+		)
+		var maximum_valid_span := float(
+			rig.get("palm_span_valid_max", span_reference * 1.75)
+		)
+		if minimum_valid_span <= 0.001:
+			minimum_valid_span = span_reference * 0.35
+		if maximum_valid_span <= minimum_valid_span:
+			maximum_valid_span = span_reference * 1.75
+		var width_axis := target_width.normalized()
+		var palm_length_orthogonal := (
+			target_length
+			- width_axis * target_length.dot(width_axis)
+		).length()
+		var target_basis_valid := (
+			target_span >= minimum_valid_span
+			and target_span <= maximum_valid_span
+			and palm_length_orthogonal >= span_reference * 0.24
+		)
+		if target_basis_valid and rig.has("last_valid_target_basis"):
+			var last_basis: Basis = rig["last_valid_target_basis"]
+			var orientation_step := (
+				last_basis.get_rotation_quaternion().angle_to(
+					target_basis.get_rotation_quaternion()
+				)
+			)
+			target_basis_valid = orientation_step <= float(
+				rig.get("max_orientation_step", deg_to_rad(42.0))
+			)
+		if target_basis_valid:
+			rig["last_valid_target_basis"] = target_basis
+		elif rig.has("last_valid_target_basis"):
+			target_basis = rig["last_valid_target_basis"]
+		else:
+			rig_root.visible = false
+			return
+	else:
+		span_reference = target_span
+	var hand_scale: float = clamp(
+		span_reference / rest_span,
+		0.35,
+		8.0
+	)
+	var rotation := target_basis * rest_basis.inverse()
+	rig_root.transform = Transform3D(
+		rotation.scaled(Vector3.ONE * hand_scale),
+		points[0] - rotation * (wrist_rest * hand_scale)
+	)
+
+	var inverse_rig := rig_root.transform.affine_inverse()
+	var local_points: Array[Vector3] = []
+	for point in points:
+		local_points.append(inverse_rig * point)
+	skeleton.clear_bones_global_pose_override()
+	for chain in rig.get("chains", []):
+		_pose_rigged_finger(skeleton, chain, local_points)
+	hand_rendered_points[track_id] = points
+
+
+func _update_hand_tool(
+	track_id: String,
+	points: Array[Vector3],
+	intent: String,
+	tool_contact: Variant
+) -> void:
+	if not hand_tool_nodes.has(track_id):
+		return
+	var tool: Dictionary = hand_tool_nodes[track_id]
+	var tool_root: Node3D = tool.get("root", null)
+	if tool_root == null:
+		return
+	tool_root.visible = (
+		intent == "tool_drawing"
+		and points.size() >= 21
+		and tool_contact is Vector3
+	)
+	if not tool_root.visible:
+		return
+
+	var contact := tool_contact as Vector3
+	var grip := (points[4] + points[6] + points[10]) / 3.0
+	var direction := grip - contact
+	if direction.length() < 0.12:
+		var palm_centre := (
+			points[0]
+			+ points[5]
+			+ points[9]
+			+ points[13]
+			+ points[17]
+		) / 5.0
+		direction = palm_centre - contact
+	if direction.length() < 0.12:
+		direction = Vector3(0.35, 0.32, 0.0)
+	var axis := direction.normalized()
+	var rod_length: float = max(direction.length() + 0.20, 0.62)
+	var tip_length := 0.085
+	var rod_end := contact + axis * rod_length
+	var tip_end := contact + axis * tip_length
+
+	var shaft: MeshInstance3D = tool.get("shaft", null)
+	var tip: MeshInstance3D = tool.get("tip", null)
+	var end_cap: MeshInstance3D = tool.get("end", null)
+	if shaft != null:
+		_place_bone_between(shaft, tip_end * 0.92 + contact * 0.08, rod_end)
+		shaft.visible = true
+	if tip != null:
+		_place_bone_between(tip, contact, tip_end)
+		tip.visible = true
+	if end_cap != null:
+		end_cap.position = rod_end
+		end_cap.visible = true
+
+
+func _hand_palm_basis(width: Vector3, length: Vector3) -> Basis:
+	var x_axis := width.normalized()
+	var z_axis := (length - x_axis * length.dot(x_axis)).normalized()
+	if z_axis.length() < 0.001:
+		z_axis = Vector3.FORWARD
+	var y_axis := z_axis.cross(x_axis).normalized()
+	return Basis(x_axis, y_axis, z_axis).orthonormalized()
+
+
+func _pose_rigged_finger(
+	skeleton: Skeleton3D,
+	chain: Dictionary,
+	points: Array[Vector3]
+) -> void:
+	var bones: Array = chain.get("bones", [])
+	var landmarks: Array = chain.get("points", [])
+	if bones.size() != landmarks.size() or bones.size() < 2:
+		return
+	for segment_index in range(bones.size() - 1):
+		var bone_index := int(bones[segment_index])
+		var next_bone_index := int(bones[segment_index + 1])
+		var point_index := int(landmarks[segment_index])
+		var next_point_index := int(landmarks[segment_index + 1])
+		if point_index >= points.size() or next_point_index >= points.size():
+			return
+		var current := skeleton.get_bone_global_pose(bone_index)
+		var current_next := skeleton.get_bone_global_pose(next_bone_index)
+		var current_direction := current_next.origin - current.origin
+		var target_direction := points[next_point_index] - points[point_index]
+		if current_direction.length() < 0.0001 or target_direction.length() < 0.0001:
+			continue
+		var target_length_ratio := (
+			target_direction.length() / current_direction.length()
+		)
+		if target_length_ratio < 0.28 or target_length_ratio > 2.6:
+			continue
+		var align := Quaternion(
+			current_direction.normalized(),
+			target_direction.normalized()
+		)
+		var align_angle := align.get_angle()
+		var maximum_swing := deg_to_rad(
+			82.0 if segment_index == 0 else 74.0
+		)
+		if align_angle > maximum_swing:
+			align = Quaternion.IDENTITY.slerp(
+				align,
+				maximum_swing / align_angle
+			)
+		var target_global_basis := Basis(align) * current.basis
+		skeleton.set_bone_global_pose_override(
+			bone_index,
+			Transform3D(target_global_basis, current.origin),
+			1.0,
+			true
+		)
+		skeleton.force_update_all_bone_transforms()
+
+
 func _update_virtual_hand(track_id: String, points: Array[Vector3], enabled: bool) -> void:
 	if not hand_virtual_nodes.has(track_id):
 		return
@@ -1875,6 +3266,10 @@ func _update_virtual_hand(track_id: String, points: Array[Vector3], enabled: boo
 	if palm != null:
 		palm.mesh = _make_hand_palm_mesh(points)
 
+	var palm_volume: MeshInstance3D = virtual_hand.get("palm_volume", null)
+	if palm_volume != null:
+		_update_virtual_palm_volume(palm_volume, points)
+
 	var segments: Array = virtual_hand.get("segments", [])
 	for i in range(segments.size()):
 		var segment: MeshInstance3D = segments[i]
@@ -1886,7 +3281,7 @@ func _update_virtual_hand(track_id: String, points: Array[Vector3], enabled: boo
 		var b := int(connection[1])
 		segment.visible = a < points.size() and b < points.size()
 		if segment.visible:
-			_place_bone_between(segment, points[a], points[b])
+			_place_capsule_between(segment, points[a], points[b])
 
 	var tips: Array = virtual_hand.get("tips", [])
 	for i in range(tips.size()):
@@ -1896,27 +3291,126 @@ func _update_virtual_hand(track_id: String, points: Array[Vector3], enabled: boo
 		if tip.visible:
 			tip.position = points[tip_point]
 
+	var knuckles: Array = virtual_hand.get("knuckles", [])
+	for i in range(knuckles.size()):
+		var knuckle: MeshInstance3D = knuckles[i]
+		var joint_point := int(VIRTUAL_HAND_KNUCKLES[i])
+		knuckle.visible = joint_point < points.size()
+		if knuckle.visible:
+			knuckle.position = points[joint_point]
+
+	var wrist: MeshInstance3D = virtual_hand.get("wrist", null)
+	if wrist != null:
+		var palm_centre := (points[5] + points[9] + points[13] + points[17]) * 0.25
+		var wrist_direction := points[0] - palm_centre
+		if wrist_direction.length() > 0.001:
+			var wrist_length: float = clamp(points[5].distance_to(points[17]) * 0.48, 0.16, 0.32)
+			_place_capsule_between(wrist, points[0], points[0] + wrist_direction.normalized() * wrist_length)
+			wrist.visible = true
+		else:
+			wrist.visible = false
+
+
+func _update_virtual_palm_volume(palm_volume: MeshInstance3D, points: Array[Vector3]) -> void:
+	if points.size() < 18:
+		palm_volume.visible = false
+		return
+	var knuckle_centre := (points[5] + points[9] + points[13] + points[17]) * 0.25
+	var length_axis := knuckle_centre - points[0]
+	var width_axis := points[5] - points[17]
+	if length_axis.length() < 0.001 or width_axis.length() < 0.001:
+		palm_volume.visible = false
+		return
+
+	var x_axis := width_axis.normalized()
+	var z_axis := (length_axis - x_axis * length_axis.dot(x_axis)).normalized()
+	if z_axis.length() < 0.001:
+		palm_volume.visible = false
+		return
+	var y_axis := z_axis.cross(x_axis).normalized()
+	var palm_span := width_axis.length()
+	var palm_length := length_axis.length()
+	palm_volume.position = points[0].lerp(knuckle_centre, 0.54)
+	palm_volume.basis = Basis(x_axis, y_axis, z_axis).scaled(
+		Vector3(
+			clamp(palm_span * 0.90, 0.24, 0.54),
+			clamp(palm_span * 0.18, 0.055, 0.105),
+			clamp(palm_length * 0.88, 0.28, 0.62)
+		)
+	)
+	palm_volume.visible = true
+
 
 func _make_hand_palm_mesh(points: Array[Vector3]) -> ArrayMesh:
 	var surface_tool := SurfaceTool.new()
 	surface_tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+	if points.size() < 18:
+		return surface_tool.commit()
+
+	var palm_normal := (points[5] - points[0]).cross(points[17] - points[0]).normalized()
+	if palm_normal.length() < 0.001:
+		palm_normal = Vector3.UP
+	if palm_normal.y < 0.0:
+		palm_normal = -palm_normal
+	var palm_span := points[5].distance_to(points[17])
+	var thickness: float = clamp(palm_span * 0.13, 0.040, 0.072)
+	var half_offset := palm_normal * thickness * 0.5
+
 	for triangle in HAND_PALM_TRIANGLES:
 		var a_index := int(triangle[0])
 		var b_index := int(triangle[1])
 		var c_index := int(triangle[2])
-		if a_index >= points.size() or b_index >= points.size() or c_index >= points.size():
-			continue
-		var a := points[a_index]
-		var b := points[b_index]
-		var c := points[c_index]
-		var normal := Plane(a, b, c).normal
-		surface_tool.set_normal(normal)
-		surface_tool.add_vertex(a)
-		surface_tool.set_normal(normal)
-		surface_tool.add_vertex(b)
-		surface_tool.set_normal(normal)
-		surface_tool.add_vertex(c)
+		var a := points[a_index] + half_offset
+		var b := points[b_index] + half_offset
+		var c := points[c_index] + half_offset
+		_add_hand_triangle(surface_tool, a, b, c)
+		_add_hand_triangle(
+			surface_tool,
+			points[c_index] - half_offset,
+			points[b_index] - half_offset,
+			points[a_index] - half_offset
+		)
+
+	for outline_index in range(VIRTUAL_HAND_PALM_OUTLINE.size()):
+		var next_index := (outline_index + 1) % VIRTUAL_HAND_PALM_OUTLINE.size()
+		var point_a := points[int(VIRTUAL_HAND_PALM_OUTLINE[outline_index])]
+		var point_b := points[int(VIRTUAL_HAND_PALM_OUTLINE[next_index])]
+		var front_a := point_a + half_offset
+		var front_b := point_b + half_offset
+		var back_a := point_a - half_offset
+		var back_b := point_b - half_offset
+		_add_hand_triangle(surface_tool, front_a, back_a, back_b)
+		_add_hand_triangle(surface_tool, front_a, back_b, front_b)
 	return surface_tool.commit()
+
+
+func _add_hand_triangle(surface_tool: SurfaceTool, a: Vector3, b: Vector3, c: Vector3) -> void:
+	var normal := (b - a).cross(c - a).normalized()
+	surface_tool.set_normal(normal)
+	surface_tool.add_vertex(a)
+	surface_tool.set_normal(normal)
+	surface_tool.add_vertex(b)
+	surface_tool.set_normal(normal)
+	surface_tool.add_vertex(c)
+
+
+func _place_capsule_between(capsule_node: MeshInstance3D, a: Vector3, b: Vector3) -> void:
+	var delta := b - a
+	var length := delta.length()
+	if length < 0.001:
+		capsule_node.visible = false
+		return
+	var capsule := capsule_node.mesh as CapsuleMesh
+	if capsule == null:
+		_place_bone_between(capsule_node, a, b)
+		return
+
+	capsule.height = max(length, capsule.radius * 2.0)
+	var y_axis := delta / length
+	var helper := Vector3.RIGHT if abs(y_axis.dot(Vector3.UP)) > 0.96 else Vector3.UP
+	var x_axis := helper.cross(y_axis).normalized()
+	var z_axis := x_axis.cross(y_axis).normalized()
+	capsule_node.transform = Transform3D(Basis(x_axis, y_axis, z_axis), (a + b) * 0.5)
 
 
 func _place_bone_between(bone: MeshInstance3D, a: Vector3, b: Vector3) -> void:
@@ -2128,6 +3622,9 @@ func _set_layer_visible(key: String, visible: bool) -> void:
 			gesture_layer.visible = visible
 		"objects":
 			object_layer.visible = visible
+		"audio":
+			audio_user_enabled = visible
+			_sync_audio_playback()
 		"annotations":
 			annotation_layer.visible = visible
 
@@ -2143,15 +3640,20 @@ func _apply_condition(condition: String) -> void:
 	var show_gestures := condition != "no_gestures"
 	var show_objects := condition != "no_objects"
 	var show_sand := condition != "no_sand"
+	var show_audio := condition != "no_audio" and audio_player != null
 	var show_annotations := condition == "stage2"
 	_set_layer_toggle_value("gestures", show_gestures)
 	_set_layer_toggle_value("objects", show_objects)
 	_set_layer_toggle_value("sand", show_sand)
+	_set_layer_toggle_value("audio", show_audio)
 	_set_layer_toggle_value("annotations", show_annotations)
 	_set_layer_visible("gestures", show_gestures)
 	_set_layer_visible("objects", show_objects)
 	_set_layer_visible("sand", show_sand)
+	_set_layer_visible("audio", show_audio)
 	_set_layer_visible("annotations", show_annotations)
+	if experiment_mode:
+		_apply_experiment_condition_locks()
 	_update_task_text()
 
 
@@ -2226,11 +3728,16 @@ func _toggle_focus_mode() -> void:
 	if modality_panel != null:
 		modality_panel.visible = not focus_mode
 	if study_panel != null:
-		study_panel.visible = not focus_mode
+		study_panel.visible = not focus_mode and not experiment_mode
+	if experiment_runner != null:
+		experiment_runner.visible = not focus_mode and experiment_mode
 	if lower_dock_panel != null:
-		lower_dock_panel.visible = not focus_mode
+		lower_dock_panel.visible = not focus_mode and not experiment_mode
 	if fixed_views_panel != null:
 		fixed_views_panel.visible = (not focus_mode) and reference_views_visible
+	_set_reference_viewports_active(
+		(not focus_mode) and reference_views_visible
+	)
 	if focus_button != null:
 		focus_button.text = "Study panels" if focus_mode else "Focus 3D"
 	_log_event("focus_mode", {"enabled": focus_mode})
@@ -2240,9 +3747,23 @@ func _toggle_reference_views() -> void:
 	reference_views_visible = not reference_views_visible
 	if fixed_views_panel != null:
 		fixed_views_panel.visible = reference_views_visible and not focus_mode
+	_set_reference_viewports_active(
+		reference_views_visible and not focus_mode
+	)
 	if reference_views_button != null:
 		reference_views_button.text = "Hide refs" if reference_views_visible else "Reference views"
 	_log_event("reference_views", {"visible": reference_views_visible})
+
+
+func _set_reference_viewports_active(active: bool) -> void:
+	for viewport in [top_viewport, front_viewport]:
+		if viewport == null:
+			continue
+		viewport.render_target_update_mode = (
+			SubViewport.UPDATE_ALWAYS
+			if active
+			else SubViewport.UPDATE_DISABLED
+		)
 
 
 func _set_heightmap_surface_enabled(enabled: bool) -> void:
@@ -2255,15 +3776,21 @@ func _set_heightmap_surface_enabled(enabled: bool) -> void:
 
 
 func _on_play_pressed() -> void:
+	if not is_playing and playhead >= duration - 0.001:
+		playhead = 0.0
+		time_slider.set_value_no_signal(playhead)
+		_update_scene_from_time()
 	is_playing = not is_playing
 	play_button.text = "Pause" if is_playing else "Play"
-	_set_surface_stream_playing(is_playing)
+	_set_surface_stream_playing(is_playing and use_video_streams)
+	_sync_audio_playback(true)
 	_log_event("transport", {"playing": is_playing, "time": playhead})
 
 
 func _on_time_changed(value: float) -> void:
 	playhead = value
 	_update_scene_from_time()
+	_sync_audio_playback(true)
 
 
 func _update_camera() -> void:
@@ -2281,6 +3808,7 @@ func _log_event(event_name: String, payload: Dictionary) -> void:
 		"playhead": playhead,
 		"payload": payload
 	}
+	experiment_event_buffer.append(entry)
 	var file := FileAccess.open(LOG_PATH, FileAccess.READ_WRITE)
 	if file == null:
 		file = FileAccess.open(LOG_PATH, FileAccess.WRITE)
@@ -2413,12 +3941,24 @@ func _reload_static_surface_textures() -> void:
 	static_depth_texture = null
 	static_surface_texture = null
 	static_surface_mask_texture = null
+	static_topdown_hand_texture = null
+	static_topdown_hand_geometry_texture = null
 
 	static_depth_texture = _load_surface_texture(depth_path)
 	static_surface_texture = _load_surface_texture(texture_path)
 
 	var mask_path := str(data_sources.get("surface_mask", ""))
 	static_surface_mask_texture = _load_surface_texture(mask_path)
+	var hand_overlay_path := str(
+		data_sources.get("virtual_hand_overlay", "")
+	)
+	static_topdown_hand_texture = _load_surface_texture(hand_overlay_path)
+	var hand_geometry_path := str(
+		data_sources.get("virtual_hand_geometry", "")
+	)
+	static_topdown_hand_geometry_texture = _load_surface_texture(
+		hand_geometry_path
+	)
 
 	if heightmap_material != null:
 		if static_depth_texture != null:
@@ -2431,6 +3971,7 @@ func _reload_static_surface_textures() -> void:
 			heightmap_material.set_shader_parameter("use_surface_mask", true)
 		else:
 			heightmap_material.set_shader_parameter("use_surface_mask", false)
+	_apply_topdown_hand_texture_source()
 
 
 func _load_surface_texture(path: String) -> Texture2D:
@@ -2464,9 +4005,301 @@ func _load_remote_surface_texture(path: String) -> void:
 		return
 	var texture := ImageTexture.create_from_image(image)
 	surface_texture_cache[path] = texture
-	if _source_path("depth_map", SAND_HEIGHTMAP_PATH) == path or _source_path("texture_map", SAND_TEXTURE_PATH) == path or _source_path("surface_mask", "") == path:
+	if surface_frame_pending_index >= 0 and _surface_frame_textures_ready(surface_frame_pending_index):
+		var requested_index := surface_frame_pending_index
+		surface_frame_pending_index = -1
+		_set_surface_frame(requested_index)
+		return
+	if (
+		_source_path("depth_map", SAND_HEIGHTMAP_PATH) == path
+		or _source_path("texture_map", SAND_TEXTURE_PATH) == path
+		or _source_path("surface_mask", "") == path
+		or str(data_sources.get("virtual_hand_overlay", "")) == path
+		or str(data_sources.get("virtual_hand_geometry", "")) == path
+	):
 		_reload_static_surface_textures()
 		_apply_surface_texture_source()
+
+
+func _apply_mano_hand_mesh() -> void:
+	if mano_hand_surface_node == null:
+		return
+	var path := str(data_sources.get("virtual_hand_mesh", ""))
+	if path == "":
+		mano_hand_surface_node.mesh = null
+		mano_hand_surface_node.visible = false
+		return
+	var mesh := _load_mano_mesh(path)
+	if mesh == null:
+		mano_hand_surface_node.visible = false
+		return
+	mano_hand_surface_node.mesh = mesh
+	mano_hand_surface_node.visible = true
+
+
+func _load_mano_mesh(path: String) -> ArrayMesh:
+	if path == "":
+		return null
+	if mano_mesh_cache.has(path):
+		return mano_mesh_cache[path]
+	if _is_http_path(path):
+		if not mano_mesh_pending.has(path):
+			mano_mesh_pending[path] = true
+			_load_remote_mano_mesh(path)
+		return null
+	if not FileAccess.file_exists(path):
+		return null
+	var file := FileAccess.open(path, FileAccess.READ)
+	if file == null:
+		return null
+	var mesh: ArrayMesh
+	if path.ends_with(".meshbin.gz"):
+		mesh = _mano_mesh_from_bytes(file.get_buffer(file.get_length()), path)
+	else:
+		mesh = _mano_mesh_from_payload(JSON.parse_string(file.get_as_text()), path)
+	if mesh != null:
+		mano_mesh_cache[path] = mesh
+	return mesh
+
+
+func _load_remote_mano_mesh(path: String) -> void:
+	var body := await _http_get(path)
+	mano_mesh_pending.erase(path)
+	if body.is_empty():
+		return
+	var mesh: ArrayMesh
+	if path.ends_with(".meshbin.gz"):
+		mesh = _mano_mesh_from_bytes(body, path)
+	else:
+		mesh = _mano_mesh_from_payload(
+			JSON.parse_string(body.get_string_from_utf8()), path
+		)
+	if mesh == null:
+		return
+	mano_mesh_cache[path] = mesh
+	if (
+		surface_frame_pending_index >= 0
+		and _surface_frame_textures_ready(surface_frame_pending_index)
+	):
+		var requested_index := surface_frame_pending_index
+		surface_frame_pending_index = -1
+		_set_surface_frame(requested_index)
+		return
+	if str(data_sources.get("virtual_hand_mesh", "")) == path:
+		_apply_mano_hand_mesh()
+
+
+func _mano_mesh_from_bytes(body: PackedByteArray, source_path: String) -> ArrayMesh:
+	var data := body
+	if source_path.ends_with(".gz"):
+		data = body.decompress_dynamic(
+			1024 * 1024, FileAccess.COMPRESSION_GZIP
+		)
+	if data.size() < 20 or data.slice(0, 4).get_string_from_ascii() != "MNRB":
+		push_error("Invalid MANO binary header: " + source_path)
+		return null
+	var version := int(data.decode_u32(4))
+	var vertex_count := int(data.decode_u32(8))
+	var index_count := int(data.decode_u32(12))
+	if (
+		version != 1
+		or vertex_count <= 0
+		or vertex_count > 100000
+		or index_count <= 0
+		or index_count % 3 != 0
+	):
+		push_error("Unsupported MANO binary layout: " + source_path)
+		return null
+	var expected_size := 20 + vertex_count * 3 * 4 * 2 + index_count * 4
+	if data.size() != expected_size:
+		push_error(
+			"MANO binary size mismatch (%d != %d): %s"
+			% [data.size(), expected_size, source_path]
+		)
+		return null
+
+	var vertices := PackedVector3Array()
+	var normals := PackedVector3Array()
+	vertices.resize(vertex_count)
+	normals.resize(vertex_count)
+	var offset := 20
+	for index in range(vertex_count):
+		var vertex := Vector3(
+			data.decode_float(offset),
+			data.decode_float(offset + 4),
+			data.decode_float(offset + 8)
+		)
+		offset += 12
+		if not vertex.is_finite():
+			push_error("Non-finite MANO binary vertex: " + source_path)
+			return null
+		vertices[index] = vertex
+	for index in range(vertex_count):
+		var normal := Vector3(
+			data.decode_float(offset),
+			data.decode_float(offset + 4),
+			data.decode_float(offset + 8)
+		)
+		offset += 12
+		if not normal.is_finite():
+			push_error("Non-finite MANO binary normal: " + source_path)
+			return null
+		normals[index] = normal.normalized()
+	var indices := PackedInt32Array()
+	indices.resize(index_count)
+	for index in range(index_count):
+		var vertex_index := int(data.decode_u32(offset))
+		offset += 4
+		if vertex_index < 0 or vertex_index >= vertex_count:
+			push_error("Out-of-range MANO binary index: " + source_path)
+			return null
+		indices[index] = vertex_index
+	return _mano_mesh_from_arrays(vertices, normals, indices)
+
+
+func _mano_mesh_from_payload(payload, source_path: String) -> ArrayMesh:
+	if typeof(payload) != TYPE_DICTIONARY:
+		push_error("Invalid MANO mesh JSON: " + source_path)
+		return null
+	var vertex_values: Array = payload.get("vertices", [])
+	var normal_values: Array = payload.get("normals", [])
+	var index_values: Array = payload.get("indices", [])
+	if (
+		vertex_values.is_empty()
+		or vertex_values.size() % 3 != 0
+		or normal_values.size() != vertex_values.size()
+		or index_values.is_empty()
+		or index_values.size() % 3 != 0
+	):
+		push_error("Malformed MANO mesh arrays: " + source_path)
+		return null
+
+	var vertex_count := int(vertex_values.size() / 3)
+	var vertices := PackedVector3Array()
+	var normals := PackedVector3Array()
+	vertices.resize(vertex_count)
+	normals.resize(vertex_count)
+	for index in range(vertex_count):
+		var offset := index * 3
+		var vertex := Vector3(
+			float(vertex_values[offset]),
+			float(vertex_values[offset + 1]),
+			float(vertex_values[offset + 2])
+		)
+		var normal := Vector3(
+			float(normal_values[offset]),
+			float(normal_values[offset + 1]),
+			float(normal_values[offset + 2])
+		)
+		if not vertex.is_finite() or not normal.is_finite():
+			push_error("Non-finite MANO vertex/normal: " + source_path)
+			return null
+		vertices[index] = vertex
+		normals[index] = normal.normalized()
+
+	var indices := PackedInt32Array()
+	indices.resize(index_values.size())
+	for index in range(index_values.size()):
+		var vertex_index := int(index_values[index])
+		if vertex_index < 0 or vertex_index >= vertex_count:
+			push_error("Out-of-range MANO triangle index: " + source_path)
+			return null
+		indices[index] = vertex_index
+	return _mano_mesh_from_arrays(vertices, normals, indices)
+
+
+func _mano_mesh_from_arrays(
+	vertices: PackedVector3Array,
+	normals: PackedVector3Array,
+	indices: PackedInt32Array
+) -> ArrayMesh:
+	var arrays := []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = vertices
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_INDEX] = indices
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	mesh.surface_set_name(0, "MANO_RGBD")
+	return mesh
+
+
+func _wait_for_initial_surface_textures(
+	timeout_ms := 15000,
+	generation := -1
+) -> void:
+	var required_paths := [
+		_source_path("depth_map", SAND_HEIGHTMAP_PATH),
+		_source_path("texture_map", SAND_TEXTURE_PATH),
+		_source_path("surface_mask", ""),
+		str(data_sources.get("virtual_hand_overlay", "")),
+		str(data_sources.get("virtual_hand_geometry", ""))
+	]
+	var required_mesh_path := str(data_sources.get("virtual_hand_mesh", ""))
+	var has_remote_path := false
+	for path in required_paths:
+		if _is_http_path(str(path)):
+			has_remote_path = true
+			break
+	if _is_http_path(required_mesh_path):
+		has_remote_path = true
+	if not has_remote_path:
+		return
+
+	var deadline := Time.get_ticks_msec() + timeout_ms
+	while Time.get_ticks_msec() < deadline:
+		if generation >= 0 and generation != session_load_generation:
+			return
+		var ready := true
+		for path in required_paths:
+			var resolved := str(path)
+			if resolved != "" and _is_http_path(resolved) and not surface_texture_cache.has(resolved):
+				ready = false
+				break
+		if (
+			ready
+			and _is_http_path(required_mesh_path)
+			and not mano_mesh_cache.has(required_mesh_path)
+		):
+			ready = false
+		if ready:
+			return
+		await get_tree().process_frame
+	push_warning("Timed out waiting for initial remote surface textures")
+
+
+func _wait_for_surface_buffer(
+	minimum_frame_count := SURFACE_AUTOPLAY_BUFFER_FRAMES,
+	timeout_ms := 15000,
+	generation := -1
+) -> void:
+	if processed_surface_frames.is_empty() or surface_frame_index < 0:
+		return
+	var has_remote_path := false
+	for path in _surface_frame_texture_paths(surface_frame_index):
+		if _is_http_path(path):
+			has_remote_path = true
+			break
+	if not has_remote_path:
+		return
+	_prefetch_surface_window(surface_frame_index)
+	var end: int = min(
+		processed_surface_frames.size(),
+		surface_frame_index + max(1, minimum_frame_count)
+	)
+	var deadline := Time.get_ticks_msec() + timeout_ms
+	while Time.get_ticks_msec() < deadline:
+		if generation >= 0 and generation != session_load_generation:
+			return
+		var ready := true
+		for index in range(surface_frame_index, end):
+			if not _surface_frame_textures_ready(index):
+				ready = false
+				break
+		if ready:
+			return
+		await get_tree().process_frame
+	push_warning("Timed out waiting for remote surface playback buffer")
 
 
 func _heightmap_material() -> Material:
@@ -2504,7 +4337,120 @@ func _heightmap_material() -> Material:
 	material.set_shader_parameter("depth_uv_scale", Vector2.ONE)
 	material.set_shader_parameter("texture_uv_scale", Vector2.ONE)
 	material.set_shader_parameter("displacement_scale", 1.0)
+	material.set_shader_parameter("baseline_height_offset", surface_baseline_height_offset)
 	material.set_shader_parameter("material_strength", 0.0)
+	return material
+
+
+func _topdown_hand_overlay_material() -> Material:
+	var shader_path := TOPDOWN_HAND_OVERLAY_SHADER_PATH
+	if str(data_sources.get("virtual_hand_geometry", "")) != "":
+		shader_path = (
+			TOPDOWN_HAND_RGBD_SHELL_SHADER_PATH
+			if bool(data_sources.get("virtual_hand_measured_shell_v2", false))
+			else TOPDOWN_HAND_RGBD_SHADER_PATH
+		)
+	if not ResourceLoader.exists(shader_path):
+		return null
+	var shader := load(shader_path)
+	if not shader is Shader:
+		return null
+	var material := ShaderMaterial.new()
+	material.shader = shader
+	if static_depth_texture != null:
+		material.set_shader_parameter("depth_map", static_depth_texture)
+	if static_topdown_hand_texture != null:
+		material.set_shader_parameter(
+			"hand_overlay",
+			static_topdown_hand_texture
+		)
+	if static_topdown_hand_geometry_texture != null:
+		material.set_shader_parameter(
+			"hand_geometry",
+			static_topdown_hand_geometry_texture
+		)
+	material.set_shader_parameter(
+		"hand_max_lift_meters",
+		float(data_sources.get("virtual_hand_max_lift_meters", 0.36))
+	)
+	material.set_shader_parameter(
+		"hand_world_units_per_meter",
+		float(
+			data_sources.get(
+				"virtual_hand_world_units_per_meter",
+				3.0
+			)
+		)
+	)
+	if bool(data_sources.get("virtual_hand_measured_shell_v2", false)):
+		material.set_shader_parameter(
+			"shell_color",
+			_array_to_vec3(
+				data_sources.get(
+					"virtual_hand_shell_color_rgb",
+					[0.7215686, 0.4313725, 0.3411765]
+				)
+			)
+		)
+		material.set_shader_parameter(
+			"shell_texture_strength",
+			float(data_sources.get("virtual_hand_shell_texture_strength", 0.58))
+		)
+		material.set_shader_parameter(
+			"shell_edge_extension_texels",
+			float(data_sources.get("virtual_hand_shell_edge_extension_texels", 2.0))
+		)
+		material.set_shader_parameter(
+			"shell_normal_radius_texels",
+			float(data_sources.get("virtual_hand_shell_normal_radius_texels", 2.0))
+		)
+	var depth_path := _source_path("depth_map", SAND_HEIGHTMAP_PATH)
+	if depth_path.get_file().begins_with("detail_depth_fused_"):
+		material.set_shader_parameter("arg_1", 3.4)
+		material.set_shader_parameter("background", 0.5)
+		material.set_shader_parameter("eps_0", 0.012)
+		material.set_shader_parameter("eps_1", 0.11)
+	elif depth_path.get_file().begins_with("detail_depth_"):
+		material.set_shader_parameter("arg_1", 3.0)
+		material.set_shader_parameter("background", 0.5)
+		material.set_shader_parameter("eps_0", 0.004)
+		material.set_shader_parameter("eps_1", 0.08)
+	else:
+		material.set_shader_parameter("arg_1", 11.625)
+		material.set_shader_parameter("background", 1.0)
+		material.set_shader_parameter("eps_0", 0.08)
+		material.set_shader_parameter("eps_1", 0.415)
+	var calibration: Dictionary = data_sources.get("calibration", {})
+	material.set_shader_parameter(
+		"depth_uv_scale",
+		_array_to_vec2(calibration.get("depth_uv_scale", [1.0, 1.0]))
+	)
+	material.set_shader_parameter(
+		"texture_uv_scale",
+		_array_to_vec2(calibration.get("texture_uv_scale", [1.0, 1.0]))
+	)
+	material.set_shader_parameter(
+		"depth_uv_offset",
+		Vector2(
+			float(surface_controls["depth_u"]),
+			float(surface_controls["depth_v"])
+		)
+	)
+	material.set_shader_parameter(
+		"texture_uv_offset",
+		Vector2(
+			float(surface_controls["texture_u"]),
+			float(surface_controls["texture_v"])
+		)
+	)
+	material.set_shader_parameter(
+		"displacement_scale",
+		float(surface_controls["displacement"])
+	)
+	material.set_shader_parameter(
+		"baseline_height_offset",
+		surface_baseline_height_offset
+	)
 	return material
 
 
@@ -2553,6 +4499,37 @@ func _apply_surface_controls() -> void:
 		"texture_uv_scale",
 		_array_to_vec2(calibration.get("texture_uv_scale", [1.0, 1.0]))
 	)
+	if topdown_hand_material != null:
+		topdown_hand_material.set_shader_parameter(
+			"depth_uv_offset",
+			Vector2(
+				float(surface_controls["depth_u"]),
+				float(surface_controls["depth_v"])
+			)
+		)
+		topdown_hand_material.set_shader_parameter(
+			"texture_uv_offset",
+			Vector2(
+				float(surface_controls["texture_u"]),
+				float(surface_controls["texture_v"])
+			)
+		)
+		topdown_hand_material.set_shader_parameter(
+			"depth_uv_scale",
+			_array_to_vec2(
+				calibration.get("depth_uv_scale", [1.0, 1.0])
+			)
+		)
+		topdown_hand_material.set_shader_parameter(
+			"texture_uv_scale",
+			_array_to_vec2(
+				calibration.get("texture_uv_scale", [1.0, 1.0])
+			)
+		)
+		topdown_hand_material.set_shader_parameter(
+			"displacement_scale",
+			float(surface_controls["displacement"])
+		)
 
 
 func _set_surface_stream_playing(playing: bool) -> void:
@@ -2560,6 +4537,8 @@ func _set_surface_stream_playing(playing: bool) -> void:
 		if player == null:
 			continue
 		if playing:
+			if not player.is_playing():
+				player.play()
 			player.paused = false
 		else:
 			player.paused = true

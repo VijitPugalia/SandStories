@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<meta name="theme-color" content="#f4efe7">
+	<title>SandStories Study</title>
+	<link rel="stylesheet" href="experiment_host.css">
+</head>
+<body>
+	<header class="site-header">
+		<a class="brand" href="experiment_host.html" aria-label="SandStories home">
+			<span class="brand-mark" aria-hidden="true">
+				<span></span><span></span><span></span>
+			</span>
+			<span>
+				<strong>SandStories</strong>
+				<small>Research viewer</small>
+			</span>
+		</a>
+
+		<div class="header-study">
+			<span id="stage-label">Stage 1 · Online study</span>
+			<span class="header-divider" aria-hidden="true"></span>
+			<span id="step-label">Study information</span>
+		</div>
+
+		<div class="header-actions">
+			<span id="bridge-status" class="connection-status" data-state="loading">
+				<span class="status-dot" aria-hidden="true"></span>
+				<span>Loading viewer</span>
+			</span>
+			<button id="researcher-toggle" class="quiet-button" type="button" hidden>
+				Study controls
+			</button>
+		</div>
+	</header>
+
+	<main class="workspace">
+		<section class="viewer-card" aria-label="Interactive reconstruction">
+			<header class="viewer-header">
+				<div>
+					<p class="eyebrow">Interactive reconstruction</p>
+					<h1 id="session-title">Preparing sand drawing session…</h1>
+				</div>
+				<span id="condition-chip" class="condition-chip">Training · Full view</span>
+			</header>
+
+			<div class="viewer-stage">
+				<iframe
+					id="godot-frame"
+					title="SandStories 3D reconstruction"
+					allow="autoplay"
+				></iframe>
+				<div id="viewer-loading" class="viewer-loading">
+					<span class="loading-ring" aria-hidden="true"></span>
+					<p>Preparing the 3D session</p>
+					<small>The task will become available when the viewer is ready.</small>
+				</div>
+			</div>
+
+			<div class="transport">
+				<button
+					id="play-toggle"
+					class="play-button"
+					type="button"
+					aria-label="Play session"
+					disabled
+				>
+					<span class="play-icon" aria-hidden="true"></span>
+					<span class="play-label">Play</span>
+				</button>
+				<input
+					id="timeline"
+					type="range"
+					min="0"
+					max="1000"
+					step="1"
+					value="0"
+					aria-label="Session timeline"
+					disabled
+				>
+				<output id="time-label">0:00 / 0:00</output>
+			</div>
+
+			<fieldset id="viewer-controls" class="viewer-controls" disabled>
+				<div class="control-group" aria-label="Camera views">
+					<span class="control-label">View</span>
+					<div class="segmented-control">
+						<button type="button" data-view="top">Top</button>
+						<button type="button" data-view="front">Front</button>
+						<button type="button" data-view="orbit">3D</button>
+					</div>
+				</div>
+
+				<div class="control-group layer-group" aria-label="Available modalities">
+					<span class="control-label">Information</span>
+					<div class="layer-chips">
+						<label class="toggle-chip">
+							<input type="checkbox" data-layer="heightmap_surface">
+							<span>Sand surface</span>
+						</label>
+						<label class="toggle-chip">
+							<input type="checkbox" data-layer="gestures">
+							<span>Virtual hand</span>
+						</label>
+						<label class="toggle-chip">
+							<input type="checkbox" data-layer="objects">
+							<span>Objects</span>
+						</label>
+						<label class="toggle-chip">
+							<input type="checkbox" data-layer="audio">
+							<span>Narration</span>
+						</label>
+						<label class="toggle-chip annotation-chip">
+							<input type="checkbox" data-layer="annotations">
+							<span>Relations</span>
+						</label>
+					</div>
+				</div>
+			</fieldset>
+		</section>
+
+		<aside class="task-card" aria-label="Study tasks">
+			<div class="task-progress">
+				<div class="progress-copy">
+					<span id="progress-count">Step 1 of 6</span>
+					<span id="progress-percent">17%</span>
+				</div>
+				<div class="progress-track" aria-hidden="true">
+					<span id="progress-bar"></span>
+				</div>
+			</div>
+
+			<form id="study-form" novalidate>
+				<div id="task-content" class="task-content"></div>
+			</form>
+
+			<div id="validation-message" class="validation-message" role="alert"></div>
+
+			<nav class="task-navigation" aria-label="Study navigation">
+				<button id="back-step" class="secondary-button" type="button">
+					Back
+				</button>
+				<button id="next-step" class="primary-button" type="button">
+					Continue
+					<span aria-hidden="true">→</span>
+				</button>
+			</nav>
+		</aside>
+	</main>
+
+	<footer class="site-footer">
+		<span>Anonymous research prototype</span>
+		<span>Do not enter names, email addresses, or other identifying information.</span>
+	</footer>
+
+	<aside id="researcher-panel" class="researcher-panel" aria-label="Researcher controls" hidden>
+		<header>
+			<div>
+				<p class="eyebrow">Pilot and researcher tools</p>
+				<h2>Study controls</h2>
+			</div>
+			<button id="researcher-close" class="icon-button" type="button" aria-label="Close">
+				×
+			</button>
+		</header>
+
+		<div class="researcher-content">
+			<label class="field-label" for="researcher-stage">Study stage</label>
+			<select id="researcher-stage">
+				<option value="stage1">Stage 1 · Online between-subjects</option>
+				<option value="stage2">Stage 2 · In-person observational</option>
+			</select>
+
+			<label class="field-label" for="condition">Assigned condition</label>
+			<select id="condition">
+				<option value="baseline">Baseline · Full view</option>
+				<option value="no_audio">Condition A · No narration</option>
+				<option value="no_gestures">Condition B · No gestures</option>
+				<option value="no_objects">Condition C · No objects</option>
+				<option value="no_sand">Condition D · No sand surface</option>
+				<option value="stage2">Stage 2 · Relations visible</option>
+			</select>
+
+			<label class="field-label" for="session-url">Session JSON URL</label>
+			<textarea id="session-url" rows="4"></textarea>
+			<button id="load-session" class="secondary-button full-width" type="button">
+				Load session
+			</button>
+
+			<label class="range-label" for="map-blend">
+				<span>RGB surface colour</span>
+				<output id="map-blend-value">0.65</output>
+			</label>
+			<input
+				id="map-blend"
+				type="range"
+				min="0"
+				max="1"
+				step="0.01"
+				value="0.65"
+			>
+
+			<div class="researcher-actions">
+				<button id="download-response" class="secondary-button" type="button">
+					Export draft
+				</button>
+				<button id="reset-study" class="danger-button" type="button">
+					Reset run
+				</button>
+			</div>
+
+			<div class="event-heading">
+				<span>Runtime events</span>
+				<span id="event-count">0</span>
+			</div>
+			<pre id="event-log" aria-live="polite"></pre>
+		</div>
+	</aside>
+
+	<div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+	<script src="experiment_host.js"></script>
+</body>
+</html>

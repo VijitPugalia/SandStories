@@ -7,6 +7,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 $BuildDir = Join-Path $ProjectDir "build\web"
+$WebSourceDir = Join-Path $ProjectDir "web"
 $TempDir = Join-Path ([IO.Path]::GetTempPath()) (
     "sandstories_godot_web_template_{0}" -f [Guid]::NewGuid().ToString("N")
 )
@@ -57,6 +58,11 @@ try {
     Copy-Item -LiteralPath (Join-Path $TempDir "godot.audio.position.worklet.js") -Destination (Join-Path $BuildDir "index.audio.position.worklet.js") -Force
     Copy-Item -LiteralPath (Join-Path $TempDir "godot.service.worker.js") -Destination (Join-Path $BuildDir "index.service.worker.js") -Force
     Copy-Item -LiteralPath (Join-Path $TempDir "godot.offline.html") -Destination (Join-Path $BuildDir "index.offline.html") -Force
+    Copy-Item -LiteralPath (Join-Path $WebSourceDir "sandstories_bridge.js") -Destination (Join-Path $BuildDir "sandstories_bridge.js") -Force
+    Copy-Item -LiteralPath (Join-Path $WebSourceDir "experiment_host.js") -Destination (Join-Path $BuildDir "experiment_host.js") -Force
+    Copy-Item -LiteralPath (Join-Path $WebSourceDir "experiment_host.html") -Destination (Join-Path $BuildDir "experiment_host.html") -Force
+    Copy-Item -LiteralPath (Join-Path $WebSourceDir "experiment_host.css") -Destination (Join-Path $BuildDir "experiment_host.css") -Force
+    Copy-Item -LiteralPath (Join-Path $ProjectDir "data\experiment_protocol.json") -Destination (Join-Path $BuildDir "experiment_protocol.json") -Force
 
     $PckSize = (Get-Item (Join-Path $BuildDir "index.pck")).Length
     $WasmSize = (Get-Item (Join-Path $BuildDir "index.wasm")).Length
@@ -68,6 +74,7 @@ try {
     $Html = $Html.Replace('$GODOT_PROJECT_NAME', 'Sand Stories Prototype')
     $Html = $Html.Replace('$GODOT_SPLASH_COLOR', '#000000')
     $HeadInclude = @'
+<script src="sandstories_bridge.js"></script>
 <script>
 window.__sandstories_log = [];
 (function () {

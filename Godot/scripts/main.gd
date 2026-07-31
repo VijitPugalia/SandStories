@@ -77,6 +77,12 @@ var unicode_smoke_test_enabled := false
 var ui_font: Font
 var ui_font_strong: Font
 var ui_font_display: Font
+var web_command_callback
+var web_bridge_ready := false
+var web_embed_mode := false
+var web_state_emit_elapsed := 0.0
+var training_guide_mode := "off"
+var training_guide_elapsed := 0.0
 
 var camera: Camera3D
 var sand_layer: Node3D
@@ -128,6 +134,14 @@ var relation_nodes: Array[MeshInstance3D] = []
 var object_nodes_by_id := {}
 var annotation_nodes_by_id := {}
 var current_condition := "baseline"
+var training_guide_root: Control
+var training_guide_card: PanelContainer
+var training_guide_kicker: Label
+var training_guide_title: Label
+var training_guide_body: Label
+var training_guide_beacon: MeshInstance3D
+var training_guide_target_fill: MeshInstance3D
+var training_guide_world_label: Label3D
 
 var play_button: Button
 var time_slider: HSlider
@@ -146,6 +160,7 @@ var hand_status_label: Label
 var video_stream_toggle: CheckBox
 var focus_button: Button
 var reference_views_button: Button
+var hud_root: Control
 var modality_panel: PanelContainer
 var study_panel: PanelContainer
 var lower_dock_panel: Panel
@@ -178,6 +193,11 @@ func _ready() -> void:
 	_load_text_font()
 	_build_world()
 	_build_ui()
+	_build_training_guide()
+	_setup_web_bridge()
+	web_embed_mode = _web_query_flag("embed")
+	if hud_root != null:
+		hud_root.visible = not web_embed_mode
 	await _load_session(DEFAULT_SESSION_PATH)
 	await _apply_launch_params()
 	var launch_study := _launch_value("study").to_lower()
@@ -192,6 +212,9 @@ func _ready() -> void:
 	_configure_experiment_mode()
 	_update_scene_from_time()
 	_update_camera()
+	web_bridge_ready = true
+	_emit_web_message("ready", _web_state_snapshot())
+	_emit_web_state()
 	_log_event("prototype_ready", {})
 
 
@@ -230,16 +253,25 @@ func _font_variation(base_font: Font, embolden: float, weight: float) -> Font:
 
 func _process(delta: float) -> void:
 	_update_keyboard_camera(delta)
+	_update_training_guide(delta)
 	if is_playing:
 		playhead += delta
 		if playhead >= duration:
 			playhead = duration
 			is_playing = false
-			play_button.text = "Play"
+			if play_button != null:
+				play_button.text = "Play"
 			_set_surface_stream_playing(false)
 			_sync_audio_playback()
+			if web_bridge_ready:
+				_emit_web_state()
 		time_slider.set_value_no_signal(playhead)
 		_update_scene_from_time()
+	if web_bridge_ready and is_playing:
+		web_state_emit_elapsed += delta
+		if web_state_emit_elapsed >= 0.20:
+			web_state_emit_elapsed = 0.0
+			_emit_web_state()
 
 
 func _input(event: InputEvent) -> void:
@@ -442,12 +474,219 @@ func _build_world() -> void:
 	annotation_layer.add_child(relation_layer)
 
 
+func _build_training_guide() -> void:
+	var canvas := CanvasLayer.new()
+	canvas.name = "TrainingGuideHUD"
+	canvas.layer = 20
+	add_child(canvas)
+
+	training_guide_root = Control.new()
+	training_guide_root.name = "TrainingGuideRoot"
+	training_guide_root.set_anchors_preset(Control.PRESET_FULL_RECT)
+	training_guide_root.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	training_guide_root.visible = false
+	if ui_font != null:
+		var guide_theme := Theme.new()
+		guide_theme.set_default_font(ui_font)
+		guide_theme.set_default_font_size(15)
+		training_guide_root.theme = guide_theme
+	canvas.add_child(training_guide_root)
+
+	training_guide_card = PanelContainer.new()
+	training_guide_card.name = "TrainingGuideCard"
+	training_guide_card.anchor_left = 0.0
+	training_guide_card.anchor_top = 0.0
+	training_guide_card.anchor_right = 0.0
+	training_guide_card.anchor_bottom = 0.0
+	training_guide_card.offset_left = 18
+	training_guide_card.offset_top = 18
+	training_guide_card.offset_right = 408
+	training_guide_card.offset_bottom = 150
+	training_guide_card.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	training_guide_card.add_theme_stylebox_override(
+		"panel",
+		_panel_style(Color(0.035, 0.055, 0.06, 0.94), 16)
+	)
+	training_guide_root.add_child(training_guide_card)
+
+	var guide_stack := VBoxContainer.new()
+	guide_stack.add_theme_constant_override("separation", 5)
+	guide_stack.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	training_guide_card.add_child(guide_stack)
+
+	training_guide_kicker = Label.new()
+	training_guide_kicker.text = "GUIDED PRACTICE"
+	training_guide_kicker.add_theme_color_override(
+		"font_color",
+		Color(0.97, 0.72, 0.36)
+	)
+	_apply_text_style(training_guide_kicker, ui_font_strong, 12)
+	guide_stack.add_child(training_guide_kicker)
+
+	training_guide_title = Label.new()
+	training_guide_title.text = "Watch the action unfold"
+	training_guide_title.add_theme_color_override(
+		"font_color",
+		Color(0.97, 0.98, 0.94)
+	)
+	_apply_text_style(training_guide_title, ui_font_display, 22)
+	guide_stack.add_child(training_guide_title)
+
+	training_guide_body = Label.new()
+	training_guide_body.text = "Follow the highlighted control and the target on the sand."
+	training_guide_body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	training_guide_body.add_theme_color_override(
+		"font_color",
+		Color(0.80, 0.86, 0.84)
+	)
+	_apply_text_style(training_guide_body, ui_font, 14)
+	guide_stack.add_child(training_guide_body)
+
+	var ring_mesh := TorusMesh.new()
+	ring_mesh.inner_radius = 0.28
+	ring_mesh.outer_radius = 0.36
+	ring_mesh.rings = 32
+	ring_mesh.ring_segments = 12
+	training_guide_beacon = MeshInstance3D.new()
+	training_guide_beacon.name = "TrainingTargetRing"
+	training_guide_beacon.mesh = ring_mesh
+	training_guide_beacon.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	training_guide_beacon.material_override = _training_guide_material(
+		Color(1.0, 0.58, 0.12, 0.96)
+	)
+	training_guide_beacon.visible = false
+	add_child(training_guide_beacon)
+
+	var fill_mesh := CylinderMesh.new()
+	fill_mesh.top_radius = 0.23
+	fill_mesh.bottom_radius = 0.23
+	fill_mesh.height = 0.012
+	fill_mesh.radial_segments = 32
+	training_guide_target_fill = MeshInstance3D.new()
+	training_guide_target_fill.name = "TrainingTargetFill"
+	training_guide_target_fill.mesh = fill_mesh
+	training_guide_target_fill.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	training_guide_target_fill.material_override = _training_guide_material(
+		Color(1.0, 0.62, 0.18, 0.18)
+	)
+	training_guide_target_fill.visible = false
+	add_child(training_guide_target_fill)
+
+	training_guide_world_label = Label3D.new()
+	training_guide_world_label.name = "TrainingTargetLabel"
+	training_guide_world_label.text = "WATCH HERE"
+	training_guide_world_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	training_guide_world_label.no_depth_test = true
+	training_guide_world_label.font = ui_font_strong
+	training_guide_world_label.font_size = 30
+	training_guide_world_label.outline_size = 10
+	training_guide_world_label.modulate = Color(1.0, 0.88, 0.57)
+	training_guide_world_label.outline_modulate = Color(0.03, 0.05, 0.05, 0.92)
+	training_guide_world_label.visible = false
+	add_child(training_guide_world_label)
+
+
+func _training_guide_material(color: Color) -> StandardMaterial3D:
+	var material := StandardMaterial3D.new()
+	material.albedo_color = color
+	material.emission_enabled = true
+	material.emission = Color(color.r, color.g, color.b)
+	material.emission_energy_multiplier = 1.6
+	material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	material.no_depth_test = true
+	return material
+
+
+func _set_training_guide(mode: String, step: int, total: int) -> void:
+	var guides := {
+		"playback": {
+			"title": "Watch the action unfold",
+			"body": "Play the session and notice how the virtual hand and sand surface change together.",
+			"label": "WATCH THE TRACE",
+			"target": Vector3(0.35, 0.16, 0.10),
+		},
+		"camera": {
+			"title": "Change your point of view",
+			"body": "Compare the same trace from above and from an oblique 3D view.",
+			"label": "INSPECT FROM TWO VIEWS",
+			"target": Vector3(0.0, 0.16, 0.0),
+		},
+		"layers": {
+			"title": "Separate the information",
+			"body": "Hide and restore the virtual hand, then judge what the sand surface alone reveals.",
+			"label": "COMPARE THE LAYERS",
+			"target": Vector3(-0.40, 0.16, 0.18),
+		},
+		"occlusion": {
+			"title": "Look behind the ridge",
+			"body": "Use an oblique view to inspect an area that is compressed in the top view.",
+			"label": "LOOK BEHIND THE RIDGE",
+			"target": Vector3(-0.68, 0.16, 0.58),
+		},
+		"segmentation": {
+			"title": "Read the physical relief",
+			"body": "Remove RGB colour temporarily and read the height changes directly from the surface.",
+			"label": "READ THE RELIEF",
+			"target": Vector3(0.55, 0.16, -0.12),
+		},
+		"referential": {
+			"title": "Link action to trace",
+			"body": "Follow the hand movement, timeline, and relation cue as one combined piece of evidence.",
+			"label": "LINK ACTION TO TRACE",
+			"target": Vector3(0.05, 0.16, 0.02),
+		},
+	}
+	training_guide_mode = mode if guides.has(mode) else "off"
+	training_guide_elapsed = 0.0
+	var visible := training_guide_mode != "off"
+	training_guide_root.visible = visible
+	training_guide_beacon.visible = visible
+	training_guide_target_fill.visible = visible
+	training_guide_world_label.visible = visible
+	if not visible:
+		return
+
+	var guide: Dictionary = guides[training_guide_mode]
+	var safe_total := maxi(total, 1)
+	var safe_step := clampi(step, 1, safe_total)
+	training_guide_kicker.text = "GUIDED PRACTICE · %d / %d" % [
+		safe_step,
+		safe_total,
+	]
+	training_guide_title.text = str(guide["title"])
+	training_guide_body.text = str(guide["body"])
+	training_guide_world_label.text = str(guide["label"])
+	var target: Vector3 = guide["target"]
+	training_guide_beacon.position = target
+	training_guide_target_fill.position = target - Vector3(0.0, 0.01, 0.0)
+	training_guide_world_label.position = target + Vector3(0.0, 0.42, 0.0)
+	_log_event("training_guide", {
+		"mode": training_guide_mode,
+		"step": safe_step,
+		"total": safe_total,
+	})
+
+
+func _update_training_guide(delta: float) -> void:
+	if training_guide_mode == "off" or training_guide_beacon == null:
+		return
+	training_guide_elapsed += delta
+	var pulse := 1.0 + 0.10 * sin(training_guide_elapsed * TAU * 0.72)
+	training_guide_beacon.scale = Vector3.ONE * pulse
+	training_guide_beacon.rotation.y = training_guide_elapsed * 0.42
+	training_guide_target_fill.scale = Vector3.ONE * (0.96 + 0.10 * pulse)
+	training_guide_world_label.modulate.a = (
+		0.84 + 0.16 * sin(training_guide_elapsed * TAU * 0.72)
+	)
+
+
 func _build_ui() -> void:
 	var canvas := CanvasLayer.new()
 	canvas.name = "HUD"
 	add_child(canvas)
 
-	var hud_root := Control.new()
+	hud_root = Control.new()
 	hud_root.name = "HUDRoot"
 	hud_root.set_anchors_preset(Control.PRESET_FULL_RECT)
 	hud_root.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -1126,6 +1365,274 @@ func _web_query_value(key: String) -> String:
 		return ""
 	var value: Variant = JavaScriptBridge.eval("new URLSearchParams(location.search).get('%s')" % key)
 	return "" if value == null else str(value)
+
+
+func _setup_web_bridge() -> void:
+	if not OS.has_feature("web"):
+		return
+	var browser_window = JavaScriptBridge.get_interface("window")
+	if browser_window == null:
+		push_warning("Cannot expose SandStories Web bridge: window is unavailable")
+		return
+	web_command_callback = JavaScriptBridge.create_callback(_on_web_command)
+	browser_window.__sandstoriesGodotCommand = web_command_callback
+
+
+func _on_web_command(args: Array) -> void:
+	if args.is_empty():
+		return
+	call_deferred("_handle_web_command", str(args[0]))
+
+
+func _handle_web_command(raw_message: String) -> void:
+	var parsed: Variant = JSON.parse_string(raw_message)
+	if typeof(parsed) != TYPE_DICTIONARY:
+		_emit_web_command_result("", false, {}, "Command must be a JSON object.")
+		return
+	var message: Dictionary = parsed
+	var request_id := str(message.get("requestId", ""))
+	var command := str(message.get("command", ""))
+	var payload := {}
+	var raw_payload: Variant = message.get("payload", {})
+	if typeof(raw_payload) == TYPE_DICTIONARY:
+		payload = raw_payload
+
+	match command:
+		"get_state":
+			_emit_web_command_result(
+				request_id,
+				true,
+				_web_state_snapshot()
+			)
+			return
+		"set_playing":
+			_set_playback_state(bool(payload.get("playing", true)))
+		"toggle_playback":
+			_set_playback_state(not is_playing)
+		"seek":
+			_seek_playhead(float(payload.get("seconds", playhead)))
+		"seek_normalized":
+			var progress: float = clampf(
+				float(payload.get("progress", 0.0)),
+				0.0,
+				1.0
+			)
+			_seek_playhead(progress * duration)
+		"load_session":
+			var requested_path := str(payload.get("url", ""))
+			if requested_path == "":
+				_emit_web_command_result(
+					request_id,
+					false,
+					{},
+					"load_session requires payload.url."
+				)
+				return
+			await _load_session(requested_path)
+			if current_session_path != requested_path:
+				_emit_web_command_result(
+					request_id,
+					false,
+					{},
+					"Session did not finish loading."
+				)
+				return
+		"set_condition":
+			var requested_condition := str(payload.get("condition", ""))
+			var valid_conditions := [
+				"baseline",
+				"no_audio",
+				"no_gestures",
+				"no_objects",
+				"no_sand",
+				"stage2",
+			]
+			if requested_condition not in valid_conditions:
+				_emit_web_command_result(
+					request_id,
+					false,
+					{},
+					"Unknown condition: " + requested_condition
+				)
+				return
+			_on_experiment_condition_requested(requested_condition)
+		"set_layer":
+			var layer := str(payload.get("layer", ""))
+			if layer not in [
+				"sand",
+				"heightmap_surface",
+				"gestures",
+				"objects",
+				"audio",
+				"annotations",
+			]:
+				_emit_web_command_result(
+					request_id,
+					false,
+					{},
+					"Unknown layer: " + layer
+				)
+				return
+			var layer_visible := bool(payload.get("visible", true))
+			_set_layer_visible(layer, layer_visible)
+			_set_layer_toggle_value(layer, layer_visible)
+			_log_event(
+				"host_layer_toggle",
+				{"layer": layer, "visible": layer_visible}
+			)
+		"set_surface_control":
+			var control_key := str(payload.get("key", ""))
+			if not surface_controls.has(control_key):
+				_emit_web_command_result(
+					request_id,
+					false,
+					{},
+					"Unknown surface control: " + control_key
+				)
+				return
+			var control_value := float(
+				payload.get("value", surface_controls[control_key])
+			)
+			surface_controls[control_key] = control_value
+			if surface_sliders.has(control_key):
+				surface_sliders[control_key].set_value_no_signal(
+					control_value
+				)
+			_apply_surface_controls()
+			_log_event(
+				"host_surface_control",
+				{"key": control_key, "value": control_value}
+			)
+		"set_view":
+			var preset := str(payload.get("preset", "orbit"))
+			if preset not in ["top", "front", "orbit"]:
+				_emit_web_command_result(
+					request_id,
+					false,
+					{},
+					"Unknown camera preset: " + preset
+				)
+				return
+			_set_camera_preset(preset)
+		"set_focus_mode":
+			var requested_focus := bool(payload.get("enabled", true))
+			if requested_focus != focus_mode:
+				_toggle_focus_mode()
+		"set_training_guide":
+			var guide_mode := str(payload.get("mode", "off"))
+			if guide_mode not in [
+				"off",
+				"playback",
+				"camera",
+				"layers",
+				"occlusion",
+				"segmentation",
+				"referential",
+			]:
+				_emit_web_command_result(
+					request_id,
+					false,
+					{},
+					"Unknown training guide: " + guide_mode
+				)
+				return
+			_set_training_guide(
+				guide_mode,
+				int(payload.get("step", 1)),
+				int(payload.get("total", 3))
+			)
+		"mark_evidence":
+			_on_mark_evidence_pressed()
+		"record_host_event":
+			_log_event("host_event", payload)
+		_:
+			_emit_web_command_result(
+				request_id,
+				false,
+				{},
+				"Unknown command: " + command
+			)
+			return
+
+	_emit_web_command_result(request_id, true, _web_state_snapshot())
+	_emit_web_state()
+
+
+func _emit_web_command_result(
+	request_id: String,
+	ok: bool,
+	data: Dictionary = {},
+	error_message := ""
+) -> void:
+	_emit_web_message("command_result", {
+		"requestId": request_id,
+		"ok": ok,
+		"data": data,
+		"error": error_message,
+	})
+
+
+func _emit_web_state() -> void:
+	_emit_web_message("state", _web_state_snapshot())
+
+
+func _emit_web_message(kind: String, detail: Dictionary) -> void:
+	if not OS.has_feature("web"):
+		return
+	var envelope := {
+		"kind": kind,
+		"detail": detail,
+	}
+	var encoded := Marshalls.raw_to_base64(
+		JSON.stringify(envelope).to_utf8_buffer()
+	)
+	JavaScriptBridge.eval(
+		"window.SandStories && window.SandStories.__receiveBase64('%s')" %
+		encoded
+	)
+
+
+func _web_state_snapshot() -> Dictionary:
+	var layers := {
+		"sand": sand_layer != null and sand_layer.visible,
+		"heightmap_surface": (
+			heightmap_surface_node != null
+			and heightmap_surface_node.visible
+		),
+		"gestures": gesture_layer != null and gesture_layer.visible,
+		"objects": object_layer != null and object_layer.visible,
+		"audio": audio_user_enabled,
+		"annotations": (
+			annotation_layer != null
+			and annotation_layer.visible
+		),
+	}
+	return {
+		"ready": web_bridge_ready,
+		"embedded": web_embed_mode,
+		"playing": is_playing,
+		"time": playhead,
+		"duration": duration,
+		"progress": playhead / duration if duration > 0.0 else 0.0,
+		"sessionUrl": current_session_path,
+		"sessionTitle": str(session.get("title", "")),
+		"condition": current_condition,
+		"trainingGuide": training_guide_mode,
+		"layers": layers,
+		"surface": surface_controls.duplicate(true),
+		"frameIndex": surface_frame_index,
+		"frameCount": processed_surface_frames.size(),
+		"camera": {
+			"yaw": camera_yaw,
+			"pitch": camera_pitch,
+			"distance": camera_distance,
+			"target": [
+				camera_target.x,
+				camera_target.y,
+				camera_target.z,
+			],
+		},
+	}
 
 
 func _should_autoplay_session(path: String) -> bool:
@@ -3654,11 +4161,13 @@ func _apply_condition(condition: String) -> void:
 	_set_layer_toggle_value("gestures", show_gestures)
 	_set_layer_toggle_value("objects", show_objects)
 	_set_layer_toggle_value("sand", show_sand)
+	_set_layer_toggle_value("heightmap_surface", show_sand)
 	_set_layer_toggle_value("audio", show_audio)
 	_set_layer_toggle_value("annotations", show_annotations)
 	_set_layer_visible("gestures", show_gestures)
 	_set_layer_visible("objects", show_objects)
 	_set_layer_visible("sand", show_sand)
+	_set_layer_visible("heightmap_surface", show_sand)
 	_set_layer_visible("audio", show_audio)
 	_set_layer_visible("annotations", show_annotations)
 	if experiment_mode:
@@ -3785,21 +4294,34 @@ func _set_heightmap_surface_enabled(enabled: bool) -> void:
 
 
 func _on_play_pressed() -> void:
-	if not is_playing and playhead >= duration - 0.001:
+	_set_playback_state(not is_playing)
+
+
+func _set_playback_state(playing: bool) -> void:
+	if playing and playhead >= duration - 0.001:
 		playhead = 0.0
-		time_slider.set_value_no_signal(playhead)
+		if time_slider != null:
+			time_slider.set_value_no_signal(playhead)
 		_update_scene_from_time()
-	is_playing = not is_playing
-	play_button.text = "Pause" if is_playing else "Play"
+	is_playing = playing
+	if play_button != null:
+		play_button.text = "Pause" if is_playing else "Play"
 	_set_surface_stream_playing(is_playing and use_video_streams)
 	_sync_audio_playback(true)
 	_log_event("transport", {"playing": is_playing, "time": playhead})
 
 
 func _on_time_changed(value: float) -> void:
-	playhead = value
+	_seek_playhead(value)
+
+
+func _seek_playhead(value: float) -> void:
+	playhead = clamp(value, 0.0, duration)
+	if time_slider != null:
+		time_slider.set_value_no_signal(playhead)
 	_update_scene_from_time()
 	_sync_audio_playback(true)
+	_log_event("seek", {"time": playhead})
 
 
 func _update_camera() -> void:
@@ -3818,6 +4340,8 @@ func _log_event(event_name: String, payload: Dictionary) -> void:
 		"payload": payload
 	}
 	experiment_event_buffer.append(entry)
+	if web_bridge_ready and event_name != "surface_frame_selected":
+		_emit_web_message("event", entry)
 	var file := FileAccess.open(LOG_PATH, FileAccess.READ_WRITE)
 	if file == null:
 		file = FileAccess.open(LOG_PATH, FileAccess.WRITE)

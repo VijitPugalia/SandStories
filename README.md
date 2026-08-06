@@ -6,7 +6,7 @@ SandStories is an iOS AR capture app for research-style recording of storytellin
 
 ```text
 iPhone ARKit + LiDAR  ──▶  Session Writer  ──▶  manifest.json + depth/RGB/audio/strokes
-  scene depth frames          timestamp sync        Python / MATLAB / Fiji analysis
+  raw/smoothed depth          timestamp sync        Python / MATLAB / Fiji analysis
   RGB camera frames           manifest index        ZIP export for sharing
   hand stroke points          storage/upload        benchmark data for format tests
 ```
@@ -15,7 +15,9 @@ iPhone ARKit + LiDAR  ──▶  Session Writer  ──▶  manifest.json + dept
 
 The app runs on a physical LiDAR-capable iPhone/iPad and records packaged sessions into app storage or an external Files/USB-C destination. The current v2 package format stores one RGB video stream, one contiguous high-fidelity Float32 depth stream, one optional confidence stream, frame metadata, optional AAC audio, 3D stroke data, location metadata, and placeholder object-detection/tray-boundary hooks.
 
-There is also a **Benchmark** button that runs a 15-second depth-only capture test and reports AR frame rate, saved frame rate, motion skips, no-depth frames, stream encode/write time, and total depth/RGB size.
+Depth capture records ARKit `sceneDepth` as the primary payload when available, retains `smoothedSceneDepth` as an optional sidecar, falls back to smoothed depth when raw depth is unavailable, skips warmup/low-quality frames, and records diagnostics such as selected depth source, valid pixel ratio, depth min/median/max, confidence availability, confidence counts, depth/RGB resolution, and depth-scaled camera intrinsics. The capture UI uses a floating glass control surface with tap-driven pause/resume/record controls, inline gesture settings, and readable storage/status pills over the AR view.
+
+There is also a **Benchmark** button that runs a 15-second depth-only capture test and reports AR frame rate, saved frame rate, motion skips, warmup/low-quality skips, no-depth frames, stream encode/write time, selected depth source, valid depth ratio, and total depth/RGB size.
 
 ```mermaid
 flowchart LR
@@ -67,7 +69,7 @@ See [`docs/INSTALL_IPA.md`](docs/INSTALL_IPA.md) if the app crashes on launch af
 
 ### CI (no Mac)
 
-GitHub Actions builds a downloadable IPA on macOS runners (no local Mac or SDK secrets required). See [`docs/CI.md`](docs/CI.md) for details and how to install the artifact on your iPhone.
+GitHub Actions builds a downloadable IPA on macOS runners (no local Mac or SDK secrets required). Pushes to `main` update the rolling `latest-ipa` release when the build succeeds. See [`docs/CI.md`](docs/CI.md) for details and how to install the artifact on your iPhone.
 
 ## Architecture
 
@@ -84,11 +86,11 @@ sequenceDiagram
   participant Disk
 
   ARView->>Multiplexer: ARFrame didUpdate
-  Multiplexer->>DepthManager: sceneDepth + capturedImage
+  Multiplexer->>DepthManager: sceneDepth/smoothedSceneDepth + capturedImage
   DepthManager->>Disk: streams/depth.f32
   DepthManager->>Disk: streams/confidence.bin
   DepthManager->>Disk: streams/rgb.mp4
-  DepthManager->>SessionController: v2 frame offsets + timestamps
+  DepthManager->>SessionController: v2 frame offsets + timestamps + diagnostics
   Multiplexer->>HandManager: hand pose / stroke point
   HandManager->>Disk: strokes.json
   Multiplexer->>Coordinator: tray, object, location hooks
@@ -99,10 +101,10 @@ sequenceDiagram
 Key source files:
 
 - `SandStoriesApp.swift` — SwiftUI app entry point.
-- `ContentView.swift` — main AR UI, capture controls, benchmark button, export sheet.
+- `ContentView.swift` — main AR UI, liquid glass capture controls, inline gesture settings, benchmark button, export sheet.
 - `ARSessionDelegateMultiplexer.swift` — fans ARKit delegate callbacks out to capture subsystems.
 - `RecordingCoordinator.swift` — owns start/stop flow, storage destination, audio, location, tray/object hooks, and benchmark mode.
-- `DepthCaptureManager.swift` — writes v2 RGB/depth/confidence streams and records throughput metrics.
+- `DepthCaptureManager.swift` — writes v2 RGB/depth/confidence streams, selects raw/smoothed depth, records diagnostics, and tracks throughput metrics.
 - `CaptureSessionController.swift` — creates session folders, writes `manifest.json`, and appends `objects.jsonl`.
 - `HandPoseCaptureManager.swift` and `StrokeRecorder.swift` — convert hand pose events into 3D stroke polylines.
 - `SessionManifestModels.swift` — canonical schema for exported sessions.
@@ -140,7 +142,7 @@ flowchart TB
 - ARKit timestamp reference.
 - Storage destination metadata.
 - `captureFormat = v2_streams` and `v2Streams` paths.
-- `v2_frames.jsonl` frame entries with timestamps, byte offsets, byte counts, dimensions, camera transform, and intrinsics.
+- `v2_frames.jsonl` frame entries with timestamps, byte offsets, byte counts, dimensions, camera transform, depth-scaled intrinsics, selected depth source, and per-frame depth/confidence diagnostics.
 - Optional audio metadata.
 - Stroke, object-detection, tray-boundary, and location metadata.
 
@@ -150,10 +152,10 @@ Current v2 stream format:
 streams/rgb.mp4              H.264 MP4 preview/reference video
 streams/depth.f32            contiguous little-endian Float32 meters
 streams/confidence.bin       contiguous raw ARKit confidence bytes when available
-v2_frames.jsonl              per-frame offsets, sizes, timestamps, camera transform, intrinsics
+v2_frames.jsonl              per-frame offsets, sizes, timestamps, camera transform, depth intrinsics, diagnostics
 ```
 
-For each row in `v2_frames.jsonl`, read `depthByteCount` bytes from `streams/depth.f32` starting at `depthByteOffset`, then interpret the bytes as `width * height` little-endian `Float32` depth values in meters. Confidence data uses the same offset/count pattern when ARKit provides a confidence map. Frames are motion-gated, so the stream contains retained frames only.
+For each row in `v2_frames.jsonl`, read `depthByteCount` bytes from `streams/depth.f32` starting at `depthByteOffset`, then interpret the bytes as `width * height` little-endian `Float32` depth values in meters. Confidence data uses the same offset/count pattern when ARKit provides a confidence map. Frames are warmup-gated, quality-gated, and motion-gated, so the stream contains retained frames only.
 
 ## Automatic Upload
 
@@ -245,6 +247,23 @@ python scripts/visualize_sandstories_session.py "/path/to/session_UUID" --frame 
 
 See [`docs/VISUALIZE_SESSION.md`](docs/VISUALIZE_SESSION.md) for ImageJ/Fiji, MATLAB, and OpenCV workflows.
 
+### Optional Any2Full depth completion
+
+For frames with valid but incomplete LiDAR coverage, the offline analysis layer
+can prepare synchronized RGB/depth pairs and optionally run
+[Any2Full](https://github.com/zhiyuandaily/Any2Full). Predictions are written
+under `derived/any2full`; the original LiDAR streams remain unchanged and
+authoritative. The field console can queue this automatically on a local GPU
+after a valid upload.
+
+```bash
+python scripts/complete_depth_any2full.py "/path/to/session_UUID" \
+  --prepare-only --stride 10 --max-frames 10
+```
+
+See [`docs/ANY2FULL.md`](docs/ANY2FULL.md) for manual processing and
+[`docs/AUTOMATIC_ANY2FULL.md`](docs/AUTOMATIC_ANY2FULL.md) for GPU automation.
+
 ## Project Structure
 
 ```text
@@ -276,7 +295,7 @@ SandStories/
 
 ## Roadmap
 
-- Phase 1: Stable packaged session capture with PNG depth, RGB, audio, strokes, and manifest metadata.
+- Phase 1: Stable packaged session capture with streamed Float32 depth, RGB, audio, strokes, and manifest metadata.
 - Phase 2: Session analysis tooling: summaries, contact sheets, depth quality metrics, and stroke timelines.
 - Phase 3: Storage benchmark: compare PNG depth against lossless depth video and compressed 16-bit depth chunks.
 - Phase 4: Stronger tray detection and story-object detection.

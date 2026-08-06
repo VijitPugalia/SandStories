@@ -158,7 +158,7 @@ struct ExportSessionPreviewSheet: View {
                 .scrollContentBackground(.hidden)
 
                 Button(action: onShare) {
-                    Label("Share", systemImage: "square.and.arrow.up")
+                    Label("Share Session ZIP", systemImage: "square.and.arrow.up")
                         .font(.headline)
                         .frame(maxWidth: .infinity)
                         .frame(minHeight: 44)
@@ -244,7 +244,7 @@ struct UploadSettingsSheet: View {
                     Text("For LAN: run the field console and LiveKit on your computer, then use http://YOUR-LAN-IP:8080.")
                 }
             }
-            .navigationTitle("Upload")
+            .navigationTitle("Upload Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {

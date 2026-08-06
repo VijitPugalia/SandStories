@@ -15,9 +15,12 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+import cv2
 import numpy as np
 from PIL import Image, ImageDraw
 from scipy import ndimage
+
+DETAIL_DEPTH_SCALE_METERS = 0.004
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -236,6 +239,54 @@ def _v2_depth_mask(depths: list[np.ndarray], confidences: list[np.ndarray]) -> n
     return stable.astype(bool)
 
 
+def _v2_rgb_sand_mask(rgb: np.ndarray, depth_mask: np.ndarray) -> np.ndarray:
+    """Find the sand/tray interior in the RGB image at depth resolution."""
+    lab = cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB)
+    pixels = lab.reshape((-1, 3)).astype(np.float32)
+    cv2.setRNGSeed(7)
+    _, labels, _ = cv2.kmeans(
+        pixels,
+        6,
+        None,
+        (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 50, 0.2),
+        5,
+        cv2.KMEANS_PP_CENTERS,
+    )
+    labels = labels.reshape(rgb.shape[:2])
+    center_label = int(labels[rgb.shape[0] // 2, rgb.shape[1] // 2])
+    mask = labels == center_label
+    mask = ndimage.binary_closing(mask, structure=np.ones((7, 7)), iterations=2)
+    mask = ndimage.binary_fill_holes(mask)
+    mask = _largest_component(mask, prefer_center=True)
+
+    points = np.column_stack(np.nonzero(mask))[:, ::-1].astype(np.int32)
+    if points.shape[0] < 3:
+        return depth_mask
+    hull = cv2.convexHull(points)
+    hull_mask = np.zeros(mask.shape, dtype=np.uint8)
+    cv2.fillConvexPoly(hull_mask, hull, 1)
+    hull_mask = ndimage.binary_erosion(
+        hull_mask.astype(bool),
+        structure=np.ones((5, 5)),
+        iterations=1,
+    )
+    registered = hull_mask & depth_mask
+    return registered if np.any(registered) else depth_mask
+
+
+def _fill_current_frame_depth(depth: np.ndarray, mask: np.ndarray, fallback: np.ndarray) -> np.ndarray:
+    """Fill invalid samples spatially without borrowing geometry from another frame."""
+    valid = mask & np.isfinite(depth) & (depth > 0.15) & (depth < 2.5)
+    clean = depth.copy()
+    if np.any(valid):
+        _, nearest = ndimage.distance_transform_edt(~valid, return_indices=True)
+        missing = mask & ~valid
+        clean[missing] = depth[nearest[0][missing], nearest[1][missing]]
+    else:
+        clean[mask] = fallback[mask]
+    return clean
+
+
 def _depth_m_to_height_png(depth_m: np.ndarray, mask: np.ndarray, depth_range: tuple[float, float]) -> np.ndarray:
     lo, hi = depth_range
     if hi <= lo:
@@ -247,7 +298,7 @@ def _depth_m_to_height_png(depth_m: np.ndarray, mask: np.ndarray, depth_range: t
     return out
 
 
-def _depth_m_delta_to_detail_png(delta_m: np.ndarray, mask: np.ndarray, occlusion: np.ndarray, scale_m: float = 0.012) -> np.ndarray:
+def _depth_m_delta_to_detail_png(delta_m: np.ndarray, mask: np.ndarray, occlusion: np.ndarray, scale_m: float = DETAIL_DEPTH_SCALE_METERS) -> np.ndarray:
     detail = np.full(delta_m.shape, 128, dtype=np.uint8)
     valid = mask & ~occlusion & np.isfinite(delta_m)
     if not np.any(valid):
@@ -373,7 +424,10 @@ def _prepare_v2_session(session_dir: Path, project_dir: Path, manifest: dict[str
     if confidence_stream.exists():
         probe_confidences = [_read_v2_confidence(confidence_stream, frame) for frame in probe_frames]
 
-    sand_mask = _v2_depth_mask(probe_depths, probe_confidences)
+    depth_mask = _v2_depth_mask(probe_depths, probe_confidences)
+    frame_size = (int(v2_frames[0]["width"]), int(v2_frames[0]["height"]))
+    first_rgb = next(_iter_rgb_video_frames(rgb_video, frame_size, 1), None)
+    sand_mask = _v2_rgb_sand_mask(first_rgb, depth_mask) if first_rgb is not None else depth_mask
     Image.fromarray(_mask_to_png(sand_mask)).save(output_dir / "surface_mask.png")
 
     baseline_count = min(60, len(v2_frames))
@@ -386,8 +440,7 @@ def _prepare_v2_session(session_dir: Path, project_dir: Path, manifest: dict[str
         fixed_depth_range = (float(np.percentile(valid_baseline, 2)), float(np.percentile(valid_baseline, 98)))
 
     selected_frames = _sample_v2_frames(v2_frames, max_frames=None)
-    rgb_frames = _iter_rgb_video_frames(rgb_video, (int(v2_frames[0]["width"]), int(v2_frames[0]["height"])), len(selected_frames))
-    previous_clean_depth: np.ndarray | None = None
+    rgb_frames = _iter_rgb_video_frames(rgb_video, frame_size, len(selected_frames))
     processed_frames: list[dict[str, Any]] = []
     raw_delta_std_mm: list[float] = []
     smooth_delta_std_mm: list[float] = []
@@ -395,15 +448,20 @@ def _prepare_v2_session(session_dir: Path, project_dir: Path, manifest: dict[str
 
     for ordinal, frame in enumerate(selected_frames, start=1):
         depth = _read_v2_depth(depth_stream, frame)
-        delta = depth - fixed_camera_baseline
-        occlusion = sand_mask & np.isfinite(delta) & (delta < -0.04)
+        depth_delta = fixed_camera_baseline - depth
+        depth_occlusion = sand_mask & np.isfinite(depth) & np.isfinite(fixed_camera_baseline) & (depth_delta > 0.015)
+        if np.any(depth_occlusion):
+            depth_occlusion = ndimage.binary_closing(depth_occlusion, structure=np.ones((5, 5)))
+            depth_occlusion = ndimage.binary_dilation(depth_occlusion, structure=np.ones((7, 7)), iterations=2) & sand_mask
+        occlusion = depth_occlusion.astype(bool)
+
         clean_depth = depth.copy()
-        fill = previous_clean_depth if previous_clean_depth is not None else fixed_camera_baseline
-        clean_depth[occlusion] = fill[occlusion]
-        clean_depth[~np.isfinite(clean_depth)] = fixed_camera_baseline[~np.isfinite(clean_depth)]
+        clean_depth[occlusion] = fixed_camera_baseline[occlusion]
+        clean_depth = _fill_current_frame_depth(clean_depth, sand_mask, fixed_camera_baseline)
+        delta = clean_depth - fixed_camera_baseline
 
         height_png = _depth_m_to_height_png(clean_depth, sand_mask, fixed_depth_range)
-        detail_png = _depth_m_delta_to_detail_png(depth - fixed_camera_baseline, sand_mask, occlusion, scale_m=0.010)
+        detail_png = _depth_m_delta_to_detail_png(delta, sand_mask, occlusion)
         video_rgb = next(rgb_frames, None)
         if video_rgb is None:
             rgb_png = _pseudo_sand_rgb(height_png, detail_png, sand_mask)
@@ -436,7 +494,6 @@ def _prepare_v2_session(session_dir: Path, project_dir: Path, manifest: dict[str
             if valid_smooth_delta.size:
                 smooth_delta_std_mm.append(float(np.std(valid_smooth_delta)))
 
-        previous_clean_depth = clean_depth
         processed_frames.append({
             "frameIndex": int(frame.get("frameIndex", ordinal)),
             "time": float(frame.get("monotonicElapsedSeconds", 0.0)),
@@ -477,7 +534,7 @@ def _prepare_v2_session(session_dir: Path, project_dir: Path, manifest: dict[str
         "fixedCameraDetail": {
             "method": "unsmoothed_sceneDepth_minus_first_60_frame_median",
             "neutralGray": 128,
-            "scaleMeters": 0.010,
+            "scaleMeters": DETAIL_DEPTH_SCALE_METERS,
             "note": "detail_depth uses unsmoothed ARKit sceneDepth; smoothedSceneDepth is retained in source streams for comparison.",
         },
         "diagnostics": {
@@ -487,8 +544,8 @@ def _prepare_v2_session(session_dir: Path, project_dir: Path, manifest: dict[str
             "rgbVideoFramesUsed": rgb_video_frames_used,
         },
         "masking": {
-            "method": "depth_baseline_delta_occlusion_filter",
-            "note": "Occlusion is treated as depth moving at least 4cm closer than the fixed baseline.",
+            "method": "rgb_sand_hull_intersect_stable_depth",
+            "note": "RGB and raw sceneDepth remain paired per frame. Invalid samples are filled only from spatial neighbors in the same frame; no previous-frame geometry is held, so camera motion cannot create RGB/depth drift.",
             "surfaceMask": "surface_mask.png",
             "contactSheet": "frame_contact_sheet.png",
         },
@@ -504,8 +561,9 @@ def _prepare_v2_session(session_dir: Path, project_dir: Path, manifest: dict[str
         "duration": max(duration, final_frame["time"]),
         "data_sources": {
             "use_video_streams": False,
-            "depth_map": f"{rel_output}/{final_frame['cleanDepth']}",
+            "depth_map": f"{rel_output}/{final_frame['detailDepth']}",
             "detail_depth_map": f"{rel_output}/{final_frame['detailDepth']}",
+            "preferred_depth_frame": "detailDepth",
             "texture_map": f"{rel_output}/{final_frame['cleanRgb']}",
             "surface_mask": f"{rel_output}/surface_mask.png",
             "occlusion_mask": f"{rel_output}/{final_frame['occlusionMask']}",
@@ -516,8 +574,12 @@ def _prepare_v2_session(session_dir: Path, project_dir: Path, manifest: dict[str
                 "texture_uv_offset": [0.0, 0.0],
                 "depth_uv_scale": [1.0, 1.0],
                 "texture_uv_scale": [1.0, 1.0],
-                "height_scale": 1.65,
-                "material_strength": 0.15,
+                "height_scale": 1.35,
+                "material_strength": 0.72,
+                "detail_scale_m": DETAIL_DEPTH_SCALE_METERS,
+                "neutral_gray": 128.0,
+                "use_rgb_grooves": False,
+                "rgb_groove_strength": 0.0,
             },
         },
         "production_session": {
@@ -728,6 +790,7 @@ def prepare_session(session_dir: Path, project_dir: Path) -> Path:
             "use_video_streams": False,
             "depth_map": f"{rel_output}/{final_frame['cleanDepth']}",
             "detail_depth_map": f"{rel_output}/{final_frame['detailDepth']}",
+            "preferred_depth_frame": "cleanDepth",
             "texture_map": f"{rel_output}/{final_frame['cleanRgb']}",
             "surface_mask": f"{rel_output}/surface_mask.png",
             "occlusion_mask": f"{rel_output}/{final_frame['occlusionMask']}",

@@ -58,10 +58,10 @@ final class SessionAudioRecorder: NSObject {
 
     func stopRecording() -> (duration: TimeInterval, sampleRate: Double, channels: Int)? {
         guard let recorder else { return nil }
-        recorder.stop()
         let duration = recorder.currentTime
         let rate = recorder.settings[AVSampleRateKey] as? Double ?? 44_100
         let ch = recorder.settings[AVNumberOfChannelsKey] as? Int ?? 1
+        recorder.stop()
         self.recorder = nil
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         return (duration, rate, ch)

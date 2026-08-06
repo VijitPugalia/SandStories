@@ -41,7 +41,14 @@ def init_db() -> None:
                 validation_status TEXT NOT NULL,
                 validation_report_path TEXT,
                 frame_count INTEGER,
-                duration_seconds REAL
+                duration_seconds REAL,
+                completion_status TEXT NOT NULL DEFAULT 'disabled',
+                completion_started_at REAL,
+                completion_finished_at REAL,
+                completion_output_path TEXT,
+                completion_report_path TEXT,
+                completion_artifact_path TEXT,
+                completion_error TEXT
             );
 
             CREATE TABLE IF NOT EXISTS commands (
@@ -57,6 +64,21 @@ def init_db() -> None:
             );
             """
         )
+        columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(packages)")
+        }
+        migrations = {
+            "completion_status": "TEXT NOT NULL DEFAULT 'disabled'",
+            "completion_started_at": "REAL",
+            "completion_finished_at": "REAL",
+            "completion_output_path": "TEXT",
+            "completion_report_path": "TEXT",
+            "completion_artifact_path": "TEXT",
+            "completion_error": "TEXT",
+        }
+        for name, declaration in migrations.items():
+            if name not in columns:
+                conn.execute(f"ALTER TABLE packages ADD COLUMN {name} {declaration}")
 
 
 def row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
@@ -133,3 +155,122 @@ def list_packages() -> list[dict[str, Any]]:
 def get_package(package_id: str) -> dict[str, Any] | None:
     with connect() as conn:
         return row_to_dict(conn.execute("SELECT * FROM packages WHERE id=?", (package_id,)).fetchone())
+
+
+def queue_package_completion(package_id: str) -> None:
+    with connect() as conn:
+        conn.execute(
+            """
+            UPDATE packages
+            SET completion_status='queued',
+                completion_started_at=NULL,
+                completion_finished_at=NULL,
+                completion_output_path=NULL,
+                completion_report_path=NULL,
+                completion_artifact_path=NULL,
+                completion_error=NULL
+            WHERE id=?
+            """,
+            (package_id,),
+        )
+
+
+def mark_package_completion_unavailable(package_id: str, error: str) -> None:
+    with connect() as conn:
+        conn.execute(
+            """
+            UPDATE packages
+            SET completion_status='unavailable',
+                completion_finished_at=?,
+                completion_error=?
+            WHERE id=?
+            """,
+            (time.time(), error, package_id),
+        )
+
+
+def reset_running_completion_jobs() -> None:
+    with connect() as conn:
+        conn.execute(
+            """
+            UPDATE packages
+            SET completion_status='queued',
+                completion_started_at=NULL,
+                completion_error='Field console restarted while this job was running'
+            WHERE completion_status='running'
+            """
+        )
+
+
+def claim_next_completion_package() -> dict[str, Any] | None:
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            """
+            SELECT * FROM packages
+            WHERE completion_status='queued'
+            ORDER BY uploaded_at ASC
+            LIMIT 1
+            """
+        ).fetchone()
+        if row is None:
+            return None
+        package_id = row["id"]
+        conn.execute(
+            """
+            UPDATE packages
+            SET completion_status='running',
+                completion_started_at=?,
+                completion_finished_at=NULL,
+                completion_error=NULL
+            WHERE id=? AND completion_status='queued'
+            """,
+            (time.time(), package_id),
+        )
+        claimed = conn.execute(
+            "SELECT * FROM packages WHERE id=?", (package_id,)
+        ).fetchone()
+        return row_to_dict(claimed)
+
+
+def finish_package_completion(
+    package_id: str,
+    *,
+    output_path: Path,
+    report_path: Path,
+    artifact_path: Path,
+) -> None:
+    with connect() as conn:
+        conn.execute(
+            """
+            UPDATE packages
+            SET completion_status='completed',
+                completion_finished_at=?,
+                completion_output_path=?,
+                completion_report_path=?,
+                completion_artifact_path=?,
+                completion_error=NULL
+            WHERE id=?
+            """,
+            (
+                time.time(),
+                str(output_path),
+                str(report_path),
+                str(artifact_path),
+                package_id,
+            ),
+        )
+
+
+def fail_package_completion(package_id: str, error: str) -> None:
+    with connect() as conn:
+        conn.execute(
+            """
+            UPDATE packages
+            SET completion_status='failed',
+                completion_finished_at=?,
+                completion_error=?
+            WHERE id=?
+            """,
+            (time.time(), error, package_id),
+        )

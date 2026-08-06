@@ -1016,10 +1016,7 @@ final class DepthCaptureManager: NSObject, @preconcurrency ARSessionDelegate {
 
         let selectedDepthData: ARDepthData
         let selectedDepthSource: String
-        if capturesSmoothedDepth, let smoothedDepthData {
-            selectedDepthData = smoothedDepthData
-            selectedDepthSource = "smoothedSceneDepth"
-        } else if let rawDepthData {
+        if let rawDepthData {
             selectedDepthData = rawDepthData
             selectedDepthSource = "sceneDepth"
         } else if let smoothedDepthData {
@@ -1045,7 +1042,7 @@ final class DepthCaptureManager: NSObject, @preconcurrency ARSessionDelegate {
         let writer = self.writer
         let timestamp = frame.timestamp
         let depthMap = PixelBufferBox(selectedDepthData.depthMap)
-        let smoothedDepthMap = capturesSmoothedDepth && selectedDepthSource != "smoothedSceneDepth"
+        let smoothedDepthMap = capturesSmoothedDepth && selectedDepthSource == "sceneDepth"
             ? smoothedDepthData.map { PixelBufferBox($0.depthMap) }
             : nil
         let confidenceMap = selectedConfidenceMap.map { PixelBufferBox($0) }

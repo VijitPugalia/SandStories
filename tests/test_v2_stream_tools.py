@@ -55,6 +55,7 @@ class V2StreamToolTests(unittest.TestCase):
             "frameIndex": 1,
             "arTimestamp": 0.0,
             "monotonicElapsedSeconds": 0.0,
+            "selectedDepthSource": "sceneDepth",
             "width": 2,
             "height": 2,
             "sourceDepthPixelFormat": "DepthFloat32",
@@ -121,6 +122,36 @@ class V2StreamToolTests(unittest.TestCase):
             self.assertEqual(report["v2FrameCount"], 2)
             self.assertTrue((session / "depth_diagnostic_report.json").is_file())
             self.assertTrue((session / "depth_diagnostic_contactsheet.png").is_file())
+
+    def test_smoothed_primary_payload_is_not_reported_as_raw(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest, _ = self.make_v2_session(root)
+            session = root / "session_test"
+            metadata_path = session / "v2_frames.jsonl"
+            frames = [json.loads(line) for line in metadata_path.read_text(encoding="utf-8").splitlines()]
+            for frame in frames:
+                frame["selectedDepthSource"] = "smoothedSceneDepth"
+                for key in (
+                    "smoothedDepthByteOffset",
+                    "smoothedDepthByteCount",
+                    "smoothedDepthPixelFormat",
+                    "smoothedDepthWidth",
+                    "smoothedDepthHeight",
+                    "smoothedDepthBytesPerRow",
+                ):
+                    frame.pop(key, None)
+            metadata_path.write_text("\n".join(json.dumps(frame) for frame in frames) + "\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "raw sceneDepth is unavailable"):
+                visualize_sandstories_session.read_v2_depth(session, manifest, frames[1], "raw")
+            smoothed = visualize_sandstories_session.read_v2_depth(session, manifest, frames[1], "smoothed")
+            self.assertAlmostEqual(float(smoothed[1, 1]), 1.4)
+
+            report = analyze_depth_diagnostic.analyze(session)
+            self.assertEqual(report["classification"], "raw_depth_unavailable_smoothed_only")
+            self.assertIsNone(report["sampledFrames"][0]["rawDepth"])
+            self.assertIsNotNone(report["sampledFrames"][0]["smoothedDepth"])
 
 
 if __name__ == "__main__":

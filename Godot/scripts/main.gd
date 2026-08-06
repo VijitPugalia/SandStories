@@ -198,8 +198,16 @@ func _ready() -> void:
 	web_embed_mode = _web_query_flag("embed")
 	if hud_root != null:
 		hud_root.visible = not web_embed_mode
-	await _load_session(DEFAULT_SESSION_PATH)
+	var initial_session_path := DEFAULT_SESSION_PATH
+	if not OS.has_feature("web"):
+		var requested_session := _launch_value("session")
+		if requested_session != "":
+			initial_session_path = requested_session
+	await _load_session(initial_session_path)
 	await _apply_launch_params()
+	var requested_time := _launch_value("time")
+	if requested_time != "":
+		_seek_playhead(float(requested_time))
 	var launch_study := _launch_value("study").to_lower()
 	if launch_study in ["stage1", "pilot"]:
 		# Stage 1 must train on the complete representation before revealing
@@ -3986,13 +3994,21 @@ func _update_active_gesture() -> void:
 	if active_event_label == null:
 		return
 	var active := "none"
+	var next_event_time := -1.0
+	var next_event_label := ""
 	for event in session.get("gesture_events", []):
 		var start := float(event.get("start", 0.0))
 		var end := float(event.get("end", duration))
 		if playhead >= start and playhead <= end:
 			active = "%s -> %s" % [str(event.get("label", event.get("kind", "gesture"))), str(event.get("target", ""))]
 			break
-	active_event_label.text = "Active gesture: " + active
+		if start > playhead and (next_event_time < 0.0 or start < next_event_time):
+			next_event_time = start
+			next_event_label = str(event.get("label", event.get("kind", "gesture")))
+	if active == "none" and next_event_time >= 0.0:
+		active_event_label.text = "Next drawing: %s at %.2fs" % [next_event_label, next_event_time]
+	else:
+		active_event_label.text = "Active gesture: " + active
 
 
 func _build_surface_highlights() -> void:
@@ -4517,13 +4533,20 @@ func _load_surface_texture(path: String) -> Texture2D:
 			surface_texture_pending[path] = true
 			_load_remote_surface_texture(path)
 		return null
-	if not ResourceLoader.exists(path):
-		return null
-	var texture := load(path)
-	if not texture is Texture2D:
-		return null
-	surface_texture_cache[path] = texture
-	return texture
+	if ResourceLoader.exists(path):
+		var texture := load(path)
+		if texture is Texture2D:
+			surface_texture_cache[path] = texture
+			return texture
+	var global_path := ProjectSettings.globalize_path(path)
+	var file_to_load := global_path if FileAccess.file_exists(global_path) else (path if FileAccess.file_exists(path) else "")
+	if file_to_load != "":
+		var img := Image.load_from_file(file_to_load)
+		if img != null and not img.is_empty():
+			var texture := ImageTexture.create_from_image(img)
+			surface_texture_cache[path] = texture
+			return texture
+	return null
 
 
 func _load_remote_surface_texture(path: String) -> void:
@@ -4841,9 +4864,9 @@ func _heightmap_material() -> Material:
 	var depth_path := _source_path("depth_map", SAND_HEIGHTMAP_PATH)
 	var texture_path := _source_path("texture_map", SAND_TEXTURE_PATH)
 	var uses_remote_surface := _is_http_path(depth_path) or _is_http_path(texture_path)
-	if not uses_remote_surface and not ResourceLoader.exists(depth_path):
-		return null
-	if not uses_remote_surface and not ResourceLoader.exists(texture_path):
+	var depth_exists := uses_remote_surface or ResourceLoader.exists(depth_path) or FileAccess.file_exists(depth_path) or FileAccess.file_exists(ProjectSettings.globalize_path(depth_path))
+	var texture_exists := uses_remote_surface or ResourceLoader.exists(texture_path) or FileAccess.file_exists(texture_path) or FileAccess.file_exists(ProjectSettings.globalize_path(texture_path))
+	if not depth_exists or not texture_exists:
 		return null
 
 	var shader := load(SAND_DEPTH_SHADER_PATH)
@@ -4854,9 +4877,10 @@ func _heightmap_material() -> Material:
 	material.shader = shader
 	heightmap_material = material
 	_reload_static_surface_textures()
-	if not uses_remote_surface and (static_depth_texture == null or static_surface_texture == null):
-		heightmap_material = null
-		return null
+	if static_depth_texture == null:
+		static_depth_texture = _load_surface_texture(depth_path)
+	if static_surface_texture == null:
+		static_surface_texture = _load_surface_texture(texture_path)
 	material.set_shader_parameter("arg_1", 11.625)
 	material.set_shader_parameter("arg_2", 0.57)
 	_apply_depth_material_profile()
@@ -5010,6 +5034,8 @@ func _apply_depth_material_profile() -> void:
 		heightmap_material.set_shader_parameter("eps_1", 0.415)
 
 
+
+
 func _apply_surface_controls() -> void:
 	if heightmap_material == null:
 		return
@@ -5024,6 +5050,13 @@ func _apply_surface_controls() -> void:
 	heightmap_material.set_shader_parameter("displacement_scale", float(surface_controls["displacement"]))
 	heightmap_material.set_shader_parameter("material_strength", float(surface_controls["material_strength"]))
 	var calibration: Dictionary = data_sources.get("calibration", {})
+	heightmap_material.set_shader_parameter("detail_scale_m", float(calibration.get("detail_scale_m", 0.004)))
+	heightmap_material.set_shader_parameter("neutral_gray", float(calibration.get("neutral_gray", 128.0)))
+	heightmap_material.set_shader_parameter("cavity_strength", float(calibration.get("cavity_strength", 0.35)))
+	heightmap_material.set_shader_parameter("cavity_clamp", float(calibration.get("cavity_clamp", 0.50)))
+	heightmap_material.set_shader_parameter("noise_threshold_m", float(calibration.get("noise_threshold_m", 0.0005)))
+	heightmap_material.set_shader_parameter("use_rgb_grooves", bool(calibration.get("use_rgb_grooves", false)))
+	heightmap_material.set_shader_parameter("rgb_groove_strength", float(calibration.get("rgb_groove_strength", 0.0)))
 	heightmap_material.set_shader_parameter(
 		"depth_uv_scale",
 		_array_to_vec2(calibration.get("depth_uv_scale", [1.0, 1.0]))

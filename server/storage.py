@@ -20,6 +20,12 @@ def extracted_dir() -> Path:
     return path
 
 
+def derived_dir() -> Path:
+    path = data_dir() / "derived"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def db_path() -> Path:
     path = data_dir() / "sandstories.db"
     path.parent.mkdir(parents=True, exist_ok=True)

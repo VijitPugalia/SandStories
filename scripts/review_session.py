@@ -27,6 +27,8 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Review and score a SandStories session.")
     parser.add_argument("--session", type=Path, required=True, help="Path to the session folder to review")
     parser.add_argument("--reviewer", type=str, default="SandStories Researcher", help="Reviewer/Researcher name")
+    parser.add_argument("--score", type=float, default=None, help="Completeness score (1.0 - 5.0)")
+    parser.add_argument("--notes", type=str, default=None, help="Qualitative review notes")
     return parser.parse_args()
 
 def plot_strokes(strokes_path: Path, output_plot_path: Path) -> bool:
@@ -139,19 +141,25 @@ def main():
     print("VISUAL QUALITY REVIEW")
     print("="*50)
     
-    # Prompt for score (1 to 5)
-    while True:
-        try:
-            score_input = input("Enter visual completeness score (1.0 - 5.0): ").strip()
-            score = float(score_input)
-            if 1.0 <= score <= 5.0:
-                break
-            print("Score must be between 1.0 and 5.0.")
-        except ValueError:
-            print("Invalid input. Please enter a decimal number.")
+    # Prompt for score (1 to 5) or use argument
+    if args.score is not None and 1.0 <= args.score <= 5.0:
+        score = args.score
+    else:
+        while True:
+            try:
+                score_input = input("Enter visual completeness score (1.0 - 5.0): ").strip()
+                score = float(score_input)
+                if 1.0 <= score <= 5.0:
+                    break
+                print("Score must be between 1.0 and 5.0.")
+            except ValueError:
+                print("Invalid input. Please enter a decimal number.")
             
-    # Prompt for notes
-    notes = input("Enter qualitative review notes: ").strip()
+    # Prompt for notes or use argument
+    if args.notes is not None:
+        notes = args.notes
+    else:
+        notes = input("Enter qualitative review notes: ").strip()
     
     # Save score to completeness_rating.json
     rating_data = {

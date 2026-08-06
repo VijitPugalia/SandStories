@@ -1,5 +1,6 @@
 shader_type spatial;
 render_mode cull_back, depth_draw_opaque;
+
 uniform float arg_1 = 1.0f;
 uniform float arg_2 = 1.0f;
 uniform float background = 0.5f;
@@ -9,6 +10,20 @@ uniform float displacement_scale = 1.0f;
 uniform float baseline_height_offset = 0.0f;
 uniform float material_strength = 0.0f;
 uniform float depth_view_slope_strength = 1.35f;
+
+// Physical depth encoding contract parameters
+uniform float detail_scale_m = 0.004;
+uniform float neutral_gray = 128.0;
+
+// Configurable depth-derived cavity / curvature controls
+uniform float cavity_strength = 0.35;
+uniform float cavity_clamp = 0.50;
+uniform float noise_threshold_m = 0.0005;
+
+// Optional A/B comparison toggle for RGB edge detection
+uniform bool use_rgb_grooves = false;
+uniform float rgb_groove_strength = 0.0;
+
 uniform vec3 base_sand_color = vec3(0.66, 0.64, 0.58);
 uniform vec2 depth_uv_offset = vec2(0.0, 0.0);
 uniform vec2 depth_uv_scale = vec2(1.0, 1.0);
@@ -31,7 +46,6 @@ float sample_surface_mask(vec2 uv) {
 
 float check_depth(vec2 uv) {
 	vec2 sample_uv = uv * depth_uv_scale + depth_uv_offset;
-    vec4 tex = texture(depth_map, sample_uv);
 	float texel = 1.0f / float(textureSize(depth_map, 0).x);
 	float h = 0.0;
 	h += texture(depth_map, sample_uv + vec2(-texel, -texel)).r;
@@ -50,14 +64,36 @@ float check_depth(vec2 uv) {
 	return h;
 }
 
-float depth_mask(vec2 uv) {
-	vec2 sample_uv = uv * depth_uv_scale + depth_uv_offset;
-	float h = texture(depth_map, sample_uv).r;
-	float d = abs(h - background);
-	float keep = smoothstep(eps_0, eps_1, d);
-	float border = min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y));
-	float border_fade = smoothstep(0.0, 0.035, border);
-	return keep * border_fade;
+// Convert encoded 0..1 depth map value to physical delta height in meters
+float depth_to_meters(float raw_h) {
+	float normalized_delta = (raw_h * 255.0 - neutral_gray) / 96.0;
+	return -normalized_delta * detail_scale_m;
+}
+
+float rgb_luminance(vec2 uv) {
+	vec3 color = texture(texture_map, clamp(uv, vec2(0.0), vec2(1.0))).rgb;
+	return dot(color, vec3(0.299, 0.587, 0.114));
+}
+
+float rgb_groove_signal(vec2 uv) {
+	if (!use_rgb_grooves || rgb_groove_strength <= 0.001) {
+		return 0.0;
+	}
+	vec2 texel = 1.0 / vec2(textureSize(texture_map, 0));
+	float center = rgb_luminance(uv);
+	float neighborhood = 0.0;
+	neighborhood += rgb_luminance(uv + vec2(-texel.x, -texel.y));
+	neighborhood += rgb_luminance(uv + vec2(0.0, -texel.y));
+	neighborhood += rgb_luminance(uv + vec2(texel.x, -texel.y));
+	neighborhood += rgb_luminance(uv + vec2(-texel.x, 0.0));
+	neighborhood += rgb_luminance(uv + vec2(texel.x, 0.0));
+	neighborhood += rgb_luminance(uv + vec2(-texel.x, texel.y));
+	neighborhood += rgb_luminance(uv + vec2(0.0, texel.y));
+	neighborhood += rgb_luminance(uv + vec2(texel.x, texel.y));
+	neighborhood /= 8.0;
+	float dark_contrast = max(0.0, neighborhood - center);
+	float edge_gate = smoothstep(0.008, 0.075, dark_contrast);
+	return edge_gate * clamp(dark_contrast * 8.0 * rgb_groove_strength, 0.0, 1.0);
 }
 
 void vertex() {
@@ -66,7 +102,6 @@ void vertex() {
 	h = mix(background, h, mask);
 	h += baseline_height_offset * mask;
 	VERTEX.y -= (h / arg_1) * displacement_scale;
-	
 }
 
 void fragment() {
@@ -78,29 +113,66 @@ void fragment() {
 	}
 	float h = check_depth(UV);
 	h += baseline_height_offset * mask;
-	float relief = h - background;
-	float shade = clamp(0.96 + relief * 0.22 - abs(relief) * 0.08, 0.76, 1.08);
-	float grain = dot(tex.rgb, vec3(0.299, 0.587, 0.114));
-	vec3 subtle_texture = base_sand_color * mix(0.78, 1.14, grain);
-	vec3 material_color = mix(subtle_texture, tex.rgb, 0.55);
-	vec3 mapped_color = mix(base_sand_color, material_color, clamp(material_strength, 0.0, 1.0));
 
-	// The height map displaces the PlaneMesh in vertex(), but the source mesh
-	// still carries a flat up-facing normal. Reconstruct the real triangle
-	// normal from the displaced view-space position so raking lights reveal
-	// grooves and ridges instead of shading the surface as one flat card.
+	// Physical texel dimensions (plane mesh 5.5m x 5.5m)
+	vec2 tex_size = vec2(textureSize(depth_map, 0));
+	vec2 texel_uv = 1.5 / tex_size;
+	float world_dx = 5.5 / max(tex_size.x, 1.0);
+	float world_dy = 5.5 / max(tex_size.y, 1.0);
+
+	// 4-tap Central Difference with Discontinuity Safeguards
+	float h_c = depth_to_meters(h);
+	float raw_l = check_depth(UV + vec2(-texel_uv.x, 0.0));
+	float raw_r = check_depth(UV + vec2( texel_uv.x, 0.0));
+	float raw_u = check_depth(UV + vec2(0.0, -texel_uv.y));
+	float raw_d = check_depth(UV + vec2(0.0,  texel_uv.y));
+
+	float h_l = depth_to_meters(raw_l);
+	float h_r = depth_to_meters(raw_r);
+	float h_u = depth_to_meters(raw_u);
+	float h_d = depth_to_meters(raw_d);
+
+	// Reject Discontinuities (e.g. step size > 15mm across occlusion / hand borders)
+	const float MAX_DISCONTINUITY_M = 0.015;
+	if (abs(h_l - h_c) > MAX_DISCONTINUITY_M) h_l = h_c;
+	if (abs(h_r - h_c) > MAX_DISCONTINUITY_M) h_r = h_c;
+	if (abs(h_u - h_c) > MAX_DISCONTINUITY_M) h_u = h_c;
+	if (abs(h_d - h_c) > MAX_DISCONTINUITY_M) h_d = h_c;
+
+	// Central Difference Gradients with Noise Floor Suppression
+	float dh_dx = (h_r - h_l) / (2.0 * world_dx);
+	float dh_dy = (h_d - h_u) / (2.0 * world_dy);
+	if (abs(h_r - h_l) < noise_threshold_m) dh_dx = 0.0;
+	if (abs(h_d - h_u) < noise_threshold_m) dh_dy = 0.0;
+
+	vec3 depth_slope_normal = normalize(vec3(-dh_dx * 2.5, 1.0, -dh_dy * 2.5));
+
 	vec3 flat_normal = normalize(NORMAL);
 	vec3 geometric_normal = normalize(cross(dFdx(VERTEX), dFdy(VERTEX)));
 	if (dot(geometric_normal, flat_normal) < 0.0) {
 		geometric_normal = -geometric_normal;
 	}
-	NORMAL = normalize(mix(flat_normal, geometric_normal, 0.94));
+	NORMAL = normalize(mix(depth_slope_normal, geometric_normal, 0.35));
 
-	// When Map blend is zero, turn the neutral material into a depth diagnostic
-	// view. The cue is derived only from the rendered geometry: slope
-	// darkening under the raking lights. It fades out before the RGB material
-	// reaches its normal session strength.
-	float depth_view = 1.0 - smoothstep(0.0, 0.62, material_strength);
+	// Depth Relief & Noise-Floor Suppressed Cavity Occlusion
+	float relief = (h - background) * 0.85;
+	float shade = clamp(0.98 + relief * 0.55 - abs(relief) * 0.10, 0.72, 1.16);
+
+	float laplacian_m = (h_l + h_r + h_u + h_d - 4.0 * h_c);
+	float depth_cavity = 0.0;
+	if (abs(laplacian_m) > noise_threshold_m) {
+		depth_cavity = clamp(laplacian_m * 80.0 * cavity_strength, -0.20, cavity_clamp);
+	}
+
+	float grain = dot(tex.rgb, vec3(0.299, 0.587, 0.114));
+	vec3 subtle_texture = base_sand_color * mix(0.78, 1.14, grain);
+	vec3 material_color = mix(subtle_texture, tex.rgb, 0.88);
+	vec3 mapped_color = mix(base_sand_color, material_color, clamp(material_strength, 0.0, 1.0));
+
+	float rgb_groove = rgb_groove_signal(UV) * mask;
+	vec3 groove_mapped = mapped_color * (1.0 - rgb_groove * 0.40);
+
+	float depth_view = mix(0.32, 1.0, 1.0 - smoothstep(0.0, 0.62, material_strength));
 	float slope = clamp(1.0 - dot(NORMAL, flat_normal), 0.0, 1.0);
 	float slope_shade = clamp(
 		1.04 - slope * depth_view_slope_strength,
@@ -108,7 +180,7 @@ void fragment() {
 		1.08
 	);
 
-	ALBEDO = mapped_color * shade * mix(1.0, slope_shade, depth_view);
+	ALBEDO = (groove_mapped * shade - vec3(depth_cavity * 0.28)) * mix(1.0, slope_shade, depth_view);
 	ROUGHNESS = mix(0.86, 0.94, depth_view);
 	SPECULAR = mix(0.28, 0.12, depth_view);
 }

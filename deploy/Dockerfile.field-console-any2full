@@ -1,0 +1,28 @@
+FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime
+
+RUN conda create --yes --name sandstories python=3.9 \
+    && conda clean --all --yes
+
+ENV PATH=/opt/conda/envs/sandstories/bin:$PATH
+
+WORKDIR /app
+
+COPY server/requirements.txt /tmp/sandstories-server-requirements.txt
+RUN pip install --no-cache-dir \
+      --index-url https://download.pytorch.org/whl/cu121 \
+      torch==2.1.0 \
+      torchvision==0.16.0 \
+    && pip install --no-cache-dir \
+      -r /tmp/sandstories-server-requirements.txt \
+      "numpy<2" \
+      pillow \
+      matplotlib \
+      scipy \
+      opencv-python-headless==4.11.0.86
+
+RUN pip install --no-cache-dir eval-type-backport==0.2.2
+
+COPY server /app/server
+COPY scripts /app/scripts
+
+CMD ["uvicorn", "server.app:app", "--host", "0.0.0.0", "--port", "8080"]

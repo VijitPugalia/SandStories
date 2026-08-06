@@ -18,7 +18,6 @@ import argparse
 import csv
 import json
 import os
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -54,42 +53,50 @@ def load_strokes(path: Path) -> list:
     except (json.JSONDecodeError, OSError):
         return []
 
-def get_audio_silence_duration(audio_path: Path, total_duration: float):
-    if not audio_path.is_file():
-        return 0.0, []
-    
+def get_media_duration(media_path: Path) -> float:
+    """Return container duration without treating intentional silence as data loss."""
+    if not media_path.is_file():
+        return 0.0
+
+    executable = os.environ.get("SANDSTORIES_FFPROBE", "ffprobe")
     cmd = [
-        "ffmpeg", "-i", str(audio_path),
-        "-af", "silencedetect=noise=-30dB:d=2",
-        "-f", "null", "-"
+        executable,
+        "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        str(media_path),
     ]
     try:
-        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
-        output = res.stderr
-    except FileNotFoundError:
-        # ffmpeg not installed, assume no dropouts
-        return 0.0, []
-    
-    start_matches = [float(x) for x in re.findall(r"silence_start:\s*([\d\.]+)", output)]
-    end_matches = re.findall(r"silence_end:\s*([\d\.]+)\s*\|\s*silence_duration:\s*([\d\.]+)", output)
-    
-    total_silence = 0.0
-    silences = []
-    for i in range(min(len(start_matches), len(end_matches))):
-        start = start_matches[i]
-        end = float(end_matches[i][0])
-        dur = float(end_matches[i][1])
-        silences.append({"start": start, "end": end, "duration": dur})
-        total_silence += dur
-        
-    if len(start_matches) > len(end_matches):
-        start = start_matches[-1]
-        if total_duration > start:
-            dur = total_duration - start
-            silences.append({"start": start, "end": total_duration, "duration": dur})
-            total_silence += dur
-            
-    return total_silence, silences
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+            timeout=15,
+        )
+    except (FileNotFoundError, PermissionError, OSError, subprocess.TimeoutExpired):
+        return 0.0
+    if result.returncode != 0:
+        return 0.0
+    try:
+        return max(0.0, float(result.stdout.strip()))
+    except ValueError:
+        return 0.0
+
+
+def object_confidences(records: list) -> list[float]:
+    """Accept both legacy one-detection records and frame-grouped detections."""
+    confidences = []
+    for record in records:
+        detections = record.get("detections")
+        if isinstance(detections, list):
+            for detection in detections:
+                if isinstance(detection, dict):
+                    confidences.append(float(detection.get("confidence", 0.0)))
+        elif "confidence" in record:
+            confidences.append(float(record.get("confidence", 0.0)))
+    return confidences
 
 def evaluate_session(session_dir: Path) -> dict:
     session_dir = session_dir.resolve()
@@ -114,6 +121,10 @@ def evaluate_session(session_dir: Path) -> dict:
     
     # 1. Depth Retention
     depth_frames = manifest.get("depthFrames", [])
+    v2_streams = manifest.get("v2Streams") or {}
+    v2_frames_path = session_dir / v2_streams.get("frameMetadataFile", "v2_frames.jsonl")
+    if not depth_frames and v2_frames_path.is_file():
+        depth_frames = load_json_lines(v2_frames_path)
     expected_depth = duration * 15.0
     actual_depth = len(depth_frames)
     depth_retention = min(1.0, actual_depth / expected_depth) if expected_depth > 0 else 0.0
@@ -135,10 +146,13 @@ def evaluate_session(session_dir: Path) -> dict:
     obj_file = manifest.get("objectDetectionsFile", "objects.jsonl")
     obj_path = session_dir / obj_file
     obj_records = load_json_lines(obj_path)
-    if obj_records:
-        obj_conf = sum(r.get("confidence", 0.0) for r in obj_records) / len(obj_records)
-    else:
-        obj_conf = 0.0
+    object_detection_source = obj_file
+    derived_obj_path = session_dir / "derived" / "objects_yolo_world.jsonl"
+    if not obj_records and derived_obj_path.is_file():
+        obj_records = load_json_lines(derived_obj_path)
+        object_detection_source = "derived/objects_yolo_world.jsonl"
+    obj_confidences = object_confidences(obj_records)
+    obj_conf = sum(obj_confidences) / len(obj_confidences) if obj_confidences else 0.0
         
     # 3. Gesture Continuity
     strokes_file = manifest.get("strokesFile", "strokes.json")
@@ -205,21 +219,26 @@ def evaluate_session(session_dir: Path) -> dict:
     # 5. Audio Continuity
     audio_info = manifest.get("audio")
     audio_continuity = 0.0
+    audio_observed_duration = 0.0
+    audio_expected_duration = 0.0
     if audio_info:
         audio_rel = audio_info.get("relativePath", "audio.m4a")
         audio_path = session_dir / audio_rel
-        audio_dur = audio_info.get("durationSeconds", 0.0)
-        
-        silence_dur, audio_silences = get_audio_silence_duration(audio_path, audio_dur)
-        audio_continuity = max(0.0, (audio_dur - silence_dur) / audio_dur) if audio_dur > 0 else 0.0
-        
-        # Log audio silences as dropouts
-        for s in audio_silences:
+        audio_start = max(0.0, float(audio_info.get("startMonotonicElapsedSeconds", 0.0)))
+        audio_expected_duration = max(0.0, duration - audio_start)
+        manifest_audio_duration = max(0.0, float(audio_info.get("durationSeconds", 0.0)))
+        probed_audio_duration = get_media_duration(audio_path)
+        audio_observed_duration = probed_audio_duration or manifest_audio_duration
+        if audio_expected_duration > 0:
+            audio_continuity = min(1.0, audio_observed_duration / audio_expected_duration)
+
+        missing_tail = max(0.0, audio_expected_duration - audio_observed_duration)
+        if missing_tail >= 2.0:
             dropouts.append({
                 "stream": "audio",
-                "start": s["start"],
-                "end": s["end"],
-                "duration": s["duration"]
+                "start": audio_start + audio_observed_duration,
+                "end": audio_start + audio_expected_duration,
+                "duration": missing_tail,
             })
             
     # Write dropouts.jsonl
@@ -238,6 +257,16 @@ def evaluate_session(session_dir: Path) -> dict:
             "gestureContinuity": gesture_continuity,
             "boundaryDetection": boundary_conf,
             "audioContinuity": audio_continuity
+        },
+        "observations": {
+            "depthFrameCount": actual_depth,
+            "expectedDepthFrameCountAt15Hz": expected_depth,
+            "objectDetectionCount": len(obj_confidences),
+            "objectDetectionSource": object_detection_source,
+            "strokeCount": len(strokes),
+            "boundarySampleCount": len(boundary_records),
+            "audioObservedDurationSeconds": audio_observed_duration,
+            "audioExpectedDurationSeconds": audio_expected_duration,
         },
         "dropoutCount": len(dropouts)
     }

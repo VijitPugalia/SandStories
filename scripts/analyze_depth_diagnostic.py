@@ -53,18 +53,30 @@ def read_depth(session_dir: Path, manifest: dict[str, Any], entry: dict[str, Any
     import numpy as np
 
     streams = manifest.get("v2Streams") or {}
+    selected_source = entry.get("selectedDepthSource")
     if source == "raw":
+        if selected_source == "smoothedSceneDepth":
+            return None
         rel = streams.get("depthStreamPath", "streams/depth.f32")
         offset = entry.get("depthByteOffset")
         count = entry.get("depthByteCount")
         width = int(entry["width"])
         height = int(entry["height"])
     else:
-        rel = streams.get("smoothedDepthStreamPath", "streams/smoothed_depth.f32")
-        offset = entry.get("smoothedDepthByteOffset")
-        count = entry.get("smoothedDepthByteCount")
-        width = int(entry.get("smoothedDepthWidth") or entry["width"])
-        height = int(entry.get("smoothedDepthHeight") or entry["height"])
+        if entry.get("smoothedDepthByteOffset") is not None:
+            rel = streams.get("smoothedDepthStreamPath", "streams/smoothed_depth.f32")
+            offset = entry.get("smoothedDepthByteOffset")
+            count = entry.get("smoothedDepthByteCount")
+            width = int(entry.get("smoothedDepthWidth") or entry["width"])
+            height = int(entry.get("smoothedDepthHeight") or entry["height"])
+        elif selected_source == "smoothedSceneDepth":
+            rel = streams.get("depthStreamPath", "streams/depth.f32")
+            offset = entry.get("depthByteOffset")
+            count = entry.get("depthByteCount")
+            width = int(entry["width"])
+            height = int(entry["height"])
+        else:
+            return None
     if offset is None or count is None:
         return None
     data = read_bytes(session_dir / rel, int(offset), int(count))
@@ -192,6 +204,10 @@ def classify_report(frames: list[dict[str, Any]], counters: dict[str, Any] | Non
     confidence_frames = int(confidence.get("confidenceFramesAvailable") or 0)
     written = int(confidence.get("framesWritten") or 0)
 
+    raw_available = any(f.get("rawDepth") is not None for f in frames)
+    smoothed_available = any(f.get("smoothedDepth") is not None for f in frames)
+    if not raw_available and smoothed_available:
+        return "raw_depth_unavailable_smoothed_only"
     if confidence_frames == 0 and written > 0:
         return "uncertain_no_confidence_stream"
     if raw_deltas and max(raw_deltas) >= 5.0:
@@ -301,6 +317,7 @@ def analyze(session_dir: Path) -> dict[str, Any]:
         "sessionId": manifest.get("sessionId"),
         "captureFormat": manifest.get("captureFormat"),
         "diagnostic": manifest.get("diagnostic"),
+        "analysisScope": "controlled_depth_diagnostic" if (manifest.get("diagnostic") or {}).get("enabled") else "standard_session_observation",
         "v2FrameCount": len(frames),
         "firstFrame": frames[0],
         "lastFrame": frames[-1],
@@ -310,6 +327,7 @@ def analyze(session_dir: Path) -> dict[str, Any]:
             "arkit_smoothing_likely": "Raw depth changes are much stronger than smoothed depth changes.",
             "raw_depth_signal_too_small_or_missing": "Raw depth deltas are below a few millimetres in sampled frames.",
             "raw_depth_change_detected": "Raw depth contains measurable geometry change; inspect contact sheet for trace shape.",
+            "raw_depth_unavailable_smoothed_only": "The primary payload is labeled smoothedSceneDepth; no raw sceneDepth payload is available in this session.",
             "uncertain_no_confidence_stream": "Depth was captured, but confidence data is missing.",
         },
     }

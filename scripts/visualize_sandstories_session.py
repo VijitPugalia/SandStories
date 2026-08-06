@@ -67,19 +67,29 @@ def read_v2_depth(session_dir: Path, manifest: dict, entry: dict, source: str):
     import numpy as np
 
     streams = manifest.get("v2Streams") or {}
+    selected_source = entry.get("selectedDepthSource")
     if source == "raw":
+        if selected_source == "smoothedSceneDepth":
+            raise ValueError("Selected frame stores smoothedSceneDepth as the primary payload; raw sceneDepth is unavailable")
         rel = streams.get("depthStreamPath", "streams/depth.f32")
         offset_key = "depthByteOffset"
         count_key = "depthByteCount"
         width = int(entry["width"])
         height = int(entry["height"])
     elif source == "smoothed":
-        rel = streams.get("smoothedDepthStreamPath", "streams/smoothed_depth.f32")
-        offset_key = "smoothedDepthByteOffset"
-        count_key = "smoothedDepthByteCount"
-        width = int(entry.get("smoothedDepthWidth") or entry["width"])
-        height = int(entry.get("smoothedDepthHeight") or entry["height"])
-        if entry.get(offset_key) is None:
+        if entry.get("smoothedDepthByteOffset") is not None:
+            rel = streams.get("smoothedDepthStreamPath", "streams/smoothed_depth.f32")
+            offset_key = "smoothedDepthByteOffset"
+            count_key = "smoothedDepthByteCount"
+            width = int(entry.get("smoothedDepthWidth") or entry["width"])
+            height = int(entry.get("smoothedDepthHeight") or entry["height"])
+        elif selected_source == "smoothedSceneDepth":
+            rel = streams.get("depthStreamPath", "streams/depth.f32")
+            offset_key = "depthByteOffset"
+            count_key = "depthByteCount"
+            width = int(entry["width"])
+            height = int(entry["height"])
+        else:
             raise ValueError("Selected frame has no smoothed depth payload")
     else:
         raw = read_v2_depth(session_dir, manifest, entry, "raw")

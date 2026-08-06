@@ -17,6 +17,7 @@ DerivedData/
 .code-review-graph/
 /test_sessions/
 /server_data/
+/deploy/.env
 __pycache__/
 *.py[cod]
 

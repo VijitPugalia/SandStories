@@ -20,6 +20,12 @@ function fmtBytes(n) {
   return `${v.toFixed(i ? 1 : 0)} ${units[i]}`;
 }
 
+function completionStatusClass(status) {
+  if (status === 'completed') return 'status-valid';
+  if (status === 'failed' || status === 'unavailable') return 'status-invalid';
+  return 'status-other';
+}
+
 async function api(path, options = {}) {
   const res = await fetch(path, { ...options, headers: { ...headers(), ...(options.headers || {}) } });
   if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
@@ -50,16 +56,27 @@ async function refreshPackages() {
   for (const p of rows) {
     const tr = document.createElement('tr');
     const statusClass = p.validation_status === 'valid' ? 'status-valid' : (p.validation_status === 'invalid' ? 'status-invalid' : 'status-other');
+    const completionStatus = p.completion_status || 'disabled';
+    const completionClass = completionStatusClass(completionStatus);
+    const completionActions = completionStatus === 'completed'
+      ? `<button class="secondary" onclick="showCompletion('${p.id}')">AI Report</button>
+         <button class="secondary" onclick="downloadCompletion('${p.id}')">AI ZIP</button>`
+      : ((completionStatus === 'failed' || completionStatus === 'unavailable')
+        ? `<button class="secondary" onclick="retryCompletion('${p.id}')">Retry AI</button>`
+        : '');
     tr.innerHTML = `
       <td class="${statusClass}">${p.validation_status.toUpperCase()}</td>
       <td>${p.session_id || p.filename}</td>
       <td>${p.frame_count ?? '--'}</td>
       <td>${fmtBytes(p.size_bytes)}</td>
+      <td class="${completionClass}" data-completion-status>${completionStatus.toUpperCase()}</td>
       <td>${new Date(p.uploaded_at * 1000).toLocaleString()}</td>
       <td>
         <button class="secondary" onclick="downloadPackage('${p.id}')">Download</button>
         <button class="secondary" onclick="showValidation('${p.id}')">Report</button>
+        ${completionActions}
       </td>`;
+    tr.querySelector('[data-completion-status]').title = p.completion_error || '';
     body.appendChild(tr);
   }
 }
@@ -71,6 +88,25 @@ window.downloadPackage = (id) => {
 window.showValidation = async (id) => {
   const report = await api(`/api/packages/${id}/validation`);
   log('validation_report', report);
+};
+
+window.downloadCompletion = (id) => {
+  location.href = `/api/packages/${id}/completion/download?token=${encodeURIComponent(token)}`;
+};
+
+window.showCompletion = async (id) => {
+  const report = await api(`/api/packages/${id}/completion`);
+  log('any2full_quality_report', report);
+};
+
+window.retryCompletion = async (id) => {
+  try {
+    const result = await api(`/api/packages/${id}/completion/retry`, { method: 'POST' });
+    log('completion queued', result);
+    await refreshPackages();
+  } catch (error) {
+    log('completion retry failed', { error: String(error) });
+  }
 };
 
 async function sendCommand(type) {
@@ -110,6 +146,7 @@ function connectDashboardSocket() {
     log(msg.type, msg);
     if (msg.type === 'devices_changed') await refreshDevices();
     if (msg.type === 'packages_changed') await refreshPackages();
+    if (msg.type === 'completion_changed') await refreshPackages();
     if (msg.type === 'device_message') {
       const m = msg.message || {};
       qs('#capture-state').textContent = m.recording ? 'recording' : (m.state || 'ready');

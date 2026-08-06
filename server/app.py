@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import os
 import time
@@ -12,22 +14,102 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import db
+from .any2full_worker import Any2FullConfig, run_completion
 from .livekit_tokens import create_livekit_token, livekit_url
 from .package_validator import sha256_hex, validate_package
-from .storage import extracted_dir, safe_name, uploads_dir
+from .storage import derived_dir, extracted_dir, safe_name, uploads_dir
 
 
 app = FastAPI(title="SandStories Field Console")
 BASE_DIR = Path(__file__).resolve().parent
+REPOSITORY_ROOT = BASE_DIR.parent
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 device_sockets: dict[str, WebSocket] = {}
 dashboard_sockets: set[WebSocket] = set()
+completion_config: Any2FullConfig | None = None
+completion_worker_task: asyncio.Task[None] | None = None
 
 
 @app.on_event("startup")
-def startup() -> None:
+async def startup() -> None:
+    global completion_config, completion_worker_task
     db.init_db()
+    completion_config = Any2FullConfig.from_env()
+    db.reset_running_completion_jobs()
+    if completion_config.enabled:
+        completion_worker_task = asyncio.create_task(completion_worker_loop())
+
+
+@app.on_event("shutdown")
+async def shutdown() -> None:
+    global completion_worker_task
+    if completion_worker_task is None:
+        return
+    completion_worker_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await completion_worker_task
+    completion_worker_task = None
+
+
+def current_completion_config() -> Any2FullConfig:
+    global completion_config
+    if completion_config is None:
+        completion_config = Any2FullConfig.from_env()
+    return completion_config
+
+
+async def completion_worker_loop() -> None:
+    while True:
+        package = await asyncio.to_thread(db.claim_next_completion_package)
+        if package is None:
+            await asyncio.sleep(1.0)
+            continue
+        package_id = str(package["id"])
+        await broadcast_dashboard(
+            {"type": "completion_changed", "packageId": package_id, "status": "running"}
+        )
+        try:
+            result = await asyncio.to_thread(
+                run_completion,
+                package,
+                current_completion_config(),
+                REPOSITORY_ROOT,
+                derived_dir(),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            await asyncio.to_thread(
+                db.fail_package_completion, package_id, str(exc)
+            )
+            status = "failed"
+        else:
+            await asyncio.to_thread(
+                db.finish_package_completion,
+                package_id,
+                output_path=Path(result["outputPath"]),
+                report_path=Path(result["reportPath"]),
+                artifact_path=Path(result["artifactPath"]),
+            )
+            status = "completed"
+        await broadcast_dashboard(
+            {"type": "completion_changed", "packageId": package_id, "status": status}
+        )
+
+
+def configure_uploaded_package_completion(package_id: str, validation_status: str) -> str:
+    if validation_status != "valid":
+        return "disabled"
+    config = current_completion_config()
+    if not config.enabled:
+        return "disabled"
+    errors = config.readiness_errors(REPOSITORY_ROOT)
+    if errors:
+        db.mark_package_completion_unavailable(package_id, "; ".join(errors))
+        return "unavailable"
+    db.queue_package_completion(package_id)
+    return "queued"
 
 
 def operator_token() -> str:
@@ -69,7 +151,12 @@ def dashboard() -> str:
 
 @app.get("/api/health")
 def health() -> dict[str, Any]:
-    return {"ok": True, "time": time.time(), "livekitUrl": livekit_url()}
+    return {
+        "ok": True,
+        "time": time.time(),
+        "livekitUrl": livekit_url(),
+        "any2full": current_completion_config().public_status(REPOSITORY_ROOT),
+    }
 
 
 @app.post("/api/devices/register")
@@ -210,7 +297,9 @@ async def upload_legacy(
             "duration_seconds": summary.get("durationSeconds"),
         }
     )
+    completion_status = configure_uploaded_package_completion(package_id, report["status"])
     await broadcast_dashboard({"type": "packages_changed"})
+    await broadcast_dashboard({"type": "completion_changed", "packageId": package_id, "status": completion_status})
     return JSONResponse(
         status_code=201 if report["status"] == "valid" else 422,
         content={
@@ -218,6 +307,7 @@ async def upload_legacy(
             "packageId": package_id,
             "sessionId": session_id,
             "validationStatus": report["status"],
+            "completionStatus": completion_status,
             "downloadUrl": f"/api/packages/{package_id}/download",
             "report": report,
         },
@@ -246,6 +336,65 @@ def package_validation(package_id: str, request: Request) -> Any:
     if not package or not package.get("validation_report_path"):
         raise HTTPException(status_code=404, detail="validation report not found")
     return json.loads(Path(package["validation_report_path"]).read_text(encoding="utf-8"))
+
+
+@app.get("/api/packages/{package_id}/completion")
+def package_completion(package_id: str, request: Request) -> Any:
+    check_operator(request)
+    package = db.get_package(package_id)
+    if not package:
+        raise HTTPException(status_code=404, detail="package not found")
+    report_value = package.get("completion_report_path")
+    if not report_value:
+        raise HTTPException(status_code=404, detail="completion report not found")
+    report_path = Path(str(report_value))
+    if not report_path.is_file():
+        raise HTTPException(status_code=404, detail="completion report file not found")
+    return json.loads(report_path.read_text(encoding="utf-8"))
+
+
+@app.get("/api/packages/{package_id}/completion/download")
+def package_completion_download(package_id: str, request: Request) -> FileResponse:
+    check_operator(request)
+    package = db.get_package(package_id)
+    if not package:
+        raise HTTPException(status_code=404, detail="package not found")
+    artifact_value = package.get("completion_artifact_path")
+    if not artifact_value:
+        raise HTTPException(status_code=404, detail="completion artifact not found")
+    path = Path(str(artifact_value))
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="completion artifact file not found")
+    session_name = safe_name(str(package.get("session_id") or package_id))
+    return FileResponse(
+        path,
+        filename=f"{session_name}_any2full.zip",
+        media_type="application/zip",
+    )
+
+
+@app.post("/api/packages/{package_id}/completion/retry")
+async def retry_package_completion(package_id: str, request: Request) -> dict[str, Any]:
+    check_operator(request)
+    package = db.get_package(package_id)
+    if not package:
+        raise HTTPException(status_code=404, detail="package not found")
+    if package.get("validation_status") != "valid":
+        raise HTTPException(status_code=409, detail="only valid packages can be completed")
+    if package.get("completion_status") in {"queued", "running"}:
+        raise HTTPException(status_code=409, detail="completion is already queued or running")
+    config = current_completion_config()
+    errors = config.readiness_errors(REPOSITORY_ROOT)
+    if not config.enabled or errors:
+        raise HTTPException(
+            status_code=409,
+            detail="Any2Full is not ready" + (f": {'; '.join(errors)}" if errors else ""),
+        )
+    db.queue_package_completion(package_id)
+    await broadcast_dashboard(
+        {"type": "completion_changed", "packageId": package_id, "status": "queued"}
+    )
+    return {"ok": True, "packageId": package_id, "completionStatus": "queued"}
 
 
 @app.get("/api/packages/{package_id}/download")

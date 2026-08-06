@@ -6,4 +6,4 @@ rtc:
   udp_port: 7882
   use_external_ip: false
 keys:
-  devkey: secret
+  devkey: sandstories-livekit-development-secret-2026

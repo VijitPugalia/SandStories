@@ -8,7 +8,10 @@ final class SessionFramePipeline: NSObject, @preconcurrency ARSessionDelegate {
     private var isProcessing = false
 
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
-        guard !isProcessing else { return }
+        guard let coordinator,
+              coordinator.isCaptureRecording,
+              !coordinator.isCapturePaused,
+              !isProcessing else { return }
         isProcessing = true
 
         // Extract sendable values synchronously — never retain ARFrame across async boundaries.
@@ -16,7 +19,7 @@ final class SessionFramePipeline: NSObject, @preconcurrency ARSessionDelegate {
         let pixelBuffer = PixelBufferBox(frame.capturedImage)
 
         Task {
-            await coordinator?.processAuxiliaryCaptureFrame(
+            await coordinator.processAuxiliaryCaptureFrame(
                 arTimestamp: timestamp,
                 capturedImage: pixelBuffer
             )

@@ -15,6 +15,7 @@ final class RecordingCoordinator: ObservableObject {
     let locationCaptureManager = LocationCaptureManager()
     let uploadSettings = UploadSettingsStore()
     let uploadManager = SessionUploadManager()
+    let zoomController = CameraZoomController()
 
     private let objectDetector: any StoryObjectDetecting = StubStoryObjectDetector()
 
@@ -33,6 +34,7 @@ final class RecordingCoordinator: ObservableObject {
     @Published private(set) var depthDiagnosticSummary: String?
     @Published var isDepthDiagnosticRawOnly: Bool = false
     @Published private(set) var uploadStatus: String?
+    @Published private(set) var capturePerformanceMode: CapturePerformanceMode = .fullQuality
     @Published var isMeshVisualizationEnabled: Bool = UserDefaults.standard.object(forKey: "isMeshVisualizationEnabled") as? Bool ?? false {
         didSet {
             UserDefaults.standard.set(isMeshVisualizationEnabled, forKey: "isMeshVisualizationEnabled")
@@ -70,6 +72,7 @@ final class RecordingCoordinator: ObservableObject {
         case manual
         case remote
         case gesture
+        case thermal
     }
 
     init() {
@@ -86,6 +89,9 @@ final class RecordingCoordinator: ObservableObject {
         self.handPoseManager.isMarkGestureEnabled = markEnabled
 
         framePipeline.coordinator = self
+        depthCaptureManager.zoomMetadataProvider = { [weak zoomController] in
+            zoomController?.captureMetadata()
+        }
         refreshDestinationLabel()
         
         handPoseManager.onGestureCommand = { [weak self] command in
@@ -182,6 +188,25 @@ final class RecordingCoordinator: ObservableObject {
     func stopFromRemote() async {
         guard isCaptureRecording else { return }
         await stopActiveCaptureSession(reason: .remote)
+    }
+
+    func reduceLoadForThermal() {
+        guard isCaptureRecording else { return }
+        capturePerformanceMode = .thermalReduced
+        isMeshVisualizationEnabled = false
+        depthCaptureManager.updateCapturePolicy(
+            targetCaptureFPS: 15,
+            capturesSmoothedDepth: false,
+            captureProfile: "thermal_reduced",
+            enabledFrameSemantics: ["sceneDepth"]
+        )
+        handPoseManager.setTargetFrameRate(8)
+        warningBanner = "Reduced mode: raw LiDAR and lighter hand tracking until this session ends."
+    }
+
+    func stopForThermal() async {
+        guard isCaptureRecording else { return }
+        await stopActiveCaptureSession(reason: .thermal)
     }
 
     func uploadLastSessionFromRemote() async {
@@ -376,6 +401,7 @@ final class RecordingCoordinator: ObservableObject {
         diagnosticDurationSeconds: Double? = nil
     ) async {
         warningBanner = nil
+        capturePerformanceMode = .fullQuality
         let sessionId = UUID()
         let fm = FileManager.default
         let captureDeltaThreshold = forcedDeltaThresholdMeanU16 ?? depthDeltaThresholdMeanU16
@@ -453,6 +479,7 @@ final class RecordingCoordinator: ObservableObject {
                 streamsDirectory: streamsDir,
                 deltaThresholdMeanU16: captureDeltaThreshold,
                 capturesSmoothedDepth: capturesSmoothedDepth,
+                targetCaptureFPS: 30,
                 captureProfile: captureProfile,
                 enabledFrameSemantics: enabledSemantics,
                 onSaved: nil,
@@ -465,6 +492,8 @@ final class RecordingCoordinator: ObservableObject {
             await handPoseManager.setStrokeOutputURL(strokesURL)
             await handPoseManager.setPaused(false)
             pendingStrokeAlignment = true
+
+            Task { await locationCaptureManager.startCapture() }
 
             audioStartMonotonic = 0
             if recordAudio {
@@ -488,6 +517,8 @@ final class RecordingCoordinator: ObservableObject {
             trayDetectionLocked = false
             auxiliaryFrameCounter = 0
             await handPoseManager.resetGestureState()
+            handPoseManager.setTargetFrameRate(15)
+            handPoseManager.setCaptureActive(true)
             isCaptureRecording = true
             isCapturePaused = false
             depthCaptureManager.setRecording(true)
@@ -526,6 +557,8 @@ final class RecordingCoordinator: ObservableObject {
     }
 
     private func stopCaptureSession() async {
+        handPoseManager.setCaptureActive(false)
+        locationCaptureManager.stopCapture()
         await depthCaptureManager.stopAndFinishRecording()
         isCaptureRecording = false
         isCapturePaused = false
@@ -583,11 +616,15 @@ final class RecordingCoordinator: ObservableObject {
             streamsDirectory: nil as URL?,
             deltaThresholdMeanU16: depthDeltaThresholdMeanU16,
             capturesSmoothedDepth: true,
+            targetCaptureFPS: 30,
             captureProfile: "standard",
             enabledFrameSemantics: ["sceneDepth", "smoothedSceneDepth"],
             onSaved: nil as (@Sendable (TimeInterval, String, String, String?, [Float]?, [Float]?) async -> Void)?,
             onV2Saved: nil as (@Sendable (V2StreamFrameRecord) async -> Void)?
         )
+
+        capturePerformanceMode = .fullQuality
+        handPoseManager.setTargetFrameRate(15)
 
         if let ext = externalScopedURL {
             ext.stopAccessingSecurityScopedResource()

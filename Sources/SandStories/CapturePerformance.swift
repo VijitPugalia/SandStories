@@ -14,7 +14,12 @@ enum ZoomPreset: Double, CaseIterable, Identifiable, Sendable {
     var id: Double { rawValue }
 
     var title: String {
-        rawValue == 1 ? "1×" : String(format: "%g×", rawValue)
+        switch self {
+        case .ultraWide: ".5"
+        case .one: "1×"
+        case .two: "2"
+        case .three: "3"
+        }
     }
 }
 
@@ -31,10 +36,6 @@ final class CameraZoomController: ObservableObject {
     @Published private(set) var supportedPresets: Set<ZoomPreset> = Set(ZoomPreset.allCases)
     @Published private(set) var activeLensDescription = "Wide"
     @Published private(set) var currentDeviceZoomFactor: CGFloat = 1
-    @Published var isLocked = false {
-        didSet { applySwitchingBehavior() }
-    }
-
     private weak var captureDevice: AVCaptureDevice?
     private var lensMonitorTask: Task<Void, Never>?
 
@@ -50,25 +51,16 @@ final class CameraZoomController: ObservableObject {
         }
 
         captureDevice = device
-        let multiplier = displayZoomMultiplier(for: device)
-        supportedPresets = Set(ZoomPreset.allCases.filter { preset in
-            let factor = CGFloat(preset.rawValue) / multiplier
-            return factor >= device.minAvailableVideoZoomFactor && factor <= device.maxAvailableVideoZoomFactor
-        })
-
+        supportedPresets = Set(ZoomPreset.allCases)
+        enableAutomaticLensSwitching(on: device)
         apply(preset: selectedPreset, animated: false)
-        applySwitchingBehavior()
         startLensMonitoring()
     }
 
     func select(_ preset: ZoomPreset) {
-        guard supportedPresets.contains(preset), !isLocked else { return }
+        guard supportedPresets.contains(preset) else { return }
         selectedPreset = preset
         apply(preset: preset, animated: true)
-    }
-
-    func setLocked(_ locked: Bool) {
-        isLocked = locked
     }
 
     func captureMetadata() -> ZoomCaptureMetadata {
@@ -89,12 +81,20 @@ final class CameraZoomController: ObservableObject {
 
         do {
             try device.lockForConfiguration()
+            defer { device.unlockForConfiguration() }
+
+            if device.primaryConstituentDeviceSwitchingBehavior != .unsupported {
+                device.setPrimaryConstituentDeviceSwitchingBehavior(
+                    .auto,
+                    restrictedSwitchingBehaviorConditions: []
+                )
+            }
+            device.cancelVideoZoomRamp()
             if animated {
-                device.ramp(toVideoZoomFactor: factor, withRate: 5)
+                device.ramp(toVideoZoomFactor: factor, withRate: 8)
             } else {
                 device.videoZoomFactor = factor
             }
-            device.unlockForConfiguration()
             currentDeviceZoomFactor = factor
             refreshActiveLens()
         } catch {
@@ -107,22 +107,30 @@ final class CameraZoomController: ObservableObject {
         if #available(iOS 18.0, *) {
             return max(device.displayVideoZoomFactorMultiplier, 0.0001)
         }
+
+        let hasUltraWide = device.constituentDevices.contains {
+            $0.deviceType == .builtInUltraWideCamera
+        }
+        if hasUltraWide,
+           let firstSwitchFactor = device.virtualDeviceSwitchOverVideoZoomFactors.first?.doubleValue,
+           firstSwitchFactor > 0 {
+            return 1 / CGFloat(firstSwitchFactor)
+        }
         return 1
     }
 
-    private func applySwitchingBehavior() {
-        guard let device = captureDevice,
-              device.primaryConstituentDeviceSwitchingBehavior != .unsupported else { return }
+    private func enableAutomaticLensSwitching(on device: AVCaptureDevice) {
+        guard device.primaryConstituentDeviceSwitchingBehavior != .unsupported else { return }
 
         do {
             try device.lockForConfiguration()
+            defer { device.unlockForConfiguration() }
             device.setPrimaryConstituentDeviceSwitchingBehavior(
-                isLocked ? .locked : .auto,
+                .auto,
                 restrictedSwitchingBehaviorConditions: []
             )
-            device.unlockForConfiguration()
         } catch {
-            // Zoom still works on devices that don't expose constituent locking.
+            activeLensDescription = "Automatic lens switching unavailable"
         }
     }
 

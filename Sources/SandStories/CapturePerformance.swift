@@ -50,7 +50,7 @@ final class CameraZoomController: ObservableObject {
         }
 
         captureDevice = device
-        let multiplier = max(device.displayVideoZoomFactorMultiplier, 0.0001)
+        let multiplier = displayZoomMultiplier(for: device)
         supportedPresets = Set(ZoomPreset.allCases.filter { preset in
             let factor = CGFloat(preset.rawValue) / multiplier
             return factor >= device.minAvailableVideoZoomFactor && factor <= device.maxAvailableVideoZoomFactor
@@ -72,7 +72,7 @@ final class CameraZoomController: ObservableObject {
     }
 
     func captureMetadata() -> ZoomCaptureMetadata {
-        let multiplier = max(captureDevice?.displayVideoZoomFactorMultiplier ?? 1, 0.0001)
+        let multiplier = displayZoomMultiplier(for: captureDevice)
         let deviceFactor = captureDevice?.videoZoomFactor ?? currentDeviceZoomFactor
         return ZoomCaptureMetadata(
             displayZoomFactor: Double(deviceFactor * multiplier),
@@ -83,7 +83,7 @@ final class CameraZoomController: ObservableObject {
 
     private func apply(preset: ZoomPreset, animated: Bool) {
         guard let device = captureDevice else { return }
-        let multiplier = max(device.displayVideoZoomFactorMultiplier, 0.0001)
+        let multiplier = displayZoomMultiplier(for: device)
         let requested = CGFloat(preset.rawValue) / multiplier
         let factor = min(max(requested, device.minAvailableVideoZoomFactor), device.maxAvailableVideoZoomFactor)
 
@@ -100,6 +100,14 @@ final class CameraZoomController: ObservableObject {
         } catch {
             activeLensDescription = "Zoom unavailable"
         }
+    }
+
+    private func displayZoomMultiplier(for device: AVCaptureDevice?) -> CGFloat {
+        guard let device else { return 1 }
+        if #available(iOS 18.0, *) {
+            return max(device.displayVideoZoomFactorMultiplier, 0.0001)
+        }
+        return 1
     }
 
     private func applySwitchingBehavior() {

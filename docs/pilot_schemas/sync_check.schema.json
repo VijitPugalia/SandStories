@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sandstories.local/schemas/sync_check.schema.json",
+  "title": "SandStories cross-modal sync annotation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["marker", "rgbTimeSeconds", "depthTimeSeconds", "audioTimeSeconds"],
+  "properties": {
+    "marker": {
+      "type": "string",
+      "enum": ["clap", "tap"]
+    },
+    "rgbTimeSeconds": {
+      "type": "number",
+      "minimum": 0
+    },
+    "depthTimeSeconds": {
+      "type": "number",
+      "minimum": 0
+    },
+    "audioTimeSeconds": {
+      "type": "number",
+      "minimum": 0
+    },
+    "evidenceNotes": {
+      "type": "string"
+    }
+  }
+}

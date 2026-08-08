@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sandstories.local/schemas/conditions.schema.json",
+  "title": "SandStories pilot conditions",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["sensorHeightCm", "lighting", "surfaceType", "replicate"],
+  "properties": {
+    "sensorHeightCm": {
+      "type": "integer",
+      "enum": [60, 80, 100]
+    },
+    "lighting": {
+      "type": "string",
+      "enum": ["shade", "direct_sun", "overcast", "indoor"]
+    },
+    "surfaceType": {
+      "type": "string",
+      "enum": ["dry", "wet"]
+    },
+    "replicate": {
+      "type": "integer",
+      "minimum": 1
+    }
+  }
+}

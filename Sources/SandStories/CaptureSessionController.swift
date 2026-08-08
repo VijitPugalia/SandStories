@@ -95,7 +95,7 @@ actor CaptureSessionController {
                 format: "v2_streams_float32",
                 maxDepthMeters: maxDepthMeters,
                 deltaMeanAbsThresholdU16: deltaThreshold,
-                note: "v2 stores retained depth frames as contiguous little-endian Float32 meters in streams/depth.f32"
+                note: "streams/depth.f32 stores the selected primary ARKit depth source as contiguous little-endian Float32 meters; raw sceneDepth is preferred and smoothedSceneDepth is the fallback"
             ),
             depthFrames: [],
             rgbFrames: [],
@@ -112,7 +112,7 @@ actor CaptureSessionController {
                 depthFormat: "float32_little_endian_meters_contiguous",
                 smoothedDepthStreamPath: "streams/smoothed_depth.f32",
                 confidenceStreamPath: "streams/confidence.bin",
-                note: "v2 stores unsmoothed ARKit sceneDepth in depth.f32, smoothedSceneDepth in smoothed_depth.f32 when available, plus RGB video and confidence indexed by v2_frames.jsonl"
+                note: "v2_frames.jsonl selectedDepthSource is authoritative: depth.f32 stores raw sceneDepth when available or smoothedSceneDepth as fallback; smoothed_depth.f32 is populated only when raw is primary and a smoothed sidecar is available"
             ),
             objectDetectionProvenance: "postprocessed_yolo_world_v1",
             boundarySamplesFile: "boundary_samples.jsonl",

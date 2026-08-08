@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sandstories.local/schemas/completeness_rating.schema.json",
+  "title": "SandStories manual completeness rating",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["completenessRating", "evidenceNotes", "ratedBy", "ratedAt"],
+  "properties": {
+    "completenessRating": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 5
+    },
+    "evidenceNotes": {
+      "type": "string",
+      "minLength": 1
+    },
+    "ratedBy": {
+      "type": "string",
+      "minLength": 1
+    },
+    "ratedAt": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

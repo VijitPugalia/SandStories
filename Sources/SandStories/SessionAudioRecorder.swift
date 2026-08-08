@@ -5,6 +5,9 @@ import Foundation
 @MainActor
 final class SessionAudioRecorder: NSObject {
     private var recorder: AVAudioRecorder?
+    private var recordingStartedUptime: TimeInterval?
+    private var pauseStartedUptime: TimeInterval?
+    private var accumulatedPauseDuration: TimeInterval = 0
     private(set) var permissionDenied: Bool = false
 
     func requestPermission() async -> Bool {
@@ -46,23 +49,44 @@ final class SessionAudioRecorder: NSObject {
             throw NSError(domain: "SessionAudioRecorder", code: 1, userInfo: [NSLocalizedDescriptionKey: "record() failed"])
         }
         self.recorder = recorder
+        recordingStartedUptime = ProcessInfo.processInfo.systemUptime
+        pauseStartedUptime = nil
+        accumulatedPauseDuration = 0
     }
 
     func pauseRecording() {
-        recorder?.pause()
+        guard let recorder, recorder.isRecording else { return }
+        pauseStartedUptime = ProcessInfo.processInfo.systemUptime
+        recorder.pause()
     }
 
     func resumeRecording() {
-        recorder?.record()
+        guard let recorder, !recorder.isRecording else { return }
+        if let pauseStartedUptime {
+            accumulatedPauseDuration += max(
+                0,
+                ProcessInfo.processInfo.systemUptime - pauseStartedUptime
+            )
+        }
+        self.pauseStartedUptime = nil
+        recorder.record()
     }
 
     func stopRecording() -> (duration: TimeInterval, sampleRate: Double, channels: Int)? {
         guard let recorder else { return nil }
-        let duration = recorder.currentTime
+        let now = ProcessInfo.processInfo.systemUptime
+        if let pauseStartedUptime {
+            accumulatedPauseDuration += max(0, now - pauseStartedUptime)
+        }
+        let wallDuration = max(0, now - (recordingStartedUptime ?? now) - accumulatedPauseDuration)
+        let duration = max(recorder.currentTime, wallDuration)
         let rate = recorder.settings[AVSampleRateKey] as? Double ?? 44_100
         let ch = recorder.settings[AVNumberOfChannelsKey] as? Int ?? 1
         recorder.stop()
         self.recorder = nil
+        recordingStartedUptime = nil
+        pauseStartedUptime = nil
+        accumulatedPauseDuration = 0
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         return (duration, rate, ch)
     }

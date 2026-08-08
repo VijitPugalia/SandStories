@@ -15,7 +15,9 @@ iPhone ARKit + LiDAR  ──▶  Session Writer  ──▶  manifest.json + dept
 
 The app runs on a physical LiDAR-capable iPhone/iPad and records packaged sessions into app storage or an external Files/USB-C destination. The current v2 package format stores one RGB video stream, one contiguous high-fidelity Float32 depth stream, one optional confidence stream, frame metadata, optional AAC audio, 3D stroke data, location metadata, and placeholder object-detection/tray-boundary hooks.
 
-Depth capture records ARKit `sceneDepth` as the primary payload when available, retains `smoothedSceneDepth` as an optional sidecar, falls back to smoothed depth when raw depth is unavailable, skips warmup/low-quality frames, and records diagnostics such as selected depth source, valid pixel ratio, depth min/median/max, confidence availability, confidence counts, depth/RGB resolution, and depth-scaled camera intrinsics. The capture UI uses a floating glass control surface with tap-driven pause/resume/record controls, inline gesture settings, and readable storage/status pills over the AR view.
+Azure Kinect DK is also supported through a Windows recorder/converter path that preserves the source MKV and emits the canonical `v2_streams` package. See [`docs/AZURE_KINECT_RECORDING.md`](docs/AZURE_KINECT_RECORDING.md). Azure RGB-D sessions retain explicit device provenance and are not presented as ARKit/LiDAR measurements.
+
+Depth capture records ARKit `sceneDepth` as the primary payload when available, retains `smoothedSceneDepth` as an optional sidecar, falls back to smoothed depth when raw depth is unavailable, skips warmup/low-quality frames, and records diagnostics such as selected depth source, valid pixel ratio, depth min/median/max, confidence availability, confidence counts, depth/RGB resolution, and depth-scaled camera intrinsics. The capture UI includes an iPhone Camera-style `0.5× / 1× / 2× / 3×` RGB zoom rail, optional physical-lens locking, actual active-lens feedback, and per-frame zoom metadata. LiDAR depth remains sensor-based rather than optically zoomed. Thermal alerts let the operator reduce to raw depth at 15 fps plus 8 fps hand tracking, keep full quality, or stop and save.
 
 There is also a **Benchmark** button that runs a 15-second depth-only capture test and reports AR frame rate, saved frame rate, motion skips, warmup/low-quality skips, no-depth frames, stream encode/write time, selected depth source, valid depth ratio, and total depth/RGB size.
 
@@ -46,6 +48,7 @@ flowchart LR
 | LiDAR-capable iPhone/iPad | Required for ARKit scene depth capture |
 | iOS 17+ device | Physical device only for real capture |
 | Storytelling surface | Subject being captured |
+| Azure Kinect DK (optional) | Windows path; requires external power, USB 3 and Sensor SDK 1.4.2 |
 | Optional external SSD or Files folder | Used for longer sessions or easier transfer |
 | Mac/Linux/Windows machine | Used for Python visualization and offline analysis |
 
@@ -56,6 +59,14 @@ This project is a Swift Package Manager app packaged with `xtool`.
 ```bash
 ./scripts/build_release_ipa.sh
 ```
+
+To view and edit the frontend interactively, connect the LiDAR iPhone, then run:
+
+```bash
+xtool dev run --usb
+```
+
+The SwiftUI screen is in `Sources/SandStories/ContentView.swift`; the zoom rail is in `Sources/SandStories/CameraZoomRail.swift`. A physical device is required for the real ARKit/LiDAR view. Before the first build, xtool must have a Darwin Swift SDK registered (for example, `xtool sdk install /path/to/Xcode.xip`).
 
 The build script:
 
@@ -101,7 +112,7 @@ sequenceDiagram
 Key source files:
 
 - `SandStoriesApp.swift` — SwiftUI app entry point.
-- `ContentView.swift` — main AR UI, liquid glass capture controls, inline gesture settings, benchmark button, export sheet.
+- `ContentView.swift` and `CameraZoomRail.swift` — main AR UI, lightweight camera controls, RGB zoom/lens lock, inline gesture settings, benchmark button, and export sheet.
 - `ARSessionDelegateMultiplexer.swift` — fans ARKit delegate callbacks out to capture subsystems.
 - `RecordingCoordinator.swift` — owns start/stop flow, storage destination, audio, location, tray/object hooks, and benchmark mode.
 - `DepthCaptureManager.swift` — writes v2 RGB/depth/confidence streams, selects raw/smoothed depth, records diagnostics, and tracks throughput metrics.
@@ -292,6 +303,17 @@ SandStories/
   Package.swift                         Swift package definition
   xtool.yml                             iOS bundle identifier config
 ```
+
+## August 2026 Pilot
+
+Use these artifacts for the controlled pilot before starting the full 36-session study:
+
+- [Controlled pilot protocol](docs/PILOT_PROTOCOL_2026-08.md)
+- [Pilot results report template](docs/PILOT_RESULTS_REPORT_TEMPLATE.md)
+- [Depth diagnostic protocol](docs/DEPTH_DIAGNOSTIC_PROTOCOL.md)
+- [Pilot sidecar schemas](docs/pilot_schemas/)
+
+The pilot analysis is descriptive only. Treat Godot, v24b and Any2Full output as derived development evidence rather than LiDAR ground truth.
 
 ## Roadmap
 

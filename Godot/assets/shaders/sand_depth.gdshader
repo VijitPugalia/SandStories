@@ -1,5 +1,5 @@
 shader_type spatial;
-render_mode cull_back, depth_draw_opaque;
+render_mode cull_back, depth_draw_opaque, unshaded;
 
 uniform float arg_1 = 1.0f;
 uniform float arg_2 = 1.0f;
@@ -10,6 +10,12 @@ uniform float displacement_scale = 1.0f;
 uniform float baseline_height_offset = 0.0f;
 uniform float material_strength = 0.0f;
 uniform float depth_view_slope_strength = 1.35f;
+
+// Camera-independent world-space lighting controls.
+// Direction points from the surface toward the fixed key light.
+uniform vec3 fixed_light_direction_world = vec3(-0.45, 0.82, 0.35);
+uniform float fixed_light_strength = 0.50;
+uniform float fixed_ambient_strength = 0.68;
 
 // Physical depth encoding contract parameters
 uniform float detail_scale_m = 0.004;
@@ -145,14 +151,24 @@ void fragment() {
 	if (abs(h_r - h_l) < noise_threshold_m) dh_dx = 0.0;
 	if (abs(h_d - h_u) < noise_threshold_m) dh_dy = 0.0;
 
-	vec3 depth_slope_normal = normalize(vec3(-dh_dx * 2.5, 1.0, -dh_dy * 2.5));
+	// The sampled slope is in the plane's local space, while fragment NORMAL
+    // and Godot's LIGHT vector are in view space. Transform this direction into
+    // view space so moving the camera does not rotate the apparent lighting.
+    vec3 depth_slope_normal_local = normalize(vec3(-dh_dx * 2.5, 1.0, -dh_dy * 2.5));
+    vec3 depth_slope_normal_world = normalize(
+        MODEL_NORMAL_MATRIX * depth_slope_normal_local
+    );
 
-	vec3 flat_normal = normalize(NORMAL);
-	vec3 geometric_normal = normalize(cross(dFdx(VERTEX), dFdy(VERTEX)));
-	if (dot(geometric_normal, flat_normal) < 0.0) {
-		geometric_normal = -geometric_normal;
+	vec3 flat_normal_world = normalize(MODEL_NORMAL_MATRIX * vec3(0.0, 1.0, 0.0));
+	vec3 geometric_normal_view = normalize(cross(dFdx(VERTEX), dFdy(VERTEX)));
+	vec3 geometric_normal_world = normalize(mat3(INV_VIEW_MATRIX) * geometric_normal_view);
+	if (dot(geometric_normal_world, flat_normal_world) < 0.0) {
+		geometric_normal_world = -geometric_normal_world;
 	}
-	NORMAL = normalize(mix(depth_slope_normal, geometric_normal, 0.35));
+	vec3 surface_normal_world = normalize(
+		mix(depth_slope_normal_world, geometric_normal_world, 0.35)
+	);
+	NORMAL = normalize(mat3(VIEW_MATRIX) * surface_normal_world);
 
 	// Depth Relief & Noise-Floor Suppressed Cavity Occlusion
 	float relief = (h - background) * 0.85;
@@ -173,16 +189,27 @@ void fragment() {
 	vec3 groove_mapped = mapped_color * (1.0 - rgb_groove * 0.40);
 
 	float depth_view = mix(0.32, 1.0, 1.0 - smoothstep(0.0, 0.62, material_strength));
-	float slope = clamp(1.0 - dot(NORMAL, flat_normal), 0.0, 1.0);
+	float slope = clamp(1.0 - dot(surface_normal_world, flat_normal_world), 0.0, 1.0);
 	float slope_shade = clamp(
 		1.04 - slope * depth_view_slope_strength,
 		0.50,
 		1.08
 	);
 
-	ALBEDO = (groove_mapped * shade - vec3(depth_cavity * 0.28)) * mix(1.0, slope_shade, depth_view);
+	vec3 fixed_light_direction = normalize(fixed_light_direction_world);
+	float fixed_diffuse = max(dot(surface_normal_world, fixed_light_direction), 0.0);
+	float stable_light = clamp(
+		fixed_ambient_strength + fixed_diffuse * fixed_light_strength,
+		0.0,
+		1.18
+	);
+
+	vec3 depth_shaded_color = (
+		groove_mapped * shade - vec3(depth_cavity * 0.28)
+	) * mix(1.0, slope_shade, depth_view);
+	ALBEDO = max(depth_shaded_color * stable_light, vec3(0.0));
 	ROUGHNESS = mix(0.86, 0.94, depth_view);
-	SPECULAR = mix(0.28, 0.12, depth_view);
+	SPECULAR = 0.0;
 }
 
 //void light() {

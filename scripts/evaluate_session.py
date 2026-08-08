@@ -27,6 +27,7 @@ def parse_args():
     parser.add_argument("session_dir", type=Path, nargs="?", help="Session folder to evaluate")
     parser.add_argument("--batch", type=Path, help="Directory containing multiple session folders")
     parser.add_argument("--csv", type=Path, help="Output summary CSV file (requires --batch)")
+    parser.add_argument("--output-dir", type=Path, help="Write derived reports outside the raw session package")
     return parser.parse_args()
 
 def load_json_lines(path: Path) -> list:
@@ -98,7 +99,155 @@ def object_confidences(records: list) -> list[float]:
             confidences.append(float(record.get("confidence", 0.0)))
     return confidences
 
-def evaluate_session(session_dir: Path) -> dict:
+def load_json(path: Path, default=None):
+    if not path.is_file():
+        return default
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return default
+
+
+def _nonempty_file(path: Path) -> bool:
+    try:
+        return path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def _validate_offsets(records: list, stream_path: Path, offset_key: str, count_key: str) -> list[str]:
+    errors = []
+    if not records:
+        return errors
+    try:
+        stream_size = stream_path.stat().st_size
+    except OSError:
+        return errors
+
+    for index, record in enumerate(records):
+        offset = record.get(offset_key)
+        count = record.get(count_key)
+        if offset is None and count is None:
+            continue
+        if not isinstance(offset, int) or not isinstance(count, int) or offset < 0 or count <= 0:
+            errors.append(f"frame {index + 1} has invalid {offset_key}/{count_key}")
+            continue
+        if offset + count > stream_size:
+            errors.append(
+                f"frame {index + 1} {offset_key}+{count_key} exceeds {stream_path.name} size"
+            )
+    return errors
+
+
+def validate_package(session_dir: Path, manifest: dict, depth_frames: list) -> dict:
+    """Validate the minimum immutable package required for an accepted pilot session."""
+    errors = []
+    warnings = []
+    v2_streams = manifest.get("v2Streams") or {}
+
+    depth_path = session_dir / v2_streams.get("depthStreamPath", "streams/depth.f32")
+    rgb_path = session_dir / v2_streams.get("rgbVideoPath", "streams/rgb.mp4")
+    audio_info = manifest.get("audio") or {}
+    audio_path = session_dir / audio_info.get("relativePath", "audio.m4a")
+
+    for label, path in (("depth", depth_path), ("RGB", rgb_path), ("audio", audio_path)):
+        if not _nonempty_file(path):
+            errors.append(f"{label} stream is missing or empty: {path.relative_to(session_dir)}")
+
+    if not depth_frames:
+        errors.append("frame metadata is missing or empty")
+    else:
+        timestamps = [record.get("monotonicElapsedSeconds") for record in depth_frames]
+        if any(not isinstance(value, (int, float)) for value in timestamps):
+            errors.append("frame metadata contains missing or invalid monotonic timestamps")
+        elif any(current < previous for previous, current in zip(timestamps, timestamps[1:])):
+            errors.append("frame metadata timestamps are not monotonic")
+
+    errors.extend(_validate_offsets(depth_frames, depth_path, "depthByteOffset", "depthByteCount"))
+
+    confidence_rel = v2_streams.get("confidenceStreamPath")
+    if confidence_rel:
+        confidence_path = session_dir / confidence_rel
+        if _nonempty_file(confidence_path):
+            errors.extend(
+                _validate_offsets(
+                    depth_frames,
+                    confidence_path,
+                    "confidenceByteOffset",
+                    "confidenceByteCount",
+                )
+            )
+        else:
+            warnings.append(f"confidence stream is missing or empty: {confidence_rel}")
+
+    smoothed_rel = v2_streams.get("smoothedDepthStreamPath")
+    if smoothed_rel:
+        smoothed_path = session_dir / smoothed_rel
+        has_smoothed_references = any(
+            record.get("smoothedDepthByteOffset") is not None
+            or record.get("smoothedDepthByteCount") is not None
+            for record in depth_frames
+        )
+        if has_smoothed_references:
+            if not _nonempty_file(smoothed_path):
+                errors.append(f"smoothed-depth metadata references an empty stream: {smoothed_rel}")
+            else:
+                errors.extend(
+                    _validate_offsets(
+                        depth_frames,
+                        smoothed_path,
+                        "smoothedDepthByteOffset",
+                        "smoothedDepthByteCount",
+                    )
+                )
+        elif smoothed_path.is_file() and not _nonempty_file(smoothed_path):
+            warnings.append("smoothed-depth sidecar is empty and correctly treated as unavailable")
+
+    conditions = load_json(session_dir / "conditions.json")
+    required_conditions = ("sensorHeightCm", "lighting", "surfaceType", "replicate")
+    if not isinstance(conditions, dict):
+        errors.append("conditions.json is missing or unreadable")
+        conditions = {}
+    else:
+        missing = [name for name in required_conditions if conditions.get(name) in (None, "")]
+        if missing:
+            errors.append("conditions.json is missing: " + ", ".join(missing))
+
+    return {
+        "packageValid": not errors,
+        "validationErrors": errors,
+        "validationWarnings": warnings,
+        "conditions": conditions,
+    }
+
+
+def evaluate_sync(session_dir: Path) -> dict:
+    sync = load_json(session_dir / "sync_check.json")
+    if not isinstance(sync, dict):
+        return {
+            "status": "not_annotated",
+            "within250ms": None,
+            "spanMilliseconds": None,
+        }
+    keys = ("rgbTimeSeconds", "depthTimeSeconds", "audioTimeSeconds")
+    values = [sync.get(key) for key in keys]
+    if any(not isinstance(value, (int, float)) for value in values):
+        return {
+            "status": "invalid_annotation",
+            "within250ms": False,
+            "spanMilliseconds": None,
+        }
+    span_ms = (max(values) - min(values)) * 1000.0
+    return {
+        "status": "measured",
+        "within250ms": span_ms <= 250.0,
+        "spanMilliseconds": span_ms,
+        "marker": sync.get("marker", "clap/tap"),
+    }
+
+
+def evaluate_session(session_dir: Path, output_dir: Path | None = None) -> dict:
     session_dir = session_dir.resolve()
     manifest_path = session_dir / "manifest.json"
     if not manifest_path.is_file():
@@ -187,7 +336,7 @@ def evaluate_session(session_dir: Path) -> dict:
                 })
             last_pt_t = pt_t
             
-    gesture_continuity = (valid_stroke_dur / total_stroke_dur) if total_stroke_dur > 0 else 1.0
+    gesture_continuity = (valid_stroke_dur / total_stroke_dur) if total_stroke_dur > 0 else 0.0
     
     # 4. Boundary Detection Confidence
     boundary_file = manifest.get("boundarySamplesFile", "boundary_samples.jsonl")
@@ -241,6 +390,11 @@ def evaluate_session(session_dir: Path) -> dict:
                 "duration": missing_tail,
             })
             
+    package_validation = validate_package(session_dir, manifest, depth_frames)
+    sync_observation = evaluate_sync(session_dir)
+    session_dir = (output_dir or session_dir).resolve()
+    session_dir.mkdir(parents=True, exist_ok=True)
+
     # Write dropouts.jsonl
     dropouts_path = session_dir / "dropouts.jsonl"
     with dropouts_path.open("w", encoding="utf-8") as df:
@@ -267,7 +421,9 @@ def evaluate_session(session_dir: Path) -> dict:
             "boundarySampleCount": len(boundary_records),
             "audioObservedDurationSeconds": audio_observed_duration,
             "audioExpectedDurationSeconds": audio_expected_duration,
+            "sync": sync_observation,
         },
+        **package_validation,
         "dropoutCount": len(dropouts)
     }
     
@@ -299,7 +455,8 @@ def main():
         results = []
         for s_dir in sessions:
             try:
-                rep = evaluate_session(s_dir)
+                session_output_dir = args.output_dir / s_dir.name if args.output_dir else None
+                rep = evaluate_session(s_dir, output_dir=session_output_dir)
                 results.append((s_dir, rep))
                 print(f"  Passed: {s_dir.name}")
             except Exception as e:
@@ -317,7 +474,14 @@ def main():
                     "gestureContinuity",
                     "boundaryDetection",
                     "audioContinuity",
-                    "dropoutCount"
+                    "dropoutCount",
+                    "packageValid",
+                    "syncWithin250Ms",
+                    "sensorHeightCm",
+                    "lighting",
+                    "surfaceType",
+                    "replicate",
+                    "validationErrors",
                 ])
                 for s_dir, rep in results:
                     metrics = rep["metrics"]
@@ -330,13 +494,20 @@ def main():
                         metrics["gestureContinuity"],
                         metrics["boundaryDetection"],
                         metrics["audioContinuity"],
-                        rep["dropoutCount"]
+                        rep["dropoutCount"],
+                        rep["packageValid"],
+                        rep["observations"]["sync"]["within250ms"],
+                        rep["conditions"].get("sensorHeightCm"),
+                        rep["conditions"].get("lighting"),
+                        rep["conditions"].get("surfaceType"),
+                        rep["conditions"].get("replicate"),
+                        "; ".join(rep["validationErrors"]),
                     ])
             print(f"Wrote summary CSV to {args.csv}")
             
     elif args.session_dir:
         try:
-            rep = evaluate_session(args.session_dir)
+            rep = evaluate_session(args.session_dir, output_dir=args.output_dir)
             print(json.dumps(rep, indent=2))
         except Exception as e:
             print(f"Error: {e}", file=sys.stderr)

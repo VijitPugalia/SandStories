@@ -28,13 +28,10 @@ final class LocationCaptureManager: NSObject, ObservableObject, @preconcurrency 
     private let locationManager = CLLocationManager()
     private let fileWriter = LocationFileWriter()
 
-    private var didStartCapture = false
     private var sessionStartTime: TimeInterval = 0
     private var didPersistSessionLocation = false
     private var sessionLocation: LocationFileWriter.SessionLocation?
-
     private var authorizationContinuation: CheckedContinuation<CLAuthorizationStatus, Never>?
-    private var firstLocationContinuation: CheckedContinuation<CLLocation, Never>?
 
     override init() {
         super.init()
@@ -42,21 +39,24 @@ final class LocationCaptureManager: NSObject, ObservableObject, @preconcurrency 
         locationManager.desiredAccuracy = kCLLocationAccuracyBest
     }
 
+    /// Requests one fresh fix per capture session. Continuous GPS updates are unnecessary heat.
     func startCapture() async {
-        guard !didStartCapture else { return }
-        didStartCapture = true
         sessionStartTime = Date().timeIntervalSince1970
-
-        // Kick off permission flow and wait until we have the first coordinate fix.
+        didPersistSessionLocation = false
+        sessionLocation = nil
         coordinateDisplay = "Location: requesting..."
+
         let status = await ensureAuthorization()
         switch status {
         case .authorizedAlways, .authorizedWhenInUse:
-            locationManager.startUpdatingLocation()
-            _ = await waitForFirstLocation()
+            locationManager.requestLocation()
         default:
             coordinateDisplay = "Location: unavailable (permission not granted)"
         }
+    }
+
+    func stopCapture() {
+        locationManager.stopUpdatingLocation()
     }
 
     private func ensureAuthorization() async -> CLAuthorizationStatus {
@@ -67,18 +67,12 @@ final class LocationCaptureManager: NSObject, ObservableObject, @preconcurrency 
         case .denied, .restricted:
             return currentStatus
         case .notDetermined:
-            return await withCheckedContinuation { cont in
-                authorizationContinuation = cont
+            return await withCheckedContinuation { continuation in
+                authorizationContinuation = continuation
                 locationManager.requestWhenInUseAuthorization()
             }
         @unknown default:
             return currentStatus
-        }
-    }
-
-    private func waitForFirstLocation() async -> CLLocation? {
-        await withCheckedContinuation { cont in
-            firstLocationContinuation = cont
         }
     }
 
@@ -103,50 +97,38 @@ final class LocationCaptureManager: NSObject, ObservableObject, @preconcurrency 
     }
 
     private func handleAuthorizationStatus(_ status: CLAuthorizationStatus) {
-        if let cont = authorizationContinuation {
+        if let continuation = authorizationContinuation {
             authorizationContinuation = nil
-            cont.resume(returning: status)
+            continuation.resume(returning: status)
         }
     }
 
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-        guard let location = locations.last else { return }
+        guard let location = locations.last, location.horizontalAccuracy >= 0 else { return }
 
+        locationManager.stopUpdatingLocation()
         updateDisplay(with: location)
 
-        if !didPersistSessionLocation {
-            didPersistSessionLocation = true
-            let persisted = LocationFileWriter.SessionLocation(
-                capturedAt: sessionStartTime,
-                latitude: location.coordinate.latitude,
-                longitude: location.coordinate.longitude,
-                altitude: (location.altitude.isFinite && location.altitude > -1000) ? location.altitude : nil
-            )
-            sessionLocation = persisted
-            Task {
-                try? await fileWriter.writeSessionLocation(persisted)
-            }
-        }
-
-        if let cont = firstLocationContinuation {
-            firstLocationContinuation = nil
-            cont.resume(returning: location)
+        guard !didPersistSessionLocation else { return }
+        didPersistSessionLocation = true
+        let persisted = LocationFileWriter.SessionLocation(
+            capturedAt: sessionStartTime,
+            latitude: location.coordinate.latitude,
+            longitude: location.coordinate.longitude,
+            altitude: (location.altitude.isFinite && location.altitude > -1000) ? location.altitude : nil
+        )
+        sessionLocation = persisted
+        Task {
+            try? await fileWriter.writeSessionLocation(persisted)
         }
     }
 
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        locationManager.stopUpdatingLocation()
         coordinateDisplay = "Location: unavailable (\(error.localizedDescription))"
-
-        if let cont = firstLocationContinuation {
-            firstLocationContinuation = nil
-            // Resume with a dummy location isn't helpful; just resume with a non-nil sentinel isn't possible.
-            // Instead, stop waiting by resuming with a zero coordinate.
-            cont.resume(returning: CLLocation(latitude: 0, longitude: 0))
-        }
     }
 
     func getSessionLocation() -> LocationFileWriter.SessionLocation? {
         sessionLocation
     }
 }
-

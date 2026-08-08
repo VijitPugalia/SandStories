@@ -187,6 +187,11 @@ actor DepthCaptureWriter {
         }
     }
 
+    func updateCapturePolicy(captureProfile: String, enabledFrameSemantics: [String]) {
+        self.captureProfile = captureProfile
+        self.enabledFrameSemantics = enabledFrameSemantics
+    }
+
     func resetBenchmarkMetrics() {
         benchmarkMetrics = DepthCaptureBenchmarkSnapshot()
     }
@@ -225,7 +230,8 @@ actor DepthCaptureWriter {
         confidenceMap: PixelBufferBox?,
         capturedImage: PixelBufferBox,
         cameraIntrinsics: simd_float3x3,
-        cameraTransform: simd_float4x4
+        cameraTransform: simd_float4x4,
+        zoomMetadata: ZoomCaptureMetadata?
     ) async {
         guard isRecording else { return }
         benchmarkMetrics.writerCaptureCalls += 1
@@ -360,6 +366,9 @@ actor DepthCaptureWriter {
                         confidenceMediumCount: confidenceHistogram?.medium,
                         confidenceHighCount: confidenceHistogram?.high,
                         rgbPresentationTimeSeconds: rgbPTS,
+                        rgbDisplayZoomFactor: zoomMetadata?.displayZoomFactor,
+                        rgbDeviceZoomFactor: zoomMetadata?.deviceZoomFactor,
+                        rgbActiveLens: zoomMetadata?.activeLens,
                         cameraTransformColumnMajor: transformArray,
                         cameraIntrinsicsColumnMajor: intrinsicsArray,
                         cameraIntrinsicsReference: "depthResolution",
@@ -542,21 +551,37 @@ actor DepthCaptureWriter {
     }
 
     private static func depthSampleStats(_ depthValues: [Float]) -> DepthSampleStats {
-        var valid: [Float] = []
-        valid.reserveCapacity(depthValues.count)
-        for value in depthValues where value.isFinite && value > 0 {
-            valid.append(value)
-        }
-        guard !depthValues.isEmpty, !valid.isEmpty else {
+        guard !depthValues.isEmpty else {
             return .init(validPixelRatio: 0, minMeters: nil, medianMeters: nil, maxMeters: nil)
         }
-        valid.sort()
-        let median = valid[valid.count / 2]
+
+        var validCount = 0
+        var minimum = Float.greatestFiniteMagnitude
+        var maximum = -Float.greatestFiniteMagnitude
+        var medianSample: [Float] = []
+        medianSample.reserveCapacity(depthValues.count / 4)
+
+        for (index, value) in depthValues.enumerated() where value.isFinite && value > 0 {
+            validCount += 1
+            minimum = min(minimum, value)
+            maximum = max(maximum, value)
+            if index.isMultiple(of: 4) {
+                medianSample.append(value)
+            }
+        }
+
+        guard validCount > 0 else {
+            return .init(validPixelRatio: 0, minMeters: nil, medianMeters: nil, maxMeters: nil)
+        }
+        if medianSample.isEmpty {
+            medianSample.append(minimum)
+        }
+        medianSample.sort()
         return .init(
-            validPixelRatio: Float(valid.count) / Float(depthValues.count),
-            minMeters: valid.first,
-            medianMeters: median,
-            maxMeters: valid.last
+            validPixelRatio: Float(validCount) / Float(depthValues.count),
+            minMeters: minimum,
+            medianMeters: medianSample[medianSample.count / 2],
+            maxMeters: maximum
         )
     }
 
@@ -841,6 +866,9 @@ final class DepthCaptureManager: NSObject, @preconcurrency ARSessionDelegate {
     private var confidencePixelFormat: String?
     private var confidenceBytesPerRow: Int?
     private var capturesSmoothedDepth: Bool = true
+    private var targetCaptureFPS: Double = 30
+    private var lastCaptureTimestamp: TimeInterval?
+    var zoomMetadataProvider: (() -> ZoomCaptureMetadata?)?
 
     var isCurrentlyRecording: Bool {
         return isRecording
@@ -954,6 +982,7 @@ final class DepthCaptureManager: NSObject, @preconcurrency ARSessionDelegate {
         streamsDirectory: URL? = nil,
         deltaThresholdMeanU16: Float,
         capturesSmoothedDepth: Bool = true,
+        targetCaptureFPS: Double = 30,
         captureProfile: String = "standard",
         enabledFrameSemantics: [String] = ["sceneDepth", "smoothedSceneDepth"],
         onSaved: (@Sendable (TimeInterval, String, String, String?, [Float]?, [Float]?) async -> Void)?,
@@ -965,6 +994,8 @@ final class DepthCaptureManager: NSObject, @preconcurrency ARSessionDelegate {
         let sd = streamsDirectory
         let th = deltaThresholdMeanU16
         self.capturesSmoothedDepth = capturesSmoothedDepth
+        self.targetCaptureFPS = max(1, targetCaptureFPS)
+        lastCaptureTimestamp = nil
         let profile = captureProfile
         let semantics = enabledFrameSemantics
         let cb = onSaved
@@ -984,8 +1015,28 @@ final class DepthCaptureManager: NSObject, @preconcurrency ARSessionDelegate {
         }
     }
 
+    func updateCapturePolicy(
+        targetCaptureFPS: Double,
+        capturesSmoothedDepth: Bool,
+        captureProfile: String,
+        enabledFrameSemantics: [String]
+    ) {
+        self.targetCaptureFPS = max(1, targetCaptureFPS)
+        self.capturesSmoothedDepth = capturesSmoothedDepth
+        lastCaptureTimestamp = nil
+        Task {
+            await writer.updateCapturePolicy(
+                captureProfile: captureProfile,
+                enabledFrameSemantics: enabledFrameSemantics
+            )
+        }
+    }
+
     func setRecording(_ isRecording: Bool) {
         self.isRecording = isRecording
+        if isRecording {
+            lastCaptureTimestamp = nil
+        }
         let writer = self.writer
         Task { await writer.setRecording(isRecording) }
     }
@@ -997,6 +1048,12 @@ final class DepthCaptureManager: NSObject, @preconcurrency ARSessionDelegate {
         }
 
         guard shouldCapture else { return }
+
+        let minimumFrameInterval = 1.0 / targetCaptureFPS
+        if let lastCaptureTimestamp, frame.timestamp - lastCaptureTimestamp < minimumFrameInterval {
+            return
+        }
+        lastCaptureTimestamp = frame.timestamp
 
         let rawDepthData = frame.sceneDepth
         let smoothedDepthData = frame.smoothedSceneDepth
@@ -1049,6 +1106,7 @@ final class DepthCaptureManager: NSObject, @preconcurrency ARSessionDelegate {
         let capturedImage = PixelBufferBox(frame.capturedImage)
         let cameraIntrinsics = frame.camera.intrinsics
         let cameraTransform = frame.camera.transform
+        let zoomMetadata = zoomMetadataProvider?()
 
         Task {
             await writer.capture(
@@ -1059,7 +1117,8 @@ final class DepthCaptureManager: NSObject, @preconcurrency ARSessionDelegate {
                 confidenceMap: confidenceMap,
                 capturedImage: capturedImage,
                 cameraIntrinsics: cameraIntrinsics,
-                cameraTransform: cameraTransform
+                cameraTransform: cameraTransform,
+                zoomMetadata: zoomMetadata
             )
             self.captureInFlight = false
         }

@@ -7,6 +7,7 @@ struct ContentView: View {
     @StateObject private var experimentSettings = ExperimentServerSettings()
     @StateObject private var remoteControlManager = RemoteControlManager()
     @StateObject private var liveKitPreviewManager = LiveKitPreviewManager()
+    @StateObject private var thermalMonitor = ThermalMonitor()
     @State private var shareItems: [Any] = []
     @State private var isShowingShareSheet = false
     @State private var showStorageSheet = false
@@ -30,7 +31,8 @@ struct ContentView: View {
     var body: some View {
         ZStack {
             ARViewContainer(
-                recordingCoordinator: recordingCoordinator
+                recordingCoordinator: recordingCoordinator,
+                liveKitPreviewManager: liveKitPreviewManager
             )
             .ignoresSafeArea()
 
@@ -65,20 +67,21 @@ struct ContentView: View {
                     .padding(.horizontal, 28)
                     .padding(.vertical, 24)
                     .background {
-                        VisualEffectBlur(style: .systemUltraThinMaterial)
-                            .clipShape(RoundedRectangle(cornerRadius: 24))
+                        RoundedRectangle(cornerRadius: 24, style: .continuous)
+                            .fill(Color.black.opacity(0.78))
                     }
                     .overlay {
-                        RoundedRectangle(cornerRadius: 24)
-                            .stroke(Color.white.opacity(0.25), lineWidth: 1)
+                        RoundedRectangle(cornerRadius: 24, style: .continuous)
+                            .stroke(Color.white.opacity(0.18), lineWidth: 0.75)
                     }
-                    .shadow(color: Color.black.opacity(0.3), radius: 25, y: 10)
+                    .shadow(color: Color.black.opacity(0.18), radius: 4, y: 2)
                 }
                 .transition(.opacity.combined(with: .scale(scale: 0.95)))
                 .allowsHitTesting(false)
                 .zIndex(1)
             }
         }
+        .preferredColorScheme(.dark)
         .sheet(isPresented: $showStorageSheet) {
             StorageDestinationSheet(
                 destinationLabel: recordingCoordinator.destinationLabel,
@@ -121,11 +124,33 @@ struct ContentView: View {
         .sheet(isPresented: $isShowingShareSheet) {
             ActivityView(items: shareItems)
         }
+        .confirmationDialog(
+            "iPhone is getting hot",
+            isPresented: $thermalMonitor.isPromptPresented,
+            titleVisibility: .visible
+        ) {
+            Button("Reduce load & continue") {
+                thermalMonitor.acknowledge()
+                recordingCoordinator.reduceLoadForThermal()
+                liveKitPreviewManager.suspendForThermal()
+            }
+            Button("Keep full quality") {
+                thermalMonitor.acknowledge()
+            }
+            Button("Stop & save", role: .destructive) {
+                thermalMonitor.acknowledge()
+                Task { await recordingCoordinator.stopForThermal() }
+            }
+        } message: {
+            Text("SandStories can reduce LiDAR and hand-tracking work, keep full quality, or safely finish this session.")
+        }
         .onChange(of: recordingCoordinator.isCaptureRecording) { _, isOn in
             if isOn {
                 recordingStartDate = Date()
+                thermalMonitor.evaluateForActiveSession()
             } else {
                 recordingStartDate = nil
+                thermalMonitor.resetForNextSession()
             }
         }
         .onAppear {
@@ -286,7 +311,7 @@ struct ContentView: View {
     private var sessionStatusHUD: some View {
         VStack(alignment: .trailing, spacing: 4) {
             if recordingCoordinator.isCaptureRecording, let start = recordingStartDate {
-                TimelineView(.periodic(from: .now, by: 0.2)) { timeline in
+                TimelineView(.periodic(from: .now, by: 1)) { timeline in
                     Text(formattedDuration(from: start, to: timeline.date))
                         .font(.caption.monospacedDigit().weight(.semibold))
                         .foregroundStyle(Color(uiColor: .label))
@@ -341,8 +366,11 @@ struct ContentView: View {
 
     private var meshVisualizationPill: some View {
         let isSupported = ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh)
+        let isAvailable = isSupported &&
+            !recordingCoordinator.isCaptureRecording &&
+            recordingCoordinator.capturePerformanceMode == .fullQuality
         return Button {
-            guard isSupported else { return }
+            guard isAvailable else { return }
             withAnimation(.spring(duration: 0.25, bounce: 0.16)) {
                 recordingCoordinator.isMeshVisualizationEnabled.toggle()
             }
@@ -362,8 +390,8 @@ struct ContentView: View {
             .glassPanel(cornerRadius: 16, blurStyle: .systemThinMaterial, shadowRadius: 8, shadowYOffset: 3)
         }
         .buttonStyle(.plain)
-        .disabled(!isSupported)
-        .opacity(isSupported ? 1 : 0.42)
+        .disabled(!isAvailable)
+        .opacity(isAvailable ? 1 : 0.42)
         .accessibilityLabel(recordingCoordinator.isMeshVisualizationEnabled ? "Turn mesh visualization off" : "Turn mesh visualization on")
         .accessibilityHint("Shows or hides the LiDAR scene mesh overlay.")
     }
@@ -408,18 +436,25 @@ struct ContentView: View {
     // MARK: - Bottom
 
     private var bottomChrome: some View {
-        HStack(spacing: 8) {
-            clearToolbarButton
-            pauseFloatingButton
-            recordFloatingButton
-            benchmarkToolbarButton
-            diagnosticToolbarButton
-            moreToolbarButton
+        VStack(spacing: 8) {
+            CameraZoomRail(
+                zoomController: recordingCoordinator.zoomController,
+                isRecording: recordingCoordinator.isCaptureRecording
+            )
+
+            HStack(spacing: 8) {
+                clearToolbarButton
+                pauseFloatingButton
+                recordFloatingButton
+                benchmarkToolbarButton
+                diagnosticToolbarButton
+                moreToolbarButton
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 8)
+            .frame(maxWidth: 430)
+            .liquidGlassDock()
         }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 8)
-        .frame(maxWidth: 430)
-        .liquidGlassDock()
         .padding(.horizontal, 16)
         .padding(.bottom, 10)
         .safeAreaPadding(.bottom, 8)
@@ -624,31 +659,16 @@ struct ContentView: View {
         .background {
             if isSelected {
                 Capsule(style: .continuous)
-                    .fill(Color(uiColor: .systemFill).opacity(0.28))
-                    .background {
-                        VisualEffectBlur(style: .systemUltraThinMaterial)
-                            .clipShape(Capsule(style: .continuous))
-                    }
+                    .fill(Color.white.opacity(isHighlighted ? 0.18 : 0.10))
                     .overlay {
                         Capsule(style: .continuous)
-                            .stroke(
-                                LinearGradient(
-                                    colors: [
-                                        Color.white.opacity(0.58),
-                                        Color.white.opacity(0.10),
-                                        Color.black.opacity(0.10)
-                                    ],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                ),
-                                lineWidth: 1
-                            )
+                            .stroke(Color.white.opacity(0.16), lineWidth: 0.75)
                     }
             }
         }
         .opacity(tint ? 1 : 0.74)
         .contentShape(Capsule(style: .continuous))
-        .animation(.spring(response: 0.34, dampingFraction: 0.78), value: isSelected)
+        .animation(.easeOut(duration: 0.18), value: isSelected)
     }
 
     // MARK: - Export (same zip + activity flow as before)
@@ -675,18 +695,24 @@ struct ContentView: View {
 
 struct ARViewContainer: UIViewRepresentable {
     @ObservedObject var recordingCoordinator: RecordingCoordinator
+    @ObservedObject var liveKitPreviewManager: LiveKitPreviewManager
 
     @MainActor
     final class Coordinator {
         let multiplexer: ARSessionDelegateMultiplexer
+        let previewForwarder: ARFramePreviewForwarder
         var meshVisualizationEnabled: Bool?
+        var performanceMode: CapturePerformanceMode?
+        var isCaptureRecording: Bool?
 
         init(
             depth: DepthCaptureManager,
             hand: HandPoseCaptureManager,
-            pipeline: SessionFramePipeline
+            pipeline: SessionFramePipeline,
+            previewManager: LiveKitPreviewManager
         ) {
-            multiplexer = ARSessionDelegateMultiplexer([depth, hand, pipeline])
+            previewForwarder = ARFramePreviewForwarder(previewManager: previewManager)
+            multiplexer = ARSessionDelegateMultiplexer([depth, hand, pipeline, previewForwarder])
         }
     }
 
@@ -695,7 +721,8 @@ struct ARViewContainer: UIViewRepresentable {
         Coordinator(
             depth: recordingCoordinator.depthCaptureManager,
             hand: recordingCoordinator.handPoseManager,
-            pipeline: recordingCoordinator.framePipeline
+            pipeline: recordingCoordinator.framePipeline,
+            previewManager: liveKitPreviewManager
         )
     }
 
@@ -703,31 +730,50 @@ struct ARViewContainer: UIViewRepresentable {
     func makeUIView(context: Context) -> ARView {
         let arView = ARView(frame: .zero, cameraMode: .ar, automaticallyConfigureSession: false)
 
+        arView.renderOptions.insert(.disableCameraGrain)
+        arView.renderOptions.insert(.disableMotionBlur)
+        arView.renderOptions.insert(.disableDepthOfField)
+        arView.renderOptions.insert(.disableGroundingShadows)
+        arView.renderOptions.insert(.disableAREnvironmentLighting)
+        arView.renderOptions.insert(.disablePersonOcclusion)
+
         arView.session.delegate = context.coordinator.multiplexer
         recordingCoordinator.handPoseManager.setARView(arView)
 
         configureAndRunSession(
             for: arView,
             meshVisualizationEnabled: recordingCoordinator.isMeshVisualizationEnabled,
+            performanceMode: recordingCoordinator.capturePerformanceMode,
+            isCaptureRecording: recordingCoordinator.isCaptureRecording,
             options: [.resetTracking, .removeExistingAnchors]
         )
         context.coordinator.meshVisualizationEnabled = recordingCoordinator.isMeshVisualizationEnabled
+        context.coordinator.performanceMode = recordingCoordinator.capturePerformanceMode
+        context.coordinator.isCaptureRecording = recordingCoordinator.isCaptureRecording
         recordingCoordinator.depthCaptureManager.setRecording(recordingCoordinator.isCaptureRecording)
-
-        Task { await recordingCoordinator.locationCaptureManager.startCapture() }
         return arView
     }
 
     @MainActor
     func updateUIView(_ uiView: ARView, context: Context) {
         recordingCoordinator.depthCaptureManager.setRecording(recordingCoordinator.isCaptureRecording)
-        if context.coordinator.meshVisualizationEnabled != recordingCoordinator.isMeshVisualizationEnabled {
+
+        let needsReconfiguration =
+            context.coordinator.meshVisualizationEnabled != recordingCoordinator.isMeshVisualizationEnabled ||
+            context.coordinator.performanceMode != recordingCoordinator.capturePerformanceMode ||
+            context.coordinator.isCaptureRecording != recordingCoordinator.isCaptureRecording
+
+        if needsReconfiguration {
             configureAndRunSession(
                 for: uiView,
                 meshVisualizationEnabled: recordingCoordinator.isMeshVisualizationEnabled,
+                performanceMode: recordingCoordinator.capturePerformanceMode,
+                isCaptureRecording: recordingCoordinator.isCaptureRecording,
                 options: []
             )
             context.coordinator.meshVisualizationEnabled = recordingCoordinator.isMeshVisualizationEnabled
+            context.coordinator.performanceMode = recordingCoordinator.capturePerformanceMode
+            context.coordinator.isCaptureRecording = recordingCoordinator.isCaptureRecording
         }
     }
 
@@ -740,11 +786,23 @@ struct ARViewContainer: UIViewRepresentable {
     private func configureAndRunSession(
         for arView: ARView,
         meshVisualizationEnabled: Bool,
+        performanceMode: CapturePerformanceMode,
+        isCaptureRecording: Bool,
         options: ARSession.RunOptions
     ) {
         guard ARWorldTrackingConfiguration.isSupported else { return }
 
         let configuration = ARWorldTrackingConfiguration()
+        configuration.videoHDRAllowed = false
+
+        let thirtyFPSFormats = ARWorldTrackingConfiguration.supportedVideoFormats.filter {
+            $0.framesPerSecond == 30
+        }
+        if let videoFormat = thirtyFPSFormats.first(where: {
+            max($0.imageResolution.width, $0.imageResolution.height) <= 1_920
+        }) ?? thirtyFPSFormats.last {
+            configuration.videoFormat = videoFormat
+        }
 
         let supportsSceneDepth = ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth)
         let supportsSmoothedSceneDepth = ARWorldTrackingConfiguration.supportsFrameSemantics(.smoothedSceneDepth)
@@ -752,8 +810,10 @@ struct ARViewContainer: UIViewRepresentable {
         if supportsSceneDepth {
             configuration.frameSemantics.insert(.sceneDepth)
         }
-
-        if supportsSmoothedSceneDepth {
+        if performanceMode == .fullQuality, supportsSmoothedSceneDepth {
+            configuration.frameSemantics.insert(.smoothedSceneDepth)
+        }
+        if !supportsSceneDepth, supportsSmoothedSceneDepth {
             configuration.frameSemantics.insert(.smoothedSceneDepth)
         }
 
@@ -761,7 +821,13 @@ struct ARViewContainer: UIViewRepresentable {
             recordingCoordinator.warningBanner = "LiDAR depth unavailable on this device; use a LiDAR-capable iPhone or iPad for depth capture."
         }
 
-        if meshVisualizationEnabled, ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh) {
+        let canShowMesh =
+            meshVisualizationEnabled &&
+            !isCaptureRecording &&
+            performanceMode == .fullQuality &&
+            ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh)
+
+        if canShowMesh {
             configuration.sceneReconstruction = .mesh
             arView.debugOptions.insert(.showSceneUnderstanding)
         } else {
@@ -769,9 +835,9 @@ struct ARViewContainer: UIViewRepresentable {
         }
 
         arView.session.run(configuration, options: options)
+        recordingCoordinator.zoomController.prepareForARSession()
     }
 }
-
 // MARK: - Gesture UI Helpers
 
 extension ContentView {

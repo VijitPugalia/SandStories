@@ -18,15 +18,67 @@ enum TrayBoundaryDetector {
         CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
 
-        guard let base = CVPixelBufferGetBaseAddress(pixelBuffer) else { return nil }
-        let rowBytes = CVPixelBufferGetBytesPerRow(pixelBuffer)
         let format = CVPixelBufferGetPixelFormatType(pixelBuffer)
+        let pixelAt: (Int, Int) -> SIMD3<Float>
+        switch format {
+        case kCVPixelFormatType_32BGRA, kCVPixelFormatType_32ARGB:
+            guard let base = CVPixelBufferGetBaseAddress(pixelBuffer) else { return nil }
+            let rowBytes = CVPixelBufferGetBytesPerRow(pixelBuffer)
+            let isARGB = format == kCVPixelFormatType_32ARGB
+            pixelAt = { x, y in
+                let row = base.advanced(by: y * rowBytes).assumingMemoryBound(to: UInt8.self)
+                let offset = x * 4
+                if isARGB {
+                    return SIMD3<Float>(
+                        Float(row[offset + 1]) / 255,
+                        Float(row[offset + 2]) / 255,
+                        Float(row[offset + 3]) / 255
+                    )
+                }
+                return SIMD3<Float>(
+                    Float(row[offset + 2]) / 255,
+                    Float(row[offset + 1]) / 255,
+                    Float(row[offset]) / 255
+                )
+            }
 
-        // Common AR capture: 420f or BGRA — handle BGRA-like 4-byte pixels.
-        guard format == kCVPixelFormatType_32BGRA || format == kCVPixelFormatType_32ARGB else {
-            // TODO: add YUV path if needed for your device pipeline.
+        case kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+             kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange:
+            guard CVPixelBufferGetPlaneCount(pixelBuffer) >= 2,
+                  let yBase = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0),
+                  let cbcrBase = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 1)
+            else { return nil }
+
+            let yRowBytes = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0)
+            let cbcrRowBytes = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 1)
+            let isVideoRange = format == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+            pixelAt = { x, y in
+                let yRow = yBase.advanced(by: y * yRowBytes).assumingMemoryBound(to: UInt8.self)
+                let cbcrRow = cbcrBase
+                    .advanced(by: (y / 2) * cbcrRowBytes)
+                    .assumingMemoryBound(to: UInt8.self)
+                let chromaOffset = (x / 2) * 2
+                let yRaw = Float(yRow[x])
+                let chromaScale: Float = isVideoRange ? 224 : 255
+                let luminance = isVideoRange ? max(0, (yRaw - 16) / 219) : yRaw / 255
+                let cb = (Float(cbcrRow[chromaOffset]) - 128) / chromaScale
+                let cr = (Float(cbcrRow[chromaOffset + 1]) - 128) / chromaScale
+                let r = luminance + 1.402 * cr
+                let g = luminance - 0.344136 * cb - 0.714136 * cr
+                let b = luminance + 1.772 * cb
+                return SIMD3<Float>(
+                    max(0, min(1, r)),
+                    max(0, min(1, g)),
+                    max(0, min(1, b))
+                )
+            }
+
+        default:
             return nil
         }
+
+
+        // Common AR capture: 420f or BGRA — handle BGRA-like 4-byte pixels.
 
         let marginX = max(4, width / 10)
         let marginY = max(4, height / 10)
@@ -35,12 +87,11 @@ enum TrayBoundaryDetector {
             var sum = SIMD2<Float>(0, 0)
             var w: Float = 0
             for y in minY..<maxY {
-                let row = base.advanced(by: y * rowBytes).assumingMemoryBound(to: UInt8.self)
                 for x in minX..<maxX {
-                    let o = x * 4
-                    let b = Float(row[o]) / 255
-                    let g = Float(row[o + 1]) / 255
-                    let r = Float(row[o + 2]) / 255
+                    let rgb = pixelAt(x, y)
+                    let r = rgb.x
+                    let g = rgb.y
+                    let b = rgb.z
                     let v = max(r, max(g, b))
                     let mn = min(r, min(g, b))
                     let s = v > 0.001 ? (v - mn) / v : 0

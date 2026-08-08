@@ -6,7 +6,7 @@ Analyze SandStories field validation results:
 - Perform Kruskal-Wallis non-parametric tests on the 5 metrics across independent variables:
   * Sensor Height (60cm vs 80cm vs 100cm)
   * Lighting (sunlight vs shade vs overcast)
-  * Surface Type (dry_loose vs wet_compacted)
+  * Surface Type (dry vs wet)
 - Generate a Markdown report detailing the findings.
 
 Usage:
@@ -24,6 +24,7 @@ def parse_args():
     parser.add_argument("--csv", type=Path, required=True, help="Path to field_validation.csv")
     parser.add_argument("--sessions-dir", type=Path, required=True, help="Directory containing session folders")
     parser.add_argument("--out", type=Path, default=Path("stats_report.md"), help="Path to write stats_report.md")
+    parser.add_argument("--descriptive-only", action="store_true", help="Suppress inferential tests for the pilot sprint")
     return parser.parse_args()
 
 def run_kruskal(groups):
@@ -61,12 +62,13 @@ def main():
         return 1
         
     # Check if scipy is available
-    has_scipy = True
-    try:
-        from scipy import stats
-    except ImportError:
-        has_scipy = False
-        print("Warning: scipy not installed. Kruskal-Wallis p-values will be skipped. Run 'pip install scipy' to enable.", file=sys.stderr)
+    has_scipy = False
+    if not args.descriptive_only:
+        try:
+            from scipy import stats
+            has_scipy = True
+        except ImportError:
+            print("Warning: scipy not installed. Kruskal-Wallis p-values will be skipped. Run 'pip install scipy' to enable.", file=sys.stderr)
         
     rows = []
     with args.csv.open("r", encoding="utf-8") as f:
@@ -141,10 +143,13 @@ def main():
         metrics_keys.append("completenessRating")
         
     report = []
-    report.append("# SandStories Field Validation Statistical Report")
+    title = "# SandStories Pilot Descriptive Results" if args.descriptive_only else "# SandStories Field Validation Statistical Report"
+    report.append(title)
     report.append(f"\nAnalyzed {len(data)} sessions from {args.csv.name}.\n")
     
-    if not has_scipy:
+    if args.descriptive_only:
+        report.append("> [!IMPORTANT]\n> Pilot data are reported descriptively only. No inferential significance claims are made.\n")
+    elif not has_scipy:
         report.append("> [!WARNING]\n> Scipy not installed. Skipping Kruskal-Wallis p-values. Showing means and group sizes only.\n")
         
     # Overall summary table
@@ -200,13 +205,13 @@ def main():
                     row_cells.append("N/A")
             report.append("| " + " | ".join(row_cells) + " |")
             
-            # Run Kruskal-Wallis
-            h_stat, p_val = run_kruskal(groups_list)
-            kruskal_results[mk] = (h_stat, p_val)
+            if not args.descriptive_only:
+                h_stat, p_val = run_kruskal(groups_list)
+                kruskal_results[mk] = (h_stat, p_val)
             
         report.append("")
         
-        if has_scipy:
+        if not args.descriptive_only and has_scipy:
             report.append(f"### Kruskal-Wallis Test Results ({iv})")
             report.append("| Metric | H-Statistic | p-value | Significance |")
             report.append("| :--- | :---: | :---: | :--- |")
@@ -223,11 +228,10 @@ def main():
                 report.append(f"| {mk} | {h_str} | {p_str} | {sig} |")
             report.append("")
             
-    # Qualitative trade-offs section per RP
-    report.append("## Qualitative Trade-offs & Guidelines")
-    report.append("- **Sensor Height**: Lower sensor heights (60cm) maximize depth resolution but restrict the field of view and tracking area for gestures.")
-    report.append("- **Lighting Conditions**: Direct sunlight causes infrared saturation, leading to depth stream frames being dropped. Overcast/shade minimizes dropouts.")
-    report.append("- **Surface conditions**: Wet compacted sand darkens the surface, potentially reducing contrast for tray boundary color detection.")
+    report.append("## Interpretation Notes")
+    report.append("- Treat height, lighting and surface differences as observed pilot patterns, not population effects.")
+    report.append("- Record failures explicitly, including whether 5 mm and 10 mm references exceed flat-surface noise.")
+    report.append("- Treat v24b and Any2Full reconstructions as derived visual evidence, not measured LiDAR ground truth.")
     
     # Write output
     with args.out.open("w", encoding="utf-8") as f:

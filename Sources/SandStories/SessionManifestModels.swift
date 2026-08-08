@@ -208,6 +208,12 @@ struct V2StreamFrameRecord: Codable, Sendable {
     var confidenceMediumCount: Int? = nil
     var confidenceHighCount: Int? = nil
     var rgbPresentationTimeSeconds: Double?
+    /// Displayed camera zoom (0.5, 1, 2, 3) at the time this frame was captured.
+    var rgbDisplayZoomFactor: Double? = nil
+    /// Underlying virtual AVCaptureDevice zoom factor.
+    var rgbDeviceZoomFactor: Double? = nil
+    /// Actual active constituent camera, or the wide-camera crop used for 2×.
+    var rgbActiveLens: String? = nil
     var cameraTransformColumnMajor: [Float]
     var cameraIntrinsicsColumnMajor: [Float]
     var cameraIntrinsicsReference: String? = nil

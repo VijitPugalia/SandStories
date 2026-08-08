@@ -2,8 +2,11 @@
   "schemaVersion": 1,
   "id": "sandstories_proposal_v1",
   "title": "Digitising Sand Stories",
+  "ethicsApprovedForDataCollection": false,
   "stage1": {
     "design": "online_between_subjects",
+    "assignmentUnit": "condition_x_story",
+    "stimuli": [],
     "conditions": [
       "baseline",
       "no_audio",
@@ -15,6 +18,20 @@
   },
   "stage2": {
     "design": "in_person_within_subject_observational",
+    "conditions": [
+      "relations_hidden",
+      "relations_visible"
+    ],
+    "counterbalanceOrders": [
+      {
+        "id": "hidden_then_visible",
+        "sequence": ["relations_hidden", "relations_visible"]
+      },
+      {
+        "id": "visible_then_hidden",
+        "sequence": ["relations_visible", "relations_hidden"]
+      }
+    ],
     "groups": [
       "Non-expert",
       "Practitioner",

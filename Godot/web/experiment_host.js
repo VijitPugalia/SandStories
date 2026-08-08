@@ -134,9 +134,11 @@
 	];
 
 	const query = new URLSearchParams(window.location.search);
+	const EXPERIMENT_API = "/api/experiment";
 	const requestedStage = query.get("stage") || query.get("study") || "stage1";
 	const stage = requestedStage === "stage2" ? "stage2" : "stage1";
 	const researcherMode = query.get("researcher") === "1";
+	const pilotMode = researcherMode || query.get("pilot") === "1";
 	const requestedCondition = query.get("condition");
 
 	const defaultSession = new URL(
@@ -147,10 +149,11 @@
 		window.location.href,
 	).href;
 	const initialSession = query.get("session") || defaultSession;
-	const trainingSession = query.get("training_session") || initialSession;
+	const requestedTrainingSession = query.get("training_session") || "";
 
 	const elements = {
 		frame: document.getElementById("godot-frame"),
+		submissionStatus: document.getElementById("submission-status"),
 		viewerCard: document.querySelector(".viewer-card"),
 		viewerLoading: document.getElementById("viewer-loading"),
 		viewerControls: document.getElementById("viewer-controls"),
@@ -193,6 +196,7 @@
 	let sequence = 0;
 	let timelineDragging = false;
 	let toastTimer = 0;
+	let navigationBusy = false;
 
 	const study = {
 		stage,
@@ -205,12 +209,16 @@
 			requestedCondition in CONDITIONS ? requestedCondition : ""
 		),
 		condition: stage === "stage2" ? "stage2" : "baseline",
+		assignedCondition: stage === "stage2" ? "stage2" : "",
 		participantCode: query.get("participant") || "",
 		protocol: FALLBACK_PROTOCOL,
 		sessionUrl: initialSession,
-		trainingSessionUrl: trainingSession,
+		trainingSessionUrl: requestedTrainingSession || initialSession,
+		activeSessionUrl: initialSession,
 		session: {},
+		trainingSession: {},
 		readiness: {
+			checked: false,
 			ready: false,
 			warnings: ["Session metadata is still loading."],
 		},
@@ -220,8 +228,28 @@
 		events: [],
 		bridgeReady: false,
 		latestGodotState: null,
+		playback: {
+			started: false,
+			maxProgress: 0,
+		},
 		trainingSurfaceMaterialStrength: null,
 		submitted: false,
+		assignmentMethod: stage === "stage2" ? "server_stage2" : "pending",
+		stage2Order: null,
+		lastLocalSavedAt: 0,
+		remote: {
+			available: false,
+			runId: "",
+			resumeToken: "",
+			revision: 0,
+			eventCursor: 0,
+			pendingEventBatch: null,
+			saveTimer: 0,
+			syncPromise: null,
+			dirty: false,
+			completed: false,
+			lastError: "",
+		},
 	};
 
 	function makeRunId() {
@@ -280,7 +308,7 @@
 
 	function frameUrl() {
 		const url = new URL("index.html", window.location.href);
-		url.searchParams.set("session", study.sessionUrl);
+		url.searchParams.set("session", study.activeSessionUrl);
 		url.searchParams.set("autoplay", "0");
 		url.searchParams.set("embed", "1");
 		url.searchParams.set("parent_origin", window.location.origin);
@@ -315,11 +343,48 @@
 		return result;
 	}
 
+	async function seekAndWait(seconds, timeoutMs = 12000) {
+		const before = study.latestGodotState || await sendCommand("get_state");
+		const target = Math.min(Math.max(Number(seconds || 0), 0), Number(
+			before.duration || seconds || 0,
+		));
+		let state = await sendCommand("seek", { seconds: target });
+		updateGodotState(state);
+		const frameCount = Number(state.frameCount || 0);
+		const frameInterval = Number(state.duration || 0) / Math.max(frameCount - 1, 1);
+		const frameShouldChange = Boolean(
+			frameCount > 1
+			&& Math.abs(target - Number(before.time || 0)) > frameInterval * 1.25,
+		);
+		const deadline = Date.now() + timeoutMs;
+		while (
+			frameShouldChange
+			&& Number(state.frameIndex) === Number(before.frameIndex)
+			&& Date.now() < deadline
+		) {
+			await waitFor(100);
+			state = await sendCommand("get_state");
+			updateGodotState(state);
+		}
+		if (
+			frameShouldChange
+			&& Number(state.frameIndex) === Number(before.frameIndex)
+		) {
+			throw new Error("The requested surface frame did not finish loading.");
+		}
+		return state;
+	}
+
 	function reportError(error) {
 		const message = error?.message || String(error);
 		elements.status.dataset.state = "error";
 		elements.status.querySelector("span:last-child").textContent = message;
 		appendRuntimeEvent(`ERROR · ${message}`);
+	}
+
+	function setSubmissionStatus(state, message) {
+		elements.submissionStatus.dataset.state = state;
+		elements.submissionStatus.querySelector("span:last-child").textContent = message;
 	}
 
 	function appendRuntimeEvent(text) {
@@ -337,11 +402,15 @@
 
 	function recordStudyEvent(eventName, payload = {}) {
 		const entry = {
+			clientEventId: `event-${Date.now()}-${study.events.length + 1}`,
 			event: eventName,
 			unixTimeMs: Date.now(),
 			runId: study.runId,
 			stage: study.stage,
 			condition: study.condition,
+			assignedCondition: study.assignedCondition,
+			assignmentMethod: study.assignmentMethod,
+			stage2Order: study.stage2Order,
 			phase: STEPS[study.stepIndex].id,
 			playhead: Number(study.latestGodotState?.time || 0),
 			payload,
@@ -367,24 +436,101 @@
 		return `sandstories:study:${study.stage}:${participant}`;
 	}
 
-	function saveDraft() {
+	function draftPayload(includeEvents = true) {
 		const draft = {
 			schemaVersion: 1,
 			runId: study.runId,
 			stage: study.stage,
 			condition: study.condition,
+			assignmentMethod: study.assignmentMethod,
+			stage2Order: study.stage2Order,
 			participantCode: study.participantCode,
+			assignedCondition: study.assignedCondition,
 			stepIndex: study.stepIndex,
 			responses: study.responses,
 			training: study.training,
 			evidence: study.evidence,
-			events: study.events,
+			playback: study.playback,
 			phaseDurationsMs: study.phaseDurationsMs,
+			clientSavedAt: study.lastLocalSavedAt,
+			remote: {
+				runId: study.remote.runId,
+				resumeToken: study.remote.resumeToken,
+				revision: study.remote.revision,
+				eventCursor: study.remote.eventCursor,
+				pendingEventBatch: study.remote.pendingEventBatch,
+				completed: study.remote.completed,
+			},
 		};
+		if (includeEvents) {
+			draft.events = study.events;
+		}
+		return draft;
+	}
+
+	function persistLocalDraft() {
+		const draft = draftPayload(true);
 		try {
 			window.localStorage.setItem(storageKey(), JSON.stringify(draft));
 		} catch (_error) {
 			// The downloadable package remains available when storage is blocked.
+		}
+	}
+
+	function scheduleRemoteSave(delayMs = 700) {
+		study.remote.dirty = true;
+		if (!study.remote.runId || study.remote.completed) {
+			return;
+		}
+		window.clearTimeout(study.remote.saveTimer);
+		study.remote.saveTimer = window.setTimeout(() => {
+			syncRemote().catch(() => {});
+		}, delayMs);
+	}
+
+	function saveDraft() {
+		study.lastLocalSavedAt = Date.now();
+		persistLocalDraft();
+		scheduleRemoteSave();
+	}
+
+	function restoreDraft(draft) {
+		study.runId = String(draft.runId || study.runId);
+		study.condition = String(draft.condition || study.condition);
+		study.assignedCondition = String(
+			draft.assignedCondition || study.assignedCondition,
+		);
+		study.stepIndex = Math.min(
+			Math.max(Number(draft.stepIndex || 0), 0),
+			STEPS.length - 1,
+		);
+		study.responses = draft.responses || {};
+		study.training = draft.training || {};
+		study.evidence = Object.fromEntries(
+			Object.entries(draft.evidence || {}).map(([questionId, value]) => [
+				questionId,
+				Array.isArray(value) ? value : value ? [value] : [],
+			]),
+		);
+		study.playback = {
+			started: Boolean(draft.playback?.started),
+			maxProgress: Number(draft.playback?.maxProgress || 0),
+		};
+		study.events = Array.isArray(draft.events) ? draft.events : study.events;
+		study.phaseDurationsMs = draft.phaseDurationsMs || {};
+		study.lastLocalSavedAt = Number(draft.clientSavedAt || 0);
+		study.assignmentMethod = String(
+			draft.assignmentMethod || study.assignmentMethod,
+		);
+		study.stage2Order = draft.stage2Order || study.stage2Order;
+		if (draft.remote) {
+			const remote = draft.remote;
+			study.remote.runId = String(remote.runId || "");
+			study.remote.resumeToken = String(remote.resumeToken || "");
+			study.remote.revision = Number(remote.revision || 0);
+			study.remote.eventCursor = Number(remote.eventCursor || 0);
+			study.remote.pendingEventBatch = remote.pendingEventBatch || null;
+			study.remote.completed = Boolean(remote.completed);
 		}
 	}
 
@@ -401,20 +547,252 @@
 			if (draft.stage !== study.stage || draft.participantCode !== study.participantCode) {
 				return;
 			}
-			study.runId = String(draft.runId || study.runId);
-			study.condition = String(draft.condition || study.condition);
-			study.stepIndex = Math.min(
-				Math.max(Number(draft.stepIndex || 0), 0),
-				STEPS.length - 1,
-			);
-			study.responses = draft.responses || {};
-			study.training = draft.training || {};
-			study.evidence = draft.evidence || {};
-			study.events = Array.isArray(draft.events) ? draft.events : [];
-			study.phaseDurationsMs = draft.phaseDurationsMs || {};
-			showToast("Saved pilot response restored");
+			restoreDraft(draft);
+			showToast("Saved response restored");
 		} catch (_error) {
 			// Ignore stale or incompatible drafts.
+		}
+	}
+
+	async function apiRequest(path, options = {}) {
+		const headers = { ...(options.headers || {}) };
+		if (options.body !== undefined) {
+			headers["Content-Type"] = "application/json";
+		}
+		if (study.remote.resumeToken) {
+			headers["X-SandStories-Run-Token"] = study.remote.resumeToken;
+		}
+		const response = await fetch(`${EXPERIMENT_API}${path}`, {
+			method: options.method || "GET",
+			headers,
+			body: options.body === undefined
+				? undefined
+				: JSON.stringify(options.body),
+			cache: "no-store",
+			keepalive: Boolean(options.keepalive),
+		});
+		let payload = {};
+		try {
+			payload = await response.json();
+		} catch (_error) {
+			// The status below still produces a useful failure.
+		}
+		if (!response.ok) {
+			const error = new Error(payload.message || `Experiment service returned ${response.status}.`);
+			error.status = response.status;
+			error.code = payload.error || "api_error";
+			throw error;
+		}
+		return payload;
+	}
+
+	function applyRemoteRun(remoteRun) {
+		study.remote.available = true;
+		study.remote.runId = remoteRun.runId;
+		study.remote.revision = Number(remoteRun.revision || 0);
+		study.remote.completed = remoteRun.status === "completed";
+		study.assignmentMethod = remoteRun.assignmentMethod || study.assignmentMethod;
+		study.stage2Order = remoteRun.stage2Order || study.stage2Order;
+		study.runId = remoteRun.runId;
+		study.assignedCondition = remoteRun.condition;
+		if (
+			study.stage === "stage2"
+			|| study.stepIndex >= STEPS.findIndex((item) => item.id === "task")
+		) {
+			study.condition = remoteRun.condition;
+		}
+		for (const event of study.events) {
+			event.runId = study.runId;
+		}
+	}
+
+	async function resumeRemoteRun() {
+		if (!study.remote.runId || !study.remote.resumeToken) {
+			return false;
+		}
+		const remoteRun = await apiRequest(`/runs/${encodeURIComponent(study.remote.runId)}`);
+		applyRemoteRun(remoteRun);
+		study.remote.eventCursor = Math.min(
+			Number(remoteRun.eventCount || 0),
+			study.events.length,
+		);
+		if (
+			remoteRun.draft
+			&& Number(remoteRun.draft.clientSavedAt || 0) > study.lastLocalSavedAt
+		) {
+			const localEvents = study.events;
+			restoreDraft({ ...remoteRun.draft, events: localEvents });
+			applyRemoteRun(remoteRun);
+		}
+		persistLocalDraft();
+		setSubmissionStatus(
+			study.remote.completed ? "ready" : "ready",
+			study.remote.completed ? "Response submitted" : "Autosave ready",
+		);
+		return true;
+	}
+
+	async function ensureRemoteRun() {
+		if (study.remote.completed) {
+			return true;
+		}
+		if (study.remote.runId && study.remote.resumeToken) {
+			if (!study.remote.available) {
+				await resumeRemoteRun();
+			}
+			return true;
+		}
+		if (!study.participantCode) {
+			return false;
+		}
+		setSubmissionStatus("saving", "Creating run");
+		const request = {
+			protocolId: study.protocol.id || "sandstories_proposal_v1",
+			stage: study.stage,
+			participantCode: study.participantCode,
+			sessionId: study.session.id || "",
+			sessionUrl: study.sessionUrl,
+			trainingSessionUrl: study.trainingSessionUrl,
+			readyForDataCollection: study.readiness.ready,
+			pilotRun: pilotMode,
+		};
+		if (study.fixedCondition) {
+			request.conditionOverride = study.fixedCondition;
+		}
+		const remoteRun = await apiRequest("/runs", {
+			method: "POST",
+			body: request,
+		});
+		study.remote.resumeToken = remoteRun.resumeToken;
+		applyRemoteRun(remoteRun);
+		study.remote.eventCursor = 0;
+		study.remote.pendingEventBatch = null;
+		persistLocalDraft();
+		setSubmissionStatus("ready", "Autosave ready");
+		return true;
+	}
+
+	async function uploadPendingEvents(options = {}) {
+		while (study.remote.eventCursor < study.events.length) {
+			if (!study.remote.pendingEventBatch) {
+				const start = study.remote.eventCursor;
+				const end = Math.min(start + 200, study.events.length);
+				study.remote.pendingEventBatch = {
+					batchId: `${study.runId}:${start}:${end}`,
+					start,
+					end,
+				};
+				persistLocalDraft();
+			}
+			const batch = study.remote.pendingEventBatch;
+			await apiRequest(`/runs/${encodeURIComponent(study.runId)}/events`, {
+				method: "POST",
+				body: {
+					batchId: batch.batchId,
+					events: study.events.slice(batch.start, batch.end),
+				},
+				keepalive: options.keepalive,
+			});
+			study.remote.eventCursor = batch.end;
+			study.remote.pendingEventBatch = null;
+			persistLocalDraft();
+		}
+	}
+
+	async function syncRemote(options = {}) {
+		if (
+			study.remote.completed
+			|| !study.remote.runId
+			|| !study.remote.resumeToken
+		) {
+			return false;
+		}
+		if (study.remote.syncPromise) {
+			study.remote.dirty = true;
+			return study.remote.syncPromise;
+		}
+		window.clearTimeout(study.remote.saveTimer);
+		study.remote.dirty = false;
+		setSubmissionStatus("saving", "Saving response");
+		study.remote.syncPromise = (async () => {
+			await uploadPendingEvents(options);
+			const remoteDraft = draftPayload(false);
+			delete remoteDraft.remote;
+			const result = await apiRequest(`/runs/${encodeURIComponent(study.runId)}/draft`, {
+				method: "PUT",
+				body: { draft: remoteDraft },
+				keepalive: options.keepalive,
+			});
+			study.remote.revision = Number(result.revision || study.remote.revision);
+			study.remote.available = true;
+			study.remote.lastError = "";
+			persistLocalDraft();
+			setSubmissionStatus("ready", "Response saved");
+			return true;
+		})().catch((error) => {
+			study.remote.available = false;
+			study.remote.dirty = true;
+			study.remote.lastError = error.message;
+			persistLocalDraft();
+			setSubmissionStatus("offline", "Saved locally · retrying");
+			throw error;
+		}).finally(() => {
+			study.remote.syncPromise = null;
+			if (study.remote.dirty && !study.remote.completed) {
+				scheduleRemoteSave(navigator.onLine ? 1200 : 5000);
+			}
+		});
+		return study.remote.syncPromise;
+	}
+
+	async function drainRemote() {
+		for (let attempt = 0; attempt < 10; attempt += 1) {
+			await syncRemote();
+			if (
+				!study.remote.dirty
+				&& study.remote.eventCursor >= study.events.length
+			) {
+				return true;
+			}
+		}
+		throw new Error("Autosave did not become idle before completion.");
+	}
+
+	async function initializeRemotePersistence() {
+		try {
+			await apiRequest("/health");
+			study.remote.available = true;
+			if (study.remote.runId && study.remote.resumeToken) {
+				await resumeRemoteRun();
+			} else {
+				setSubmissionStatus("ready", "Storage ready");
+			}
+		} catch (error) {
+			study.remote.available = false;
+			study.remote.lastError = error.message;
+			setSubmissionStatus("offline", "Local backup only");
+		}
+	}
+
+	async function completeRemoteRun() {
+		try {
+			await ensureRemoteRun();
+			await drainRemote();
+			const result = await apiRequest(`/runs/${encodeURIComponent(study.runId)}/complete`, {
+				method: "POST",
+				body: { submission: submissionPayload() },
+			});
+			study.remote.completed = result.status === "completed";
+			study.remote.available = true;
+			persistLocalDraft();
+			setSubmissionStatus("ready", "Response submitted");
+			showToast("Anonymous response submitted");
+			return true;
+		} catch (error) {
+			study.remote.lastError = error.message;
+			setSubmissionStatus("offline", "Submission pending locally");
+			showToast("Submission pending; local backup retained");
+			return false;
 		}
 	}
 
@@ -426,7 +804,7 @@
 		return response.json();
 	}
 
-	function evaluateReadiness(session) {
+	function evaluateReadiness(session, trainingMetadata) {
 		const sources = session?.data_sources || {};
 		const experiment = session?.experiment || {};
 		const hasSand = Boolean(
@@ -438,15 +816,71 @@
 			session?.gesture_events?.length
 			|| session?.mano_rgbd_full_sequence
 			|| session?.hand_track
+			|| session?.hand_tracks?.length
 		);
 		const hasObjects = Boolean(session?.objects?.length);
 		const hasAudio = Boolean(sources.audio);
 		const hasAnnotations = Boolean(
-			session?.annotations?.length
-			|| session?.surface_regions?.length
-			|| session?.references?.length
+			session?.surface_regions?.length
+			&& session?.gesture_events?.length
+			&& session?.references?.length
 		);
 		const hasValidatedContent = Boolean(experiment.readyForDataCollection);
+		const questionKey = study.stage === "stage2"
+			? "stage2Questions"
+			: "stage1Questions";
+		const stageQuestions = Array.isArray(experiment[questionKey])
+			? experiment[questionKey]
+			: [];
+		const hasTaskContent = Boolean(
+			String(experiment.summaryPrompt || "").trim()
+			&& stageQuestions.length,
+		);
+		const validatedQuestionIds = new Set(
+			experiment.questionValidation?.validatedQuestionIds || [],
+		);
+		const hasQuestionValidation = Boolean(
+			String(experiment.questionValidation?.rubricId || "").trim()
+			&& stageQuestions.every((question) => (
+				validatedQuestionIds.has(String(question?.id || ""))
+			)),
+		);
+		const protocolMatches = Boolean(
+			study.protocol?.id
+			&& experiment.protocolId === study.protocol.id,
+		);
+		const ethicsReady = study.protocol?.ethicsApprovedForDataCollection === true;
+		const trainingSources = trainingMetadata?.data_sources || {};
+		const trainingHasSand = Boolean(
+			trainingSources.processed_manifest
+			|| trainingSources.depth_map
+			|| trainingSources.detail_depth_map,
+		);
+		const trainingHasGestures = Boolean(
+			trainingMetadata?.gesture_events?.length
+			|| trainingMetadata?.mano_rgbd_full_sequence
+			|| trainingMetadata?.hand_track
+			|| trainingMetadata?.hand_tracks?.length,
+		);
+		const trainingHasAnnotations = Boolean(
+			trainingMetadata?.surface_regions?.length
+			&& trainingMetadata?.gesture_events?.length
+			&& trainingMetadata?.references?.length,
+		);
+		const trainingIsSeparate = Boolean(
+			study.trainingSessionUrl
+			&& study.trainingSessionUrl !== study.sessionUrl,
+		);
+		const trainingCues = trainingMetadata?.experiment?.trainingCues || {};
+		const requiredCue = study.stage === "stage2" ? "referential" : "playback";
+		const hasTrainingCue = Number.isFinite(Number(trainingCues?.[requiredCue]?.start));
+		const trainingReady = Boolean(
+			trainingIsSeparate
+			&& trainingHasSand
+			&& trainingHasGestures
+			&& hasTrainingCue
+			&& (study.stage !== "stage2" || trainingHasAnnotations),
+		);
 		const warnings = [];
 		if (!hasSand) {
 			warnings.push("No reconstructed sand modality.");
@@ -464,15 +898,42 @@
 			warnings.push("Stage 2 needs validated annotations and referential links.");
 		}
 		if (!hasValidatedContent) {
-			warnings.push("Creator-validated questions and answer key are not attached.");
+			warnings.push("Creator-validated task content is not enabled.");
+		}
+		if (!protocolMatches) {
+			warnings.push("The session does not identify the active experiment protocol.");
+		}
+		if (!hasTaskContent) {
+			warnings.push("The session is missing its stage-specific summary prompt or questions.");
+		}
+		if (!hasQuestionValidation) {
+			warnings.push("The creator validation record does not cover every question.");
+		}
+		if (!ethicsReady) {
+			warnings.push("Ethics-approved participant information and consent are not enabled.");
+		}
+		if (!trainingIsSeparate) {
+			warnings.push("A separate neutral training session is required.");
+		} else if (!trainingHasSand || !trainingHasGestures) {
+			warnings.push("The training session must include both the sand and hand modalities.");
+		} else if (study.stage === "stage2" && !trainingHasAnnotations) {
+			warnings.push("Stage 2 training needs validated referential links.");
+		} else if (!hasTrainingCue) {
+			warnings.push(`The training session needs a timed ${requiredCue} cue.`);
 		}
 		return {
+			checked: true,
 			ready: (
 				hasSand
 				&& hasGestures
 				&& hasObjects
 				&& hasAudio
 				&& hasValidatedContent
+				&& protocolMatches
+				&& hasTaskContent
+				&& hasQuestionValidation
+				&& ethicsReady
+				&& trainingReady
 				&& (study.stage !== "stage2" || hasAnnotations)
 			),
 			warnings,
@@ -483,7 +944,12 @@
 				audio: hasAudio,
 				annotations: hasAnnotations,
 			},
+			trainingReady,
 		};
+	}
+
+	function canCollectData() {
+		return study.readiness.ready || pilotMode;
 	}
 
 	async function loadStudyMetadata() {
@@ -496,17 +962,83 @@
 		}
 		if (results[1].status === "fulfilled") {
 			study.session = results[1].value;
-			study.readiness = evaluateReadiness(study.session);
-			if (study.session.title) {
-				elements.title.textContent = study.session.title;
+			const declaredTraining = String(
+				study.session?.experiment?.trainingSession || "",
+			).trim();
+			if (!requestedTrainingSession && declaredTraining) {
+				study.trainingSessionUrl = new URL(
+					declaredTraining,
+					study.sessionUrl,
+				).href;
 			}
+			if (study.trainingSessionUrl === study.sessionUrl) {
+				study.trainingSession = study.session;
+			} else {
+				try {
+					study.trainingSession = await fetchJson(study.trainingSessionUrl);
+				} catch (_error) {
+					study.trainingSession = {};
+				}
+			}
+			study.readiness = evaluateReadiness(
+				study.session,
+				study.trainingSession,
+			);
+			elements.title.textContent = researcherMode
+				? (study.session.title || "Untitled sand drawing session")
+				: (study.session?.experiment?.participantTitle || "Interactive sand narrative");
 		} else {
 			study.readiness = {
+				checked: true,
 				ready: false,
 				warnings: ["The host could not read the session metadata."],
 			};
 		}
 		renderStep();
+	}
+
+	async function switchViewerSession(url, metadata) {
+		if (!url || study.activeSessionUrl === url) {
+			return;
+		}
+		const previousUrl = study.activeSessionUrl;
+		study.activeSessionUrl = url;
+		elements.status.dataset.state = "loading";
+		elements.status.querySelector("span:last-child").textContent = "Loading session";
+		try {
+			await sendCommand("set_playing", { playing: false }).catch(() => {});
+			await sendCommand("load_session", { url }, 120000);
+			elements.title.textContent = researcherMode
+				? (metadata?.title || "Untitled sand drawing session")
+				: (metadata?.experiment?.participantTitle || "Interactive sand narrative");
+			elements.status.dataset.state = "ready";
+			elements.status.querySelector("span:last-child").textContent = "Viewer ready";
+			recordStudyEvent("viewer_session_switched", {
+				from: previousUrl,
+				to: url,
+			});
+		} catch (error) {
+			study.activeSessionUrl = previousUrl;
+			throw error;
+		}
+	}
+
+	function trainingCue(name, fallbackProgress = 0.15, fallbackDuration = 2.4) {
+		const cue = study.trainingSession?.experiment?.trainingCues?.[name] || {};
+		const duration = Number(
+			study.trainingSession?.duration
+			|| study.latestGodotState?.duration
+			|| 0,
+		);
+		const fallbackStart = Math.max(0, duration * fallbackProgress);
+		return {
+			start: Number.isFinite(Number(cue.start))
+				? Math.max(0, Number(cue.start))
+				: fallbackStart,
+			duration: Number.isFinite(Number(cue.duration))
+				? Math.min(Math.max(Number(cue.duration), 0.8), 12)
+				: fallbackDuration,
+		};
 	}
 
 	function conditionForPhase() {
@@ -552,9 +1084,7 @@
 			if (logChange) {
 				recordStudyEvent("condition_applied", {
 					condition: conditionName,
-					assignmentMethod: (
-						study.fixedCondition ? "fixed" : "deterministic_random"
-					),
+					assignmentMethod: study.assignmentMethod,
 				});
 			}
 		} catch (error) {
@@ -566,9 +1096,9 @@
 		const activeCondition = conditionForPhase();
 		const meta = CONDITIONS[activeCondition] || CONDITIONS.baseline;
 		const training = STEPS[study.stepIndex].id === "training";
-		elements.conditionChip.textContent = training
-			? "Training · Full view"
-			: meta.label;
+		elements.conditionChip.textContent = researcherMode
+			? (training ? "Training · Full view" : meta.label)
+			: (training ? "Guided practice" : "Study view");
 		elements.conditionChip.dataset.condition = training
 			? "baseline"
 			: activeCondition;
@@ -598,13 +1128,22 @@
 				|| annotationLocked
 				|| unavailable
 			);
+			const chip = input.closest(".toggle-chip");
+			if (chip) {
+				chip.hidden = Boolean(
+					!researcherMode
+					&& (removedLayers.includes(input.dataset.layer) || unavailable),
+				);
+			}
 		}
 	}
 
 	function updateGodotState(nextState) {
 		study.latestGodotState = nextState;
 		if (nextState.sessionTitle) {
-			elements.title.textContent = nextState.sessionTitle;
+			elements.title.textContent = researcherMode
+				? nextState.sessionTitle
+				: (study.session?.experiment?.participantTitle || "Interactive sand narrative");
 		}
 		const playing = Boolean(nextState.playing);
 		elements.playButton.dataset.playing = String(playing);
@@ -626,6 +1165,17 @@
 		elements.mapBlendValue.textContent = strength.toFixed(2);
 		for (const input of layerInputs) {
 			input.checked = Boolean(nextState.layers?.[input.dataset.layer]);
+		}
+		if (
+			STEPS[study.stepIndex].id === "task"
+			&& playing
+			&& Number(nextState.duration || 0) > 0
+		) {
+			study.playback.started = true;
+			study.playback.maxProgress = Math.max(
+				Number(study.playback.maxProgress || 0),
+				Math.min(Math.max(Number(nextState.progress || 0), 0), 1),
+			);
 		}
 		updateViewerAvailability();
 	}
@@ -659,6 +1209,11 @@
 		elements.back.disabled = study.stepIndex === 0;
 		elements.back.hidden = step.id === "complete";
 		elements.next.hidden = step.id === "complete";
+		elements.next.disabled = Boolean(
+			step.id === "information"
+			&& study.readiness.checked
+			&& !canCollectData(),
+		);
 		elements.next.innerHTML = study.stepIndex === STEPS.length - 2
 			? "Submit responses <span aria-hidden=\"true\">→</span>"
 			: "Continue <span aria-hidden=\"true\">→</span>";
@@ -667,6 +1222,24 @@
 	function renderInformation() {
 		const stageTwo = study.stage === "stage2";
 		const data = study.responses.information || {};
+		const readinessNotice = !study.readiness.checked
+			? `
+				<div class="notice">
+					<strong>Checking study materials</strong>
+					The task will open after the story, training session, and study protocol have been verified.
+				</div>
+			`
+			: !study.readiness.ready
+				? `
+					<div class="notice warning">
+						<strong>${pilotMode ? "Pilot / QA mode" : "Study materials are not ready"}</strong>
+						${escapeHtml(study.readiness.warnings.join(" "))}
+						${pilotMode
+							? "This run is explicitly labelled as pilot data and can continue for interface testing."
+							: "Data collection is blocked. A researcher can use researcher=1 or pilot=1 for a non-research QA run."}
+					</div>
+				`
+				: "";
 		return `
 			<p class="task-kicker">${stageTwo ? "Observational study" : "Online study"}</p>
 			<h2>Understanding a sand drawing</h2>
@@ -683,6 +1256,7 @@
 				participant information and consent language must be replaced by the
 				ethics-approved documents before data collection.
 			</div>
+			${readinessNotice}
 			<div class="form-section">
 				<h3>What will happen</h3>
 				<p class="section-help">
@@ -700,7 +1274,7 @@
 					<span>
 						I have read the study information above, understand that
 						participation is voluntary, and agree to continue with this
-						pilot run.
+						${pilotMode ? "pilot run" : "study"}.
 					</span>
 				</label>
 			</div>
@@ -984,13 +1558,21 @@
 			: PILOT_STAGE_ONE_QUESTIONS;
 	}
 
+	function evidenceMarks(questionId) {
+		const value = study.evidence[questionId];
+		if (Array.isArray(value)) {
+			return value;
+		}
+		return value ? [value] : [];
+	}
+
 	function renderQuestion(question, index, data) {
 		const questionId = String(question.id || `question_${index + 1}`);
 		const answerName = `answer:${questionId}`;
 		const evidenceName = `evidence:${questionId}`;
 		const answer = data[answerName] || "";
 		const evidence = data[evidenceName] || "";
-		const snapshot = study.evidence[questionId];
+		const snapshots = evidenceMarks(questionId);
 		let answerControl = "";
 		if (question.type === "choice") {
 			answerControl = `
@@ -1038,13 +1620,21 @@
 						type="button"
 						data-evidence-question="${escapeHtml(questionId)}"
 					>
-						Mark current view
+						Add current moment
 					</button>
 					<span class="evidence-state" data-evidence-state="${escapeHtml(questionId)}">
-						${snapshot
-							? `Marked at ${formatTime(snapshot.playhead)}`
-							: "No timestamp marked"}
+						${snapshots.length
+							? `${snapshots.length} marked: ${snapshots.map((item) => formatTime(item.playhead)).join(", ")}`
+							: "No moments marked"}
 					</span>
+					<button
+						class="evidence-remove"
+						type="button"
+						data-evidence-remove="${escapeHtml(questionId)}"
+						${snapshots.length ? "" : "hidden"}
+					>
+						Remove last
+					</button>
 				</div>
 			</section>
 		`;
@@ -1060,13 +1650,19 @@
 		);
 		const condition = CONDITIONS[study.condition] || CONDITIONS.baseline;
 		const thinkAloud = study.stage === "stage2";
-		const pilotNotice = !study.readiness.ready
+		const conditionNotice = researcherMode
+			? `
+				<div class="notice">
+					<strong>${escapeHtml(condition.label)}</strong>
+					${escapeHtml(condition.description)}
+				</div>
+			`
+			: "";
+		const pilotNotice = !study.readiness.ready && pilotMode
 			? `
 				<div class="notice warning">
-					<strong>Pilot task set — not ready for research data</strong>
+					<strong>Pilot task set — excluded from research data</strong>
 					${escapeHtml(study.readiness.warnings.join(" "))}
-					The prompts below test the workflow; they require creator validation
-					before deployment.
 				</div>
 			`
 			: "";
@@ -1079,10 +1675,7 @@
 					? "Please keep describing what you notice, infer, and find uncertain."
 					: "Complete every question when you feel confident."}
 			</p>
-			<div class="notice">
-				<strong>${escapeHtml(condition.label)}</strong>
-				${escapeHtml(condition.description)}
-			</div>
+			${conditionNotice}
 			${pilotNotice}
 			<div class="form-section">
 				<h3>Session summary</h3>
@@ -1122,17 +1715,19 @@
 
 	function renderTlxItem(name, label, data) {
 		const fieldName = `nasa:${name}`;
-		const value = Number(data[fieldName] ?? 50);
+		const hasValue = Object.prototype.hasOwnProperty.call(data, fieldName);
+		const value = Number(hasValue ? data[fieldName] : 50);
 		return `
 			<div class="tlx-item">
 				<label class="range-label" for="tlx-${escapeHtml(name)}">
 					<span>${escapeHtml(label)}</span>
-					<output data-range-output="${escapeHtml(fieldName)}">${value}</output>
+					<output data-range-output="${escapeHtml(fieldName)}">${hasValue ? value : "Not set"}</output>
 				</label>
 				<input
 					id="tlx-${escapeHtml(name)}"
 					type="range"
-					name="${escapeHtml(fieldName)}"
+					${hasValue ? `name="${escapeHtml(fieldName)}"` : ""}
+					data-field-name="${escapeHtml(fieldName)}"
 					min="0"
 					max="100"
 					step="5"
@@ -1140,6 +1735,27 @@
 				>
 			</div>
 		`;
+	}
+
+	function availableQuestionnaireModalities() {
+		const labels = [
+			["sand", "Sand surface"],
+			["gestures", "Virtual hand and gestures"],
+			["audio", "Narration audio"],
+			["objects", "External objects"],
+			["annotations", "Annotations and referential links"],
+		];
+		const omitted = {
+			no_audio: "audio",
+			no_gestures: "gestures",
+			no_objects: "objects",
+			no_sand: "sand",
+		}[study.condition] || "";
+		return labels.filter(([value]) => (
+			value !== omitted
+			&& (value !== "annotations" || study.stage === "stage2")
+			&& study.readiness.modalities?.[value] !== false
+		));
 	}
 
 	function renderQuestionnaire() {
@@ -1173,13 +1789,7 @@
 				<h3>Which information did you rely on?</h3>
 				<p class="section-help">Select all that contributed to your answers.</p>
 				<div class="check-list">
-					${[
-						["sand", "Sand surface"],
-						["gestures", "Virtual hand and gestures"],
-						["audio", "Narration audio"],
-						["objects", "External objects"],
-						["annotations", "Annotations and referential links"],
-					].map(([value, label]) => `
+					${availableQuestionnaireModalities().map(([value, label]) => `
 						<label class="choice-card">
 							<input
 								type="checkbox"
@@ -1239,17 +1849,18 @@
 
 	function renderComplete() {
 		const payload = submissionPayload();
+		const serverMessage = study.remote.completed
+			? "The anonymous response has been saved by the experiment server."
+			: "The response remains saved locally and will retry automatically. Download a backup before closing this page if submission is still pending.";
 		const totalMs = Object.values(payload.phaseDurationsMs)
 			.reduce((sum, value) => sum + Number(value || 0), 0);
 		return `
 			<div class="completion">
 				<div class="completion-mark" aria-hidden="true">✓</div>
-				<p class="task-kicker">Response package prepared</p>
+				<p class="task-kicker">${study.remote.completed ? "Response submitted" : "Response prepared"}</p>
 				<h2>Thank you</h2>
 				<p class="task-lead">
-					This pilot run is complete. The package includes the assigned
-					condition, task responses, evidence snapshots, questionnaire,
-					phase timing, and interaction events.
+					${serverMessage}
 				</p>
 				<div class="completion-summary">
 					<div>
@@ -1271,7 +1882,7 @@
 				</div>
 				<div class="completion-actions">
 					<button class="primary-button full-width" type="button" data-complete-action="download">
-						Download anonymous response
+						Download backup copy
 					</button>
 					<button class="secondary-button full-width" type="button" data-complete-action="restart">
 						Start another pilot run
@@ -1332,6 +1943,12 @@
 		collectCurrentForm();
 		const step = STEPS[study.stepIndex].id;
 		const data = study.responses[step] || {};
+		if (!study.readiness.checked) {
+			return "Wait for the study materials to finish validation.";
+		}
+		if (!canCollectData()) {
+			return "This story is not approved for data collection. Ask the researcher to open an explicit pilot or QA run.";
+		}
 		if (step === "information" && data.consent !== "yes") {
 			return "Please confirm that you have read the pilot study information.";
 		}
@@ -1353,6 +1970,15 @@
 			}
 		}
 		if (step === "task") {
+			const minimumProgress = Math.min(Math.max(Number(
+				study.session?.experiment?.minimumPlaybackProgress ?? 0.85,
+			), 0.5), 1);
+			if (
+				!pilotMode
+				&& (!study.playback.started || study.playback.maxProgress < minimumProgress)
+			) {
+				return `Watch the story through at least ${Math.round(minimumProgress * 100)}% before continuing.`;
+			}
 			if (String(data.summary || "").trim().length < 20) {
 				return "Write a slightly fuller session summary before continuing.";
 			}
@@ -1363,6 +1989,12 @@
 				}
 				if (String(data[`evidence:${questionId}`] || "").trim().length < 10) {
 					return "Explain the evidence supporting every answer.";
+				}
+				const requiredMarks = Math.min(Math.max(Number(
+					question.minEvidenceMarks || 1,
+				), 1), 6);
+				if (evidenceMarks(questionId).length < requiredMarks) {
+					return `Mark at least ${requiredMarks} evidence moment${requiredMarks === 1 ? "" : "s"} for every answer.`;
 				}
 			}
 		}
@@ -1380,6 +2012,20 @@
 			if (!relied.length) {
 				return "Select at least one source of information you relied on.";
 			}
+			const tlxDimensions = [
+				"mentalDemand",
+				"physicalDemand",
+				"temporalDemand",
+				"performance",
+				"effort",
+				"frustration",
+			];
+			if (tlxDimensions.some((name) => !Object.prototype.hasOwnProperty.call(
+				data,
+				`nasa:${name}`,
+			))) {
+				return "Set all six NASA-TLX workload ratings.";
+			}
 		}
 		return "";
 	}
@@ -1393,21 +2039,53 @@
 	}
 
 	async function moveToStep(nextIndex) {
+		const boundedNextIndex = Math.min(Math.max(nextIndex, 0), STEPS.length - 1);
+		const targetPhase = STEPS[boundedNextIndex].id;
+		if (targetPhase === "training" && !pilotMode) {
+			const remoteReady = await ensureRemoteRun();
+			if (!remoteReady) {
+				throw new Error("The experiment server could not create this study run.");
+			}
+		}
 		updatePhaseTiming();
 		const previousPhase = STEPS[study.stepIndex].id;
-		study.stepIndex = Math.min(Math.max(nextIndex, 0), STEPS.length - 1);
+		study.stepIndex = boundedNextIndex;
 		study.stepStartedAt = Date.now();
 		const phase = STEPS[study.stepIndex].id;
 		if (previousPhase === "training" && phase !== "training") {
 			await restoreTrainingVisualState();
+			await switchViewerSession(study.sessionUrl, study.session);
 		}
 		if (phase === "training") {
+			await switchViewerSession(
+				study.trainingSessionUrl,
+				study.trainingSession,
+			);
+			if (!study.remote.runId) {
+				try {
+					await ensureRemoteRun();
+				} catch (error) {
+					study.remote.lastError = error.message;
+					setSubmissionStatus("offline", "Local backup only");
+				}
+			}
 			await applyCondition(
 				study.stage === "stage2" ? "stage2" : "baseline",
 			);
 		}
 		if (phase === "task") {
-			study.condition = deterministicCondition(study.participantCode);
+			if (previousPhase === "training") {
+				study.playback = { started: false, maxProgress: 0 };
+			}
+			if (study.remote.runId && study.assignedCondition) {
+				study.condition = study.assignedCondition;
+			} else {
+				study.assignedCondition = deterministicCondition(study.participantCode);
+				study.condition = study.assignedCondition;
+				study.assignmentMethod = study.fixedCondition
+					? "client_fixed_fallback"
+					: "client_deterministic_fallback";
+			}
 			await applyCondition(study.condition, true);
 			await sendCommand("set_playing", { playing: false }).catch(() => {});
 			await sendCommand("seek", { seconds: 0 }).catch(() => {});
@@ -1425,6 +2103,10 @@
 		recordStudyEvent("study_phase", { phase });
 		saveDraft();
 		renderStep();
+		if (phase === "complete") {
+			await completeRemoteRun();
+			renderStep();
+		}
 	}
 
 	function setTrainingComplete(trainingId) {
@@ -1452,9 +2134,14 @@
 		}
 		try {
 			if (action === "play") {
-				await sendCommand("seek", { seconds: 0 });
+				const cue = trainingCue("playback", 0.15, 2.4);
+				recordStudyEvent("training_cue_started", {
+					cue: "playback",
+					...cue,
+				});
+				await seekAndWait(cue.start);
 				await sendCommand("set_playing", { playing: true });
-				await waitFor(2400);
+				await waitFor(cue.duration * 1000);
 				await sendCommand("set_playing", { playing: false });
 			} else if (action === "orbit") {
 				await sendCommand("set_view", { preset: "top" });
@@ -1478,6 +2165,11 @@
 				await sendCommand("set_view", { preset: "top" });
 				await waitFor(1100);
 			} else if (action === "relation") {
+				const cue = trainingCue("referential", 0.7, 1.8);
+				recordStudyEvent("training_cue_started", {
+					cue: "referential",
+					...cue,
+				});
 				await sendCommand("set_layer", {
 					layer: "annotations",
 					visible: true,
@@ -1486,9 +2178,9 @@
 					layer: "gestures",
 					visible: true,
 				});
-				await sendCommand("seek_normalized", { progress: 0.7 });
+				await seekAndWait(cue.start);
 				await sendCommand("set_playing", { playing: true });
-				await waitFor(1800);
+				await waitFor(cue.duration * 1000);
 				await sendCommand("set_playing", { playing: false });
 			}
 			setTrainingComplete(trainingId);
@@ -1514,13 +2206,27 @@
 			condition: study.condition,
 			capturedUnixTimeMs: Date.now(),
 		};
-		study.evidence[questionId] = snapshot;
+		const snapshots = evidenceMarks(questionId);
+		snapshots.push(snapshot);
+		study.evidence[questionId] = snapshots.slice(-6);
 		const label = elements.taskContent.querySelector(
 			`[data-evidence-state="${CSS.escape(questionId)}"]`,
 		);
 		if (label) {
-			label.textContent = `Marked at ${formatTime(snapshot.playhead)}`;
+			label.textContent = (
+				`${study.evidence[questionId].length} marked: `
+				+ study.evidence[questionId]
+					.map((item) => formatTime(item.playhead))
+					.join(", ")
+			);
 		}
+		const removeButton = elements.taskContent.querySelector(
+			`[data-evidence-remove="${CSS.escape(questionId)}"]`,
+		);
+		if (removeButton) {
+			removeButton.hidden = false;
+		}
+		saveDraft();
 		try {
 			await sendCommand("mark_evidence");
 			recordStudyEvent("task_evidence_attached", {
@@ -1531,6 +2237,18 @@
 		} catch (error) {
 			reportError(error);
 		}
+	}
+
+	function removeLastEvidence(questionId) {
+		const snapshots = evidenceMarks(questionId);
+		const removed = snapshots.pop();
+		study.evidence[questionId] = snapshots;
+		saveDraft();
+		recordStudyEvent("task_evidence_removed", {
+			questionId,
+			capturedUnixTimeMs: removed?.capturedUnixTimeMs || null,
+		});
+		renderStep();
 	}
 
 	function bindDynamicActions() {
@@ -1552,12 +2270,24 @@
 				markEvidence(button.dataset.evidenceQuestion);
 			});
 		}
+		for (const button of elements.taskContent.querySelectorAll(
+			"[data-evidence-remove]",
+		)) {
+			button.addEventListener("click", () => {
+				collectCurrentForm();
+				removeLastEvidence(button.dataset.evidenceRemove);
+			});
+		}
 		for (const input of elements.taskContent.querySelectorAll(
 			"input[type=\"range\"]",
 		)) {
 			input.addEventListener("input", () => {
+				const fieldName = input.name || input.dataset.fieldName;
+				if (fieldName && !input.name) {
+					input.name = fieldName;
+				}
 				const output = elements.taskContent.querySelector(
-					`[data-range-output="${CSS.escape(input.name)}"]`,
+					`[data-range-output="${CSS.escape(fieldName || "")}"]`,
 				);
 				if (output) {
 					output.textContent = input.value;
@@ -1569,6 +2299,9 @@
 			"input, select, textarea",
 		)) {
 			input.addEventListener("change", collectCurrentForm);
+			if (input.type !== "range") {
+				input.addEventListener("input", collectCurrentForm);
+			}
 		}
 		for (const button of elements.taskContent.querySelectorAll(
 			"[data-complete-action]",
@@ -1592,7 +2325,8 @@
 				prompt: question.prompt,
 				answer: data[`answer:${questionId}`] || "",
 				evidence: data[`evidence:${questionId}`] || "",
-				viewSnapshot: study.evidence[questionId] || {},
+				viewSnapshot: evidenceMarks(questionId).at(-1) || {},
+				viewSnapshots: evidenceMarks(questionId),
 			};
 		});
 	}
@@ -1618,7 +2352,12 @@
 			"effort",
 			"frustration",
 		]) {
-			payload.nasaTlxRaw[key] = Number(data[`nasa:${key}`] ?? 50);
+			payload.nasaTlxRaw[key] = Object.prototype.hasOwnProperty.call(
+				data,
+				`nasa:${key}`,
+			)
+				? Number(data[`nasa:${key}`])
+				: null;
 		}
 		if (study.stage === "stage2") {
 			payload.annotationUsefulnessLikert = Number(
@@ -1645,9 +2384,8 @@
 			runId: study.runId,
 			stage: study.stage,
 			condition: study.condition,
-			assignmentMethod: study.fixedCondition
-				? "fixed"
-				: "client_deterministic_unbalanced",
+			assignmentMethod: study.assignmentMethod,
+			stage2Order: study.stage2Order,
 			sessionId: study.session.id || "",
 			sessionTitle: study.session.title || elements.title.textContent,
 			sessionUrl: study.sessionUrl,
@@ -1688,6 +2426,7 @@
 	}
 
 	function resetRun() {
+		window.clearTimeout(study.remote.saveTimer);
 		try {
 			window.localStorage.removeItem(storageKey());
 		} catch (_error) {
@@ -1705,9 +2444,21 @@
 		try {
 			const session = await fetchJson(url);
 			await sendCommand("load_session", { url }, 120000);
+			study.activeSessionUrl = url;
 			study.session = session;
-			study.readiness = evaluateReadiness(session);
-			elements.title.textContent = session.title || "Untitled sand drawing session";
+			const declaredTraining = String(
+				requestedTrainingSession || session?.experiment?.trainingSession || "",
+			).trim();
+			study.trainingSessionUrl = declaredTraining
+				? new URL(declaredTraining, url).href
+				: url;
+			study.trainingSession = study.trainingSessionUrl === url
+				? session
+				: await fetchJson(study.trainingSessionUrl).catch(() => ({}));
+			study.readiness = evaluateReadiness(session, study.trainingSession);
+			elements.title.textContent = researcherMode
+				? (session.title || "Untitled sand drawing session")
+				: (session?.experiment?.participantTitle || "Interactive sand narrative");
 			recordStudyEvent("host_session_loaded", {
 				sessionId: session.id || "",
 				url,
@@ -1723,11 +2474,24 @@
 	}
 
 	function bindStaticControls() {
-		elements.back.addEventListener("click", () => {
+		elements.back.addEventListener("click", async () => {
+			if (navigationBusy) {
+				return;
+			}
+			navigationBusy = true;
 			collectCurrentForm();
-			moveToStep(study.stepIndex - 1);
+			try {
+				await moveToStep(study.stepIndex - 1);
+			} catch (error) {
+				reportError(error);
+			} finally {
+				navigationBusy = false;
+			}
 		});
-		elements.next.addEventListener("click", () => {
+		elements.next.addEventListener("click", async () => {
+			if (navigationBusy) {
+				return;
+			}
 			const validation = validateCurrentStep();
 			if (validation) {
 				elements.validation.textContent = validation;
@@ -1737,7 +2501,14 @@
 			recordStudyEvent("phase_completed", {
 				phase: STEPS[study.stepIndex].id,
 			});
-			moveToStep(study.stepIndex + 1);
+			navigationBusy = true;
+			try {
+				await moveToStep(study.stepIndex + 1);
+			} catch (error) {
+				reportError(error);
+			} finally {
+				navigationBusy = false;
+			}
 		});
 		elements.playButton.addEventListener("click", () => {
 			sendCommand("toggle_playback")
@@ -1771,12 +2542,19 @@
 				+ `${formatTime(study.latestGodotState.duration)}`
 			);
 		});
-		elements.timeline.addEventListener("change", () => {
+		elements.timeline.addEventListener("change", async () => {
 			timelineDragging = false;
-			sendCommand("seek_normalized", {
-				progress: Number(elements.timeline.value) / 1000,
-			})
-				.then(() => {
+			const progress = Number(elements.timeline.value) / 1000;
+			const duration = Number(study.latestGodotState?.duration || 0);
+			const resumePlayback = Boolean(study.latestGodotState?.playing);
+			try {
+				if (resumePlayback) {
+					await sendCommand("set_playing", { playing: false });
+				}
+				await seekAndWait(progress * duration);
+				if (resumePlayback) {
+					await sendCommand("set_playing", { playing: true });
+				}
 					if (STEPS[study.stepIndex].id === "training") {
 						const playback = trainingItems().find(
 							(item) => item.id === "playback",
@@ -1786,10 +2564,11 @@
 						}
 					}
 					recordStudyEvent("timeline_seek", {
-						progress: Number(elements.timeline.value) / 1000,
+						progress,
 					});
-				})
-				.catch(reportError);
+			} catch (error) {
+				reportError(error);
+			}
 		});
 		elements.timeline.addEventListener("pointerup", () => {
 			timelineDragging = false;
@@ -1879,6 +2658,21 @@
 		});
 		elements.downloadResponse.addEventListener("click", downloadSubmission);
 		elements.resetStudy.addEventListener("click", resetRun);
+		window.addEventListener("online", () => {
+			if (study.remote.runId && !study.remote.completed) {
+				syncRemote().catch(() => {});
+			} else {
+				initializeRemotePersistence().catch(() => {});
+			}
+		});
+		window.addEventListener("offline", () => {
+			setSubmissionStatus("offline", "Saved locally · offline");
+		});
+		window.addEventListener("pagehide", () => {
+			if (study.remote.runId && !study.remote.completed) {
+				syncRemote({ keepalive: true }).catch(() => {});
+			}
+		});
 	}
 
 	window.addEventListener("message", (event) => {
@@ -1902,7 +2696,7 @@
 			applyCondition(conditionForPhase());
 			syncTrainingGuide().catch(reportError);
 			recordStudyEvent("viewer_ready", {
-				sessionUrl: study.sessionUrl,
+				sessionUrl: study.activeSessionUrl,
 			});
 			return;
 		}
@@ -1941,7 +2735,10 @@
 		bindStaticControls();
 		renderStep();
 		elements.frame.src = frameUrl();
-		await loadStudyMetadata();
+		await Promise.all([
+			loadStudyMetadata(),
+			initializeRemotePersistence(),
+		]);
 	}
 
 	start().catch(reportError);

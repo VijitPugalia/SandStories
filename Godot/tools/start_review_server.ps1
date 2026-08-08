@@ -2,7 +2,9 @@ param(
     [int]$Port = 8845,
     [string]$BindAddress = "127.0.0.1",
     [string]$DynamicSessionsDir = "",
+    [string]$ExperimentDataDir = "",
     [string]$SessionName = "",
+    [switch]$AllowConditionOverride,
     [switch]$Background
 )
 
@@ -23,6 +25,11 @@ if (-not $DynamicSessionsDir) {
 if ($DynamicSessionsDir) {
     $DynamicSessionsDir = (Resolve-Path -LiteralPath $DynamicSessionsDir).Path
 }
+if (-not $ExperimentDataDir) {
+    $ExperimentDataDir = Join-Path (Split-Path $ProjectDir -Parent) "server_data\experiments"
+}
+New-Item -ItemType Directory -Force -Path $ExperimentDataDir | Out-Null
+$ExperimentDataDir = (Resolve-Path -LiteralPath $ExperimentDataDir).Path
 
 if (-not (Test-Path -LiteralPath (Join-Path $WebDir "index.html") -PathType Leaf)) {
     throw "Missing Web build: $WebDir\index.html. Run tools\build_web.ps1 first."
@@ -43,7 +50,8 @@ $ServerArgs = @(
     [string]$Port,
     $BindAddress,
     $ProjectDir,
-    $DynamicSessionsDir
+    $DynamicSessionsDir,
+    $ExperimentDataDir
 )
 
 Write-Host ""
@@ -54,13 +62,22 @@ if ($SessionName) {
     $EncodedSessionUrl = [Uri]::EscapeDataString($SessionUrl)
     Write-Host "  Session:    $BaseUrl/index.html?session=$EncodedSessionUrl&autoplay=0"
 }
-Write-Host "  Pilot:      $BaseUrl/index.html?study=pilot&participant=qa001"
-Write-Host "  Stage 1 QA: $BaseUrl/index.html?study=stage1&participant=qa001&condition=no_gestures"
-Write-Host "  Stage 2 QA: $BaseUrl/index.html?study=stage2&participant=qa201"
+Write-Host "  Study host: $BaseUrl/experiment_host.html"
+Write-Host "  Stage 1:    $BaseUrl/experiment_host.html?stage=stage1&participant=qa001"
+if ($AllowConditionOverride) {
+    Write-Host "  Stage 1 QA: $BaseUrl/experiment_host.html?stage=stage1&participant=qa001&condition=no_gestures&researcher=1"
+}
+Write-Host "  Stage 2:    $BaseUrl/experiment_host.html?stage=stage2&participant=qa201"
 if ($DynamicSessionsDir) {
     Write-Host "  Sessions:   $DynamicSessionsDir"
 }
+Write-Host "  Responses:  $ExperimentDataDir"
+if ($AllowConditionOverride) {
+    Write-Host "  QA override: condition overrides and pilot runs enabled"
+}
 Write-Host ""
+
+$env:SANDSTORIES_ALLOW_CONDITION_OVERRIDE = if ($AllowConditionOverride) { "1" } else { "0" }
 
 if ($Background) {
     $LogDir = Join-Path $WebDir "diagnostics"

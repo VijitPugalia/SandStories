@@ -225,12 +225,40 @@
       "description": "Creator-authored task content and readiness metadata for the proposal-aligned experiment runner.",
       "properties": {
         "protocolId": { "type": "string" },
+        "participantTitle": { "type": "string", "description": "Neutral participant-facing title; avoids exposing technical pipeline names." },
         "readyForDataCollection": { "type": "boolean" },
         "readinessNotes": {
           "type": "array",
           "items": { "type": "string" }
         },
+        "trainingSession": { "type": "string", "description": "URL or path to a neutral practice session that is distinct from the assessed story." },
+        "trainingCues": {
+          "type": "object",
+          "description": "Named, creator-checked moments used by guided practice instead of hard-coded timeline positions.",
+          "additionalProperties": {
+            "type": "object",
+            "required": ["start"],
+            "properties": {
+              "start": { "type": "number", "minimum": 0 },
+              "duration": { "type": "number", "minimum": 0.8, "maximum": 12 }
+            }
+          }
+        },
+        "minimumPlaybackProgress": { "type": "number", "minimum": 0.5, "maximum": 1 },
         "summaryPrompt": { "type": "string" },
+        "questionValidation": {
+          "type": "object",
+          "description": "Public validation receipt for a creator-held coding rubric. Expected answers stay outside participant-served session JSON.",
+          "required": ["rubricId", "validatedQuestionIds"],
+          "properties": {
+            "rubricId": { "type": "string" },
+            "validatedQuestionIds": {
+              "type": "array",
+              "items": { "type": "string" },
+              "uniqueItems": true
+            }
+          }
+        },
         "stage1Questions": {
           "type": "array",
           "items": {
@@ -244,7 +272,8 @@
                 "type": "array",
                 "items": { "type": "string" }
               },
-              "evidencePrompt": { "type": "string" }
+              "evidencePrompt": { "type": "string" },
+              "minEvidenceMarks": { "type": "integer", "minimum": 1, "maximum": 6 }
             }
           }
         },
@@ -261,7 +290,8 @@
                 "type": "array",
                 "items": { "type": "string" }
               },
-              "evidencePrompt": { "type": "string" }
+              "evidencePrompt": { "type": "string" },
+              "minEvidenceMarks": { "type": "integer", "minimum": 1, "maximum": 6 }
             }
           }
         }

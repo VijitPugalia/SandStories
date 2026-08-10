@@ -3,6 +3,7 @@ import AVFoundation
 import AudioToolbox
 import Combine
 import Foundation
+import OSLog
 import UIKit
 
 enum ZoomPreset: Double, CaseIterable, Identifiable, Sendable {
@@ -36,8 +37,14 @@ final class CameraZoomController: ObservableObject {
     @Published private(set) var supportedPresets: Set<ZoomPreset> = Set(ZoomPreset.allCases)
     @Published private(set) var activeLensDescription = "Wide"
     @Published private(set) var currentDeviceZoomFactor: CGFloat = 1
-    private weak var captureDevice: AVCaptureDevice?
+    @Published private(set) var diagnosticSummary = "Camera not prepared"
+
+    private var captureDevice: AVCaptureDevice?
     private var lensMonitorTask: Task<Void, Never>?
+    private let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "SandStories",
+        category: "CameraZoom"
+    )
 
     deinit {
         lensMonitorTask?.cancel()
@@ -45,22 +52,30 @@ final class CameraZoomController: ObservableObject {
 
     func prepareForARSession() {
         guard let device = ARWorldTrackingConfiguration.configurableCaptureDeviceForPrimaryCamera else {
+            captureDevice = nil
             supportedPresets = [.one]
-            activeLensDescription = "Camera zoom unavailable"
+            activeLensDescription = "ARKit camera unavailable"
+            diagnosticSummary = "configurableCaptureDeviceForPrimaryCamera returned nil"
+            logger.error("\(self.diagnosticSummary, privacy: .public)")
             return
         }
 
         captureDevice = device
         supportedPresets = Set(ZoomPreset.allCases)
-        enableAutomaticLensSwitching(on: device)
-        apply(preset: selectedPreset, animated: false)
+        diagnosticSummary = diagnostics(for: device)
+        logger.notice("prepared \(self.diagnosticSummary, privacy: .public)")
+        apply(preset: selectedPreset)
         startLensMonitoring()
     }
 
     func select(_ preset: ZoomPreset) {
-        guard supportedPresets.contains(preset) else { return }
         selectedPreset = preset
-        apply(preset: preset, animated: true)
+
+        if captureDevice == nil {
+            prepareForARSession()
+            return
+        }
+        apply(preset: preset)
     }
 
     func captureMetadata() -> ZoomCaptureMetadata {
@@ -73,11 +88,18 @@ final class CameraZoomController: ObservableObject {
         )
     }
 
-    private func apply(preset: ZoomPreset, animated: Bool) {
-        guard let device = captureDevice else { return }
-        let multiplier = displayZoomMultiplier(for: device)
-        let requested = CGFloat(preset.rawValue) / multiplier
-        let factor = min(max(requested, device.minAvailableVideoZoomFactor), device.maxAvailableVideoZoomFactor)
+    private func apply(preset: ZoomPreset) {
+        guard let device = captureDevice
+                ?? ARWorldTrackingConfiguration.configurableCaptureDeviceForPrimaryCamera else {
+            activeLensDescription = "ARKit camera unavailable"
+            logger.error("zoom tap \(preset.title, privacy: .public): no configurable ARKit camera")
+            return
+        }
+        captureDevice = device
+
+        let beforeFactor = device.videoZoomFactor
+        let beforeLens = lensName(for: device.activePrimaryConstituent ?? device)
+        let targetFactor = targetDeviceZoomFactor(for: preset, device: device)
 
         do {
             try device.lockForConfiguration()
@@ -90,48 +112,77 @@ final class CameraZoomController: ObservableObject {
                 )
             }
             device.cancelVideoZoomRamp()
-            if animated {
-                device.ramp(toVideoZoomFactor: factor, withRate: 8)
-            } else {
-                device.videoZoomFactor = factor
-            }
-            currentDeviceZoomFactor = factor
-            refreshActiveLens()
+            device.videoZoomFactor = targetFactor
+            currentDeviceZoomFactor = device.videoZoomFactor
         } catch {
             activeLensDescription = "Zoom unavailable"
+            logger.error(
+                "zoom tap \(preset.title, privacy: .public) failed: \(error.localizedDescription, privacy: .public)"
+            )
+            return
         }
+
+        refreshActiveLens()
+        logger.notice(
+            "zoom tap \(preset.title, privacy: .public) before=\(beforeFactor, privacy: .public) target=\(targetFactor, privacy: .public) applied=\(self.currentDeviceZoomFactor, privacy: .public) beforeLens=\(beforeLens, privacy: .public) active=\(self.activeLensDescription, privacy: .public)"
+        )
+
+        Task { [weak self, weak device] in
+            try? await Task.sleep(for: .milliseconds(350))
+            guard let self, let device else { return }
+            self.refreshActiveLens()
+            self.logger.notice(
+                "zoom settled \(preset.title, privacy: .public) factor=\(device.videoZoomFactor, privacy: .public) active=\(self.activeLensDescription, privacy: .public)"
+            )
+        }
+    }
+
+    private func targetDeviceZoomFactor(
+        for preset: ZoomPreset,
+        device: AVCaptureDevice
+    ) -> CGFloat {
+        let wideBase = wideBaseZoomFactor(for: device)
+        let switchFactors = device.virtualDeviceSwitchOverVideoZoomFactors.map {
+            CGFloat($0.doubleValue)
+        }
+
+        var requested = CGFloat(preset.rawValue) * wideBase
+        switch preset {
+        case .ultraWide:
+            requested = device.minAvailableVideoZoomFactor
+        case .one:
+            if let first = switchFactors.first {
+                requested = max(requested, first * 1.001)
+            }
+        case .two:
+            break
+        case .three:
+            if switchFactors.count > 1, let last = switchFactors.last {
+                requested = max(requested, last * 1.001)
+            }
+        }
+
+        return min(
+            max(requested, device.minAvailableVideoZoomFactor),
+            device.maxAvailableVideoZoomFactor
+        )
+    }
+
+    private func wideBaseZoomFactor(for device: AVCaptureDevice) -> CGFloat {
+        let hasUltraWide = device.constituentDevices.contains {
+            $0.deviceType == .builtInUltraWideCamera
+        }
+        guard hasUltraWide,
+              let firstSwitchFactor = device.virtualDeviceSwitchOverVideoZoomFactors.first?.doubleValue,
+              firstSwitchFactor > 0 else {
+            return 1
+        }
+        return CGFloat(firstSwitchFactor)
     }
 
     private func displayZoomMultiplier(for device: AVCaptureDevice?) -> CGFloat {
         guard let device else { return 1 }
-        if #available(iOS 18.0, *) {
-            return max(device.displayVideoZoomFactorMultiplier, 0.0001)
-        }
-
-        let hasUltraWide = device.constituentDevices.contains {
-            $0.deviceType == .builtInUltraWideCamera
-        }
-        if hasUltraWide,
-           let firstSwitchFactor = device.virtualDeviceSwitchOverVideoZoomFactors.first?.doubleValue,
-           firstSwitchFactor > 0 {
-            return 1 / CGFloat(firstSwitchFactor)
-        }
-        return 1
-    }
-
-    private func enableAutomaticLensSwitching(on device: AVCaptureDevice) {
-        guard device.primaryConstituentDeviceSwitchingBehavior != .unsupported else { return }
-
-        do {
-            try device.lockForConfiguration()
-            defer { device.unlockForConfiguration() }
-            device.setPrimaryConstituentDeviceSwitchingBehavior(
-                .auto,
-                restrictedSwitchingBehaviorConditions: []
-            )
-        } catch {
-            activeLensDescription = "Automatic lens switching unavailable"
-        }
+        return 1 / max(wideBaseZoomFactor(for: device), 0.0001)
     }
 
     private func startLensMonitoring() {
@@ -148,20 +199,42 @@ final class CameraZoomController: ObservableObject {
         guard let device = captureDevice else { return }
         currentDeviceZoomFactor = device.videoZoomFactor
         let activeDevice = device.activePrimaryConstituent ?? device
-        switch activeDevice.deviceType {
-        case .builtInUltraWideCamera:
-            activeLensDescription = "Ultra Wide"
-        case .builtInTelephotoCamera:
-            activeLensDescription = "Telephoto"
-        case .builtInWideAngleCamera:
-            if selectedPreset.rawValue > 1 {
-                activeLensDescription = "Wide · \(selectedPreset.title) crop"
-            } else {
-                activeLensDescription = "Wide"
-            }
-        default:
-            activeLensDescription = activeDevice.localizedName
+        activeLensDescription = lensName(for: activeDevice)
+
+        if activeDevice.deviceType == .builtInWideAngleCamera,
+           selectedPreset == .two {
+            activeLensDescription = "Wide · 2× crop"
         }
+    }
+
+    private func lensName(for device: AVCaptureDevice) -> String {
+        switch device.deviceType {
+        case .builtInUltraWideCamera:
+            return "Ultra Wide"
+        case .builtInTelephotoCamera:
+            return "Telephoto"
+        case .builtInWideAngleCamera:
+            return "Wide"
+        default:
+            return device.localizedName
+        }
+    }
+
+    private func diagnostics(for device: AVCaptureDevice) -> String {
+        let constituents = device.constituentDevices
+            .map { $0.deviceType.rawValue }
+            .joined(separator: ",")
+        let switchFactors = device.virtualDeviceSwitchOverVideoZoomFactors
+            .map { String(format: "%.4f", $0.doubleValue) }
+            .joined(separator: ",")
+        return [
+            "device=\(device.deviceType.rawValue)",
+            "min=\(device.minAvailableVideoZoomFactor)",
+            "max=\(device.maxAvailableVideoZoomFactor)",
+            "wideBase=\(wideBaseZoomFactor(for: device))",
+            "switches=[\(switchFactors)]",
+            "constituents=[\(constituents)]"
+        ].joined(separator: " ")
     }
 }
 

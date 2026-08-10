@@ -38,9 +38,13 @@ final class CameraZoomController: ObservableObject {
     @Published private(set) var activeLensDescription = "Wide"
     @Published private(set) var currentDeviceZoomFactor: CGFloat = 1
     @Published private(set) var diagnosticSummary = "Camera not prepared"
+    @Published private(set) var lastAppliedSummary = "1× • waiting for AR camera"
 
     private var captureDevice: AVCaptureDevice?
     private var lensMonitorTask: Task<Void, Never>?
+    private var postSessionReapplyTask: Task<Void, Never>?
+    private var requestedDeviceZoomFactor: CGFloat = 1
+    private var isApplyingZoom = false
     private let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "SandStories",
         category: "CameraZoom"
@@ -48,6 +52,7 @@ final class CameraZoomController: ObservableObject {
 
     deinit {
         lensMonitorTask?.cancel()
+        postSessionReapplyTask?.cancel()
     }
 
     func prepareForARSession() {
@@ -56,26 +61,47 @@ final class CameraZoomController: ObservableObject {
             supportedPresets = [.one]
             activeLensDescription = "ARKit camera unavailable"
             diagnosticSummary = "configurableCaptureDeviceForPrimaryCamera returned nil"
-            logger.error("\(self.diagnosticSummary, privacy: .public)")
+            lastAppliedSummary = "\(selectedPreset.title) • AR camera unavailable"
+            emit(diagnosticSummary, isError: true)
             return
         }
 
         captureDevice = device
         supportedPresets = Set(ZoomPreset.allCases)
         diagnosticSummary = diagnostics(for: device)
-        logger.notice("prepared \(self.diagnosticSummary, privacy: .public)")
-        apply(preset: selectedPreset)
+        emit("prepared \(diagnosticSummary)")
+        apply(preset: selectedPreset, reason: "before AR session")
         startLensMonitoring()
     }
 
+    /// ARKit can restore capture defaults while its pipeline starts. Reapply after
+    /// startup so the visible RealityKit backdrop receives the selected zoom.
+    func reapplyAfterARSessionStart() {
+        postSessionReapplyTask?.cancel()
+        postSessionReapplyTask = Task { [weak self] in
+            for delay in [150, 500, 1_200] {
+                try? await Task.sleep(for: .milliseconds(delay))
+                guard !Task.isCancelled, let self else { return }
+                self.reapplyIfNeeded(reason: "after AR session +\(delay)ms")
+            }
+        }
+    }
+
     func select(_ preset: ZoomPreset) {
+        guard supportedPresets.contains(preset) else { return }
         selectedPreset = preset
 
         if captureDevice == nil {
             prepareForARSession()
-            return
+        } else {
+            apply(preset: preset, reason: "button tap")
         }
-        apply(preset: preset)
+
+        // A short retry catches a capture-pipeline update racing the button tap.
+        Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(250))
+            self?.reapplyIfNeeded(reason: "button settle")
+        }
     }
 
     func captureMetadata() -> ZoomCaptureMetadata {
@@ -88,11 +114,13 @@ final class CameraZoomController: ObservableObject {
         )
     }
 
-    private func apply(preset: ZoomPreset) {
+    private func apply(preset: ZoomPreset, reason: String) {
+        guard !isApplyingZoom else { return }
         guard let device = captureDevice
                 ?? ARWorldTrackingConfiguration.configurableCaptureDeviceForPrimaryCamera else {
             activeLensDescription = "ARKit camera unavailable"
-            logger.error("zoom tap \(preset.title, privacy: .public): no configurable ARKit camera")
+            lastAppliedSummary = "\(preset.title) • AR camera unavailable"
+            emit("zoom \(preset.title): no configurable ARKit camera", isError: true)
             return
         }
         captureDevice = device
@@ -100,14 +128,19 @@ final class CameraZoomController: ObservableObject {
         let beforeFactor = device.videoZoomFactor
         let beforeLens = lensName(for: device.activePrimaryConstituent ?? device)
         let targetFactor = targetDeviceZoomFactor(for: preset, device: device)
+        requestedDeviceZoomFactor = targetFactor
+        isApplyingZoom = true
+        defer { isApplyingZoom = false }
 
         do {
             try device.lockForConfiguration()
             defer { device.unlockForConfiguration() }
 
             if device.primaryConstituentDeviceSwitchingBehavior != .unsupported {
+                // Restrict scene-driven fallback while still permitting switching
+                // when the requested video zoom crosses a hardware threshold.
                 device.setPrimaryConstituentDeviceSwitchingBehavior(
-                    .auto,
+                    .restricted,
                     restrictedSwitchingBehaviorConditions: []
                 )
             }
@@ -116,24 +149,39 @@ final class CameraZoomController: ObservableObject {
             currentDeviceZoomFactor = device.videoZoomFactor
         } catch {
             activeLensDescription = "Zoom unavailable"
-            logger.error(
-                "zoom tap \(preset.title, privacy: .public) failed: \(error.localizedDescription, privacy: .public)"
+            lastAppliedSummary = "\(preset.title) • configuration failed"
+            emit(
+                "zoom \(preset.title) failed (\(reason)): \(error.localizedDescription)",
+                isError: true
             )
             return
         }
 
         refreshActiveLens()
-        logger.notice(
-            "zoom tap \(preset.title, privacy: .public) before=\(beforeFactor, privacy: .public) target=\(targetFactor, privacy: .public) applied=\(self.currentDeviceZoomFactor, privacy: .public) beforeLens=\(beforeLens, privacy: .public) active=\(self.activeLensDescription, privacy: .public)"
+        updateAppliedSummary()
+        emit(
+            "zoom \(preset.title) reason=\(reason) before=\(format(beforeFactor)) " +
+            "target=\(format(targetFactor)) applied=\(format(currentDeviceZoomFactor)) " +
+            "beforeLens=\(beforeLens) active=\(activeLensDescription)"
         )
+    }
 
-        Task { [weak self, weak device] in
-            try? await Task.sleep(for: .milliseconds(350))
-            guard let self, let device else { return }
-            self.refreshActiveLens()
-            self.logger.notice(
-                "zoom settled \(preset.title, privacy: .public) factor=\(device.videoZoomFactor, privacy: .public) active=\(self.activeLensDescription, privacy: .public)"
+    private func reapplyIfNeeded(reason: String) {
+        guard let device = captureDevice else {
+            prepareForARSession()
+            return
+        }
+
+        refreshActiveLens()
+        let tolerance: CGFloat = 0.02
+        if abs(device.videoZoomFactor - requestedDeviceZoomFactor) > tolerance {
+            emit(
+                "ARKit reset zoom requested=\(format(requestedDeviceZoomFactor)) " +
+                "actual=\(format(device.videoZoomFactor)); reapplying"
             )
+            apply(preset: selectedPreset, reason: reason)
+        } else {
+            updateAppliedSummary()
         }
     }
 
@@ -189,8 +237,9 @@ final class CameraZoomController: ObservableObject {
         lensMonitorTask?.cancel()
         lensMonitorTask = Task { [weak self] in
             while !Task.isCancelled {
-                self?.refreshActiveLens()
                 try? await Task.sleep(for: .seconds(1))
+                guard !Task.isCancelled, let self else { return }
+                self.reapplyIfNeeded(reason: "ARKit reset monitor")
             }
         }
     }
@@ -205,6 +254,11 @@ final class CameraZoomController: ObservableObject {
            selectedPreset == .two {
             activeLensDescription = "Wide · 2× crop"
         }
+    }
+
+    private func updateAppliedSummary() {
+        lastAppliedSummary =
+            "\(selectedPreset.title) • \(activeLensDescription) • hw \(format(currentDeviceZoomFactor))×"
     }
 
     private func lensName(for device: AVCaptureDevice) -> String {
@@ -229,12 +283,25 @@ final class CameraZoomController: ObservableObject {
             .joined(separator: ",")
         return [
             "device=\(device.deviceType.rawValue)",
-            "min=\(device.minAvailableVideoZoomFactor)",
-            "max=\(device.maxAvailableVideoZoomFactor)",
-            "wideBase=\(wideBaseZoomFactor(for: device))",
+            "min=\(format(device.minAvailableVideoZoomFactor))",
+            "max=\(format(device.maxAvailableVideoZoomFactor))",
+            "wideBase=\(format(wideBaseZoomFactor(for: device)))",
             "switches=[\(switchFactors)]",
             "constituents=[\(constituents)]"
         ].joined(separator: " ")
+    }
+
+    private func format(_ value: CGFloat) -> String {
+        String(format: "%.2f", Double(value))
+    }
+
+    private func emit(_ message: String, isError: Bool = false) {
+        if isError {
+            logger.error("\(message, privacy: .public)")
+        } else {
+            logger.notice("\(message, privacy: .public)")
+        }
+        print("[CameraZoom] \(message)")
     }
 }
 

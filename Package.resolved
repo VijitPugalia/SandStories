@@ -1,31 +1,22 @@
 {
-  "originHash" : "8a6b1aacdaba37d68fa411efcea414aaa6dd7010ccdf976428f47eb1b26225cf",
+  "originHash" : "2ec45f9b2a68241457ec2851c3356d437315377c83efac37c0265cdd8bbe6d40",
   "pins" : [
     {
       "identity" : "client-sdk-swift",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/livekit/client-sdk-swift.git",
       "state" : {
-        "revision" : "5ae2de21aae6ebd61072e8d640a80d88321d5c78",
-        "version" : "2.5.0"
+        "revision" : "43ade336353ad12f9ec7fa1e6a51d9b3bd8121f8",
+        "version" : "2.15.3"
       }
     },
     {
-      "identity" : "swift-collections",
+      "identity" : "livekit-uniffi-xcframework",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/apple/swift-collections.git",
+      "location" : "https://github.com/livekit/livekit-uniffi-xcframework.git",
       "state" : {
-        "revision" : "a0cb0954ecb21e4e31b0070e6ed5674e8556685a",
-        "version" : "1.6.0"
-      }
-    },
-    {
-      "identity" : "swift-log",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/apple/swift-log.git",
-      "state" : {
-        "revision" : "92448c359f00ebe36ae97d3bd9086f13c7692b5a",
-        "version" : "1.13.2"
+        "revision" : "7c161254ce7cd55debc48023f69a917076b12a26",
+        "version" : "0.0.6"
       }
     },
     {
@@ -42,8 +33,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/livekit/webrtc-xcframework.git",
       "state" : {
-        "revision" : "70bbd9b51f2c46333a91469c8a8be8303b0797b7",
-        "version" : "125.6422.28"
+        "revision" : "46f2af86f06b9a8a9158d37cadda5cb5a214e4c4",
+        "version" : "144.7559.11"
       }
     }
   ],

@@ -437,11 +437,6 @@ struct ContentView: View {
 
     private var bottomChrome: some View {
         VStack(spacing: 8) {
-            CameraZoomRail(
-                zoomController: recordingCoordinator.zoomController,
-                isRecording: recordingCoordinator.isCaptureRecording
-            )
-
             HStack(spacing: 8) {
                 clearToolbarButton
                 pauseFloatingButton
@@ -834,11 +829,7 @@ struct ARViewContainer: UIViewRepresentable {
             arView.debugOptions.remove(.showSceneUnderstanding)
         }
 
-        // Configure the underlying capture device before ARKit starts, then
-        // reapply after startup because ARKit may restore camera defaults.
-        recordingCoordinator.zoomController.prepareForARSession()
         arView.session.run(configuration, options: options)
-        recordingCoordinator.zoomController.reapplyAfterARSessionStart()
     }
 }
 // MARK: - Gesture UI Helpers

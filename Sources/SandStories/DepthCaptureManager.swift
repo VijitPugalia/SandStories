@@ -230,8 +230,7 @@ actor DepthCaptureWriter {
         confidenceMap: PixelBufferBox?,
         capturedImage: PixelBufferBox,
         cameraIntrinsics: simd_float3x3,
-        cameraTransform: simd_float4x4,
-        zoomMetadata: ZoomCaptureMetadata?
+        cameraTransform: simd_float4x4
     ) async {
         guard isRecording else { return }
         benchmarkMetrics.writerCaptureCalls += 1
@@ -366,9 +365,6 @@ actor DepthCaptureWriter {
                         confidenceMediumCount: confidenceHistogram?.medium,
                         confidenceHighCount: confidenceHistogram?.high,
                         rgbPresentationTimeSeconds: rgbPTS,
-                        rgbDisplayZoomFactor: zoomMetadata?.displayZoomFactor,
-                        rgbDeviceZoomFactor: zoomMetadata?.deviceZoomFactor,
-                        rgbActiveLens: zoomMetadata?.activeLens,
                         cameraTransformColumnMajor: transformArray,
                         cameraIntrinsicsColumnMajor: intrinsicsArray,
                         cameraIntrinsicsReference: "depthResolution",
@@ -868,7 +864,6 @@ final class DepthCaptureManager: NSObject, @preconcurrency ARSessionDelegate {
     private var capturesSmoothedDepth: Bool = true
     private var targetCaptureFPS: Double = 30
     private var lastCaptureTimestamp: TimeInterval?
-    var zoomMetadataProvider: (() -> ZoomCaptureMetadata?)?
 
     var isCurrentlyRecording: Bool {
         return isRecording
@@ -1106,7 +1101,6 @@ final class DepthCaptureManager: NSObject, @preconcurrency ARSessionDelegate {
         let capturedImage = PixelBufferBox(frame.capturedImage)
         let cameraIntrinsics = frame.camera.intrinsics
         let cameraTransform = frame.camera.transform
-        let zoomMetadata = zoomMetadataProvider?()
 
         Task {
             await writer.capture(
@@ -1117,8 +1111,7 @@ final class DepthCaptureManager: NSObject, @preconcurrency ARSessionDelegate {
                 confidenceMap: confidenceMap,
                 capturedImage: capturedImage,
                 cameraIntrinsics: cameraIntrinsics,
-                cameraTransform: cameraTransform,
-                zoomMetadata: zoomMetadata
+                cameraTransform: cameraTransform
             )
             self.captureInFlight = false
         }

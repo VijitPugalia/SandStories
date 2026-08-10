@@ -15,7 +15,6 @@ final class RecordingCoordinator: ObservableObject {
     let locationCaptureManager = LocationCaptureManager()
     let uploadSettings = UploadSettingsStore()
     let uploadManager = SessionUploadManager()
-    let zoomController = CameraZoomController()
 
     private let objectDetector: any StoryObjectDetecting = StubStoryObjectDetector()
 
@@ -89,9 +88,6 @@ final class RecordingCoordinator: ObservableObject {
         self.handPoseManager.isMarkGestureEnabled = markEnabled
 
         framePipeline.coordinator = self
-        depthCaptureManager.zoomMetadataProvider = { [weak zoomController] in
-            zoomController?.captureMetadata()
-        }
         refreshDestinationLabel()
         
         handPoseManager.onGestureCommand = { [weak self] command in

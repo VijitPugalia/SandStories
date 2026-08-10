@@ -66,7 +66,7 @@ To view and edit the frontend interactively, connect the LiDAR iPhone, then run:
 xtool dev run --usb
 ```
 
-The SwiftUI screen is in `Sources/SandStories/ContentView.swift`; the zoom rail is in `Sources/SandStories/CameraZoomRail.swift`. A physical device is required for the real ARKit/LiDAR view. Before the first build, xtool must have a Darwin Swift SDK registered (for example, `xtool sdk install /path/to/Xcode.xip`).
+The SwiftUI screen is in `Sources/SandStories/ContentView.swift`. A physical device is required for the real ARKit/LiDAR view. Before the first build, xtool must have a Darwin Swift SDK registered (for example, `xtool sdk install /path/to/Xcode.xip`).
 
 The build script:
 
@@ -112,7 +112,7 @@ sequenceDiagram
 Key source files:
 
 - `SandStoriesApp.swift` — SwiftUI app entry point.
-- `ContentView.swift` and `CameraZoomRail.swift` — main AR UI, lightweight camera controls, RGB zoom/lens lock, inline gesture settings, benchmark button, and export sheet.
+- `ContentView.swift` — main AR UI, inline gesture settings, benchmark button, and export sheet.
 - `ARSessionDelegateMultiplexer.swift` — fans ARKit delegate callbacks out to capture subsystems.
 - `RecordingCoordinator.swift` — owns start/stop flow, storage destination, audio, location, tray/object hooks, and benchmark mode.
 - `DepthCaptureManager.swift` — writes v2 RGB/depth/confidence streams, selects raw/smoothed depth, records diagnostics, and tracks throughput metrics.

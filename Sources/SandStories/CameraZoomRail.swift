@@ -5,13 +5,23 @@ struct CameraZoomRail: View {
     let isRecording: Bool
 
     var body: some View {
-        HStack(spacing: 14) {
-            ForEach(ZoomPreset.allCases) { preset in
-                zoomButton(for: preset)
+        VStack(spacing: 2) {
+            HStack(spacing: 14) {
+                ForEach(ZoomPreset.allCases) { preset in
+                    zoomButton(for: preset)
+                }
             }
+            .padding(.horizontal, 8)
+            .frame(height: 56)
+
+            Text(zoomController.lastAppliedSummary)
+                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                .foregroundStyle(Color.white.opacity(0.72))
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+                .accessibilityLabel("Applied camera: \(zoomController.lastAppliedSummary)")
         }
-        .padding(.horizontal, 8)
-        .frame(height: 56)
+        .frame(height: 72)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("RGB camera zoom")
     }

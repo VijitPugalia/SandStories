@@ -41,14 +41,31 @@ func _run() -> void:
 		_fail("Condition assignment is not deterministic")
 		return
 
-	main._on_experiment_condition_requested("no_gestures")
-	if main.gesture_layer.visible or not main.layer_toggles["gestures"].disabled:
-		_fail("No-gesture condition can be bypassed")
-		return
+	var condition_expectations := {
+		"no_audio": ["audio"],
+		"no_gestures": ["gestures"],
+		"no_objects": ["objects"],
+		"no_sand": ["sand", "heightmap_surface"],
+	}
+	for condition in condition_expectations:
+		main._on_experiment_condition_requested(condition)
+		for layer in condition_expectations[condition]:
+			var state: Dictionary = main._web_state_snapshot()
+			if bool(state.get("layers", {}).get(layer, true)):
+				_fail("%s did not hide %s" % [condition, layer])
+				return
+			if not main.layer_toggles[layer].disabled:
+				_fail("%s did not lock %s" % [condition, layer])
+				return
 	main._on_experiment_condition_requested("baseline")
-	if not main.gesture_layer.visible or main.layer_toggles["gestures"].disabled:
-		_fail("Baseline condition did not restore gestures")
-		return
+	for layer in ["gestures", "objects", "sand", "heightmap_surface"]:
+		var baseline_state: Dictionary = main._web_state_snapshot()
+		if not bool(baseline_state.get("layers", {}).get(layer, false)):
+			_fail("Baseline condition did not restore %s" % layer)
+			return
+		if main.layer_toggles[layer].disabled:
+			_fail("Baseline condition left %s locked" % layer)
+			return
 
 	var readiness: Dictionary = main._experiment_readiness()
 	if bool(readiness.get("ready", true)):

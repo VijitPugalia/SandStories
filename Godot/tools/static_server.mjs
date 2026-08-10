@@ -1,6 +1,7 @@
 import http from "node:http";
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { extname, isAbsolute, join, relative, resolve } from "node:path";
+import { createExperimentApi, ExperimentStore } from "./experiment_api.mjs";
 
 const root = resolve(process.argv[2] ?? "build/web");
 const port = Number(process.argv[3] ?? 8768);
@@ -9,6 +10,21 @@ const projectRoot = process.argv[5] ? resolve(process.argv[5]) : undefined;
 const dynamicSessionsRoot = process.argv[6]
   ? resolve(process.argv[6])
   : undefined;
+const experimentDataRoot = resolve(
+  process.argv[7]
+  ?? process.env.SANDSTORIES_EXPERIMENT_DATA
+  ?? join(projectRoot ?? root, "experiment_data"),
+);
+const allowConditionOverride = (
+  process.env.SANDSTORIES_ALLOW_CONDITION_OVERRIDE === "1"
+);
+const experimentStore = await new ExperimentStore({
+  dataRoot: experimentDataRoot,
+  protocolPath: join(root, "experiment_protocol.json"),
+  allowConditionOverride,
+  allowPilotRuns: allowConditionOverride,
+}).init();
+const handleExperimentApi = createExperimentApi(experimentStore);
 
 const mime = {
   ".html": "text/html; charset=utf-8",
@@ -55,24 +71,30 @@ function resolveRequestPath(pathname) {
   return containedPath(root, pathname);
 }
 
-const server = http.createServer((request, response) => {
+const server = http.createServer(async (request, response) => {
+  let url;
+  let pathname;
+  try {
+    url = new URL(request.url ?? "/", `http://${host}:${port}`);
+    pathname =
+      url.pathname === "/" ? "/index.html" : decodeURIComponent(url.pathname);
+  } catch {
+    response.writeHead(400);
+    response.end("Bad request");
+    return;
+  }
+
+  if (await handleExperimentApi(request, response, url)) {
+    console.log(`${request.method} ${url.pathname} -> API`);
+    return;
+  }
+
   if (!["GET", "HEAD"].includes(request.method ?? "")) {
     response.writeHead(405, {
       Allow: "GET, HEAD",
       "Cache-Control": "no-store",
     });
     response.end("Method not allowed");
-    return;
-  }
-
-  let pathname;
-  try {
-    const url = new URL(request.url ?? "/", `http://${host}:${port}`);
-    pathname =
-      url.pathname === "/" ? "/index.html" : decodeURIComponent(url.pathname);
-  } catch {
-    response.writeHead(400);
-    response.end("Bad request");
     return;
   }
 
@@ -123,4 +145,6 @@ server.listen(port, host, () => {
   if (dynamicSessionsRoot) {
     console.log(`Dynamic sessions: ${dynamicSessionsRoot}`);
   }
+  console.log(`Experiment data: ${experimentDataRoot}`);
+  console.log(`Condition override: ${allowConditionOverride ? "enabled" : "disabled"}`);
 });

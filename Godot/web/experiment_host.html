@@ -26,6 +26,10 @@
 		</div>
 
 		<div class="header-actions">
+			<span id="submission-status" class="connection-status" data-state="loading">
+				<span class="status-dot" aria-hidden="true"></span>
+				<span>Connecting storage</span>
+			</span>
 			<span id="bridge-status" class="connection-status" data-state="loading">
 				<span class="status-dot" aria-hidden="true"></span>
 				<span>Loading viewer</span>
@@ -204,7 +208,7 @@
 
 			<div class="researcher-actions">
 				<button id="download-response" class="secondary-button" type="button">
-					Export draft
+					Download backup
 				</button>
 				<button id="reset-study" class="danger-button" type="button">
 					Reset run

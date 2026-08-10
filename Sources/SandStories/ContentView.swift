@@ -2,6 +2,11 @@ import ARKit
 import RealityKit
 import SwiftUI
 
+private struct ExportRequest: Identifiable {
+    let folderURL: URL
+    var id: URL { folderURL }
+}
+
 struct ContentView: View {
     @StateObject private var recordingCoordinator = RecordingCoordinator()
     @StateObject private var experimentSettings = ExperimentServerSettings()
@@ -9,17 +14,119 @@ struct ContentView: View {
     @StateObject private var liveKitPreviewManager = LiveKitPreviewManager()
     @StateObject private var thermalMonitor = ThermalMonitor()
     @State private var shareItems: [Any] = []
+    @State private var pendingShareItems: [Any]?
     @State private var isShowingShareSheet = false
     @State private var showStorageSheet = false
-    @State private var showExportSheet = false
     @State private var showUploadSheet = false
-    @State private var exportFolderURL: URL?
-    @State private var recordingStartDate: Date?
+    @State private var exportRequest: ExportRequest?
     @State private var showGestureGuide = false
     @State private var selectedAppTab: SandStoriesTab = .capture
     private let shareExportManager = ShareExportManager()
 
     var body: some View {
+        adaptiveTabView
+            .tint(Color(red: 0.94, green: 0.70, blue: 0.28))
+            .preferredColorScheme(.dark)
+            .toolbarBackground(.visible, for: .tabBar)
+            .toolbarColorScheme(.dark, for: .tabBar)
+            .sheet(isPresented: $showStorageSheet) {
+                StorageDestinationSheet(
+                    destinationLabel: recordingCoordinator.destinationLabel,
+                    onSelectInternal: {
+                        recordingCoordinator.selectInternalDestination()
+                    },
+                    onSelectExternalSSD: {
+                        recordingCoordinator.requestExternalFolderPicker()
+                    }
+                )
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+                .presentationCornerRadius(28)
+            }
+            .sheet(isPresented: $recordingCoordinator.showingFolderPicker) {
+                DocumentFolderPicker(
+                    onPicked: { recordingCoordinator.handleExternalFolderPicked($0) },
+                    onCancelled: { recordingCoordinator.handleFolderPickerCancelled() }
+                )
+            }
+            .sheet(item: $exportRequest, onDismiss: presentPendingShareSheet) { request in
+                ExportSessionPreviewSheet(sessionFolderName: request.folderURL.lastPathComponent) {
+                    Task { await exportAndPresentShare(folder: request.folderURL) }
+                }
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+                .presentationCornerRadius(28)
+            }
+            .sheet(isPresented: $showUploadSheet) {
+                UploadSettingsSheet(
+                    settings: recordingCoordinator.uploadSettings,
+                    experimentSettings: experimentSettings
+                )
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
+                    .presentationCornerRadius(28)
+            }
+            .sheet(isPresented: $isShowingShareSheet) {
+                ActivityView(items: shareItems)
+            }
+            .confirmationDialog(
+                "iPhone is getting hot",
+                isPresented: $thermalMonitor.isPromptPresented,
+                titleVisibility: .visible
+            ) {
+                Button("Reduce load & continue") {
+                    thermalMonitor.acknowledge()
+                    recordingCoordinator.reduceLoadForThermal()
+                    liveKitPreviewManager.suspendForThermal()
+                }
+                Button("Keep full quality") {
+                    thermalMonitor.acknowledge()
+                }
+                Button("Stop & save", role: .destructive) {
+                    thermalMonitor.acknowledge()
+                    Task { await recordingCoordinator.stopForThermal() }
+                }
+            } message: {
+                Text("SandStories can reduce LiDAR and hand-tracking work, keep full quality, or safely finish this session.")
+            }
+            .onChange(of: recordingCoordinator.isCaptureRecording) { _, isOn in
+                if isOn {
+                    thermalMonitor.evaluateForActiveSession()
+                } else {
+                    thermalMonitor.resetForNextSession()
+                }
+            }
+            .onAppear {
+                remoteControlManager.start(settings: experimentSettings, coordinator: recordingCoordinator)
+                Task { await liveKitPreviewManager.connect(settings: experimentSettings) }
+            }
+            .onChange(of: experimentSettings.enabled) { _, _ in
+                remoteControlManager.start(settings: experimentSettings, coordinator: recordingCoordinator)
+                Task { await liveKitPreviewManager.connect(settings: experimentSettings) }
+            }
+            .onChange(of: experimentSettings.previewEnabled) { _, _ in
+                Task { await liveKitPreviewManager.connect(settings: experimentSettings) }
+            }
+    }
+
+    @ViewBuilder
+    private var adaptiveTabView: some View {
+        if #available(iOS 26.0, *) {
+            appTabView
+                .tabBarMinimizeBehavior(.never)
+                .tabViewBottomAccessory {
+                    if selectedAppTab == .capture {
+                        captureAccessory
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 6)
+                    }
+                }
+        } else {
+            appTabView
+        }
+    }
+
+    private var appTabView: some View {
         TabView(selection: $selectedAppTab) {
             captureTab
                 .tabItem {
@@ -58,11 +165,23 @@ struct ContentView: View {
             }
             .tag(SandStoriesTab.settings)
         }
-        .tint(Color(red: 0.94, green: 0.70, blue: 0.28))
-        .preferredColorScheme(.dark)
     }
 
+    @ViewBuilder
     private var captureTab: some View {
+        if #available(iOS 26.0, *) {
+            captureCanvas
+        } else {
+            captureCanvas
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    captureAccessory
+                        .padding(.horizontal, 20)
+                        .padding(.bottom, 10)
+                }
+        }
+    }
+
+    private var captureCanvas: some View {
         ZStack {
             ARViewContainer(
                 recordingCoordinator: recordingCoordinator,
@@ -77,131 +196,8 @@ struct ContentView: View {
             }
             .padding(.top, 8)
             .zIndex(2)
-
-            if recordingCoordinator.isCapturePaused {
-                ZStack {
-                    Color.black.opacity(0.35)
-                        .ignoresSafeArea()
-                    
-                    VStack(spacing: 16) {
-                        Image(systemName: "pause.circle.fill")
-                            .font(.system(size: 64))
-                            .foregroundStyle(Color.accentColor)
-                        
-                        Text("SESSION PAUSED")
-                            .font(.title2.weight(.bold))
-                            .foregroundStyle(Color.white)
-                            .tracking(2.0)
-                        
-                        Text("Tap play or raise open palm to resume recording")
-                            .font(.subheadline)
-                            .foregroundStyle(Color.white.opacity(0.8))
-                    }
-                    .padding(.horizontal, 28)
-                    .padding(.vertical, 24)
-                    .background {
-                        RoundedRectangle(cornerRadius: 24, style: .continuous)
-                            .fill(Color.black.opacity(0.78))
-                    }
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 24, style: .continuous)
-                            .stroke(Color.white.opacity(0.18), lineWidth: 0.75)
-                    }
-                    .shadow(color: Color.black.opacity(0.18), radius: 4, y: 2)
-                }
-                .transition(.opacity.combined(with: .scale(scale: 0.95)))
-                .allowsHitTesting(false)
-                .zIndex(1)
-            }
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            captureAccessory
-                .padding(.horizontal, 20)
-                .padding(.bottom, 10)
         }
         .preferredColorScheme(.dark)
-        .sheet(isPresented: $showStorageSheet) {
-            StorageDestinationSheet(
-                destinationLabel: recordingCoordinator.destinationLabel,
-                onSelectInternal: {
-                    recordingCoordinator.selectInternalDestination()
-                },
-                onSelectExternalSSD: {
-                    recordingCoordinator.requestExternalFolderPicker()
-                }
-            )
-            .presentationDetents([.medium, .large])
-            .presentationDragIndicator(.visible)
-            .presentationCornerRadius(28)
-        }
-        .sheet(isPresented: $recordingCoordinator.showingFolderPicker) {
-            DocumentFolderPicker(
-                onPicked: { recordingCoordinator.handleExternalFolderPicked($0) },
-                onCancelled: { recordingCoordinator.handleFolderPickerCancelled() }
-            )
-        }
-        .sheet(isPresented: $showExportSheet, onDismiss: { exportFolderURL = nil }) {
-            if let url = exportFolderURL {
-                ExportSessionPreviewSheet(sessionFolderName: url.lastPathComponent) {
-                    Task { await exportAndPresentShare(folder: url) }
-                }
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)
-                .presentationCornerRadius(28)
-            }
-        }
-        .sheet(isPresented: $showUploadSheet) {
-            UploadSettingsSheet(
-                settings: recordingCoordinator.uploadSettings,
-                experimentSettings: experimentSettings
-            )
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)
-                .presentationCornerRadius(28)
-        }
-        .sheet(isPresented: $isShowingShareSheet) {
-            ActivityView(items: shareItems)
-        }
-        .confirmationDialog(
-            "iPhone is getting hot",
-            isPresented: $thermalMonitor.isPromptPresented,
-            titleVisibility: .visible
-        ) {
-            Button("Reduce load & continue") {
-                thermalMonitor.acknowledge()
-                recordingCoordinator.reduceLoadForThermal()
-                liveKitPreviewManager.suspendForThermal()
-            }
-            Button("Keep full quality") {
-                thermalMonitor.acknowledge()
-            }
-            Button("Stop & save", role: .destructive) {
-                thermalMonitor.acknowledge()
-                Task { await recordingCoordinator.stopForThermal() }
-            }
-        } message: {
-            Text("SandStories can reduce LiDAR and hand-tracking work, keep full quality, or safely finish this session.")
-        }
-        .onChange(of: recordingCoordinator.isCaptureRecording) { _, isOn in
-            if isOn {
-                recordingStartDate = Date()
-                thermalMonitor.evaluateForActiveSession()
-            } else {
-                recordingStartDate = nil
-                thermalMonitor.resetForNextSession()
-            }
-        }
-        .onAppear {
-            remoteControlManager.start(settings: experimentSettings, coordinator: recordingCoordinator)
-            Task { await liveKitPreviewManager.connect(settings: experimentSettings) }
-        }
-        .onChange(of: experimentSettings.enabled) { _, _ in
-            remoteControlManager.start(settings: experimentSettings, coordinator: recordingCoordinator)
-            Task { await liveKitPreviewManager.connect(settings: experimentSettings) }
-        }
-        .onChange(of: experimentSettings.previewEnabled) { _, _ in
-            Task { await liveKitPreviewManager.connect(settings: experimentSettings) }
-        }
     }
 
     // MARK: - Top
@@ -348,15 +344,19 @@ struct ContentView: View {
 
     private var sessionStatusHUD: some View {
         VStack(alignment: .trailing, spacing: 4) {
-            if recordingCoordinator.isCaptureRecording, let start = recordingStartDate {
+            if recordingCoordinator.isCaptureRecording {
                 TimelineView(.periodic(from: .now, by: 1)) { timeline in
-                    Text(formattedDuration(from: start, to: timeline.date))
+                    Text(recordingElapsedText(at: timeline.date))
                         .font(.caption.monospacedDigit().weight(.semibold))
                         .foregroundStyle(Color(uiColor: .label))
                 }
-                Text("Recording")
+                Text(recordingCoordinator.isCapturePaused ? "Paused" : "Recording")
                     .font(.caption2.weight(.medium))
-                    .foregroundStyle(Color(uiColor: .secondaryLabel))
+                    .foregroundStyle(
+                        recordingCoordinator.isCapturePaused
+                            ? Color(red: 0.94, green: 0.70, blue: 0.28)
+                            : Color(uiColor: .secondaryLabel)
+                    )
             } else {
                 Text("Ready")
                     .font(.caption.weight(.semibold))
@@ -375,17 +375,19 @@ struct ContentView: View {
     }
 
     private var sessionAccessibilityLabel: String {
-        if recordingCoordinator.isCaptureRecording, let start = recordingStartDate {
-            return "Recording, elapsed \(formattedDuration(from: start, to: Date()))"
+        guard recordingCoordinator.isCaptureRecording else {
+            return "Ready, not recording"
         }
-        return "Ready, not recording"
+
+        let state = recordingCoordinator.isCapturePaused ? "Paused" : "Recording"
+        return "\(state), elapsed \(recordingElapsedText(at: Date()))"
     }
 
-    private func formattedDuration(from start: Date, to end: Date) -> String {
-        let s = max(0, Int(end.timeIntervalSince(start)))
-        let m = s / 60
-        let r = s % 60
-        return String(format: "%d:%02d", m, r)
+    private func formattedDuration(seconds: TimeInterval) -> String {
+        let totalSeconds = max(0, Int(seconds))
+        let minutes = totalSeconds / 60
+        let remainder = totalSeconds % 60
+        return String(format: "%d:%02d", minutes, remainder)
     }
 
     private var locationOverlay: some View {
@@ -492,27 +494,21 @@ struct ContentView: View {
                 await recordingCoordinator.toggleRecording()
             }
         } label: {
-            VStack(spacing: 6) {
-                ZStack {
-                    Circle()
-                        .fill(Color.black.opacity(0.52))
-                        .frame(width: 72, height: 72)
-                    Circle()
-                        .stroke(Color.white.opacity(0.92), lineWidth: 3)
-                        .frame(width: 66, height: 66)
-                    Circle()
-                        .fill(Color(uiColor: .systemRed))
-                        .frame(width: 54, height: 54)
-                }
-                Text("Record")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(Color.white)
+            ZStack {
+                Circle()
+                    .fill(Color.black.opacity(0.52))
+                    .frame(width: 72, height: 72)
+                Circle()
+                    .stroke(Color.white.opacity(0.96), lineWidth: 3)
+                    .frame(width: 66, height: 66)
+                Circle()
+                    .fill(Color(uiColor: .systemRed))
+                    .frame(width: 54, height: 54)
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
-            .contentShape(Rectangle())
+            .padding(.vertical, 4)
+            .contentShape(Circle())
         }
-        .buttonStyle(LiquidButtonStyle())
+        .buttonStyle(.plain)
         .disabled(isDisabled)
         .opacity(isDisabled ? 0.42 : 1)
         .accessibilityLabel("Start session recording")
@@ -520,100 +516,115 @@ struct ContentView: View {
 
     private var recordingControlAccessory: some View {
         TimelineView(.periodic(from: .now, by: 1)) { timeline in
-            HStack(spacing: 10) {
+            VStack(spacing: 6) {
                 HStack(spacing: 7) {
-                    Circle()
-                        .fill(Color(uiColor: .systemRed))
-                        .frame(width: 8, height: 8)
-                    Text("REC")
-                        .font(.caption.weight(.bold))
+                    Image(systemName: recordingCoordinator.isCapturePaused ? "pause.fill" : "circle.fill")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(
+                            recordingCoordinator.isCapturePaused
+                                ? Color(red: 0.94, green: 0.70, blue: 0.28)
+                                : Color(uiColor: .systemRed)
+                        )
+                    Text(recordingCoordinator.isCapturePaused ? "PAUSED" : "REC")
+                        .font(.caption2.weight(.bold))
                         .foregroundStyle(Color.white)
                     Text(recordingElapsedText(at: timeline.date))
                         .font(.caption.monospacedDigit().weight(.semibold))
-                        .foregroundStyle(Color.white.opacity(0.88))
+                        .foregroundStyle(Color.white.opacity(0.92))
+                }
+                .padding(.horizontal, 12)
+                .frame(height: 28)
+                .background {
+                    Capsule(style: .continuous)
+                        .fill(Color.black.opacity(0.52))
                 }
                 .accessibilityElement(children: .combine)
-                .accessibilityLabel("Recording, elapsed \(recordingElapsedText(at: timeline.date))")
+                .accessibilityLabel(
+                    "\(recordingCoordinator.isCapturePaused ? "Paused" : "Recording"), elapsed \(recordingElapsedText(at: timeline.date))"
+                )
 
-                Divider()
-                    .overlay(Color.white.opacity(0.22))
-                    .frame(height: 28)
-
-                Button {
-                    Task {
-                        await recordingCoordinator.togglePauseCaptureSession()
-                    }
-                } label: {
-                    Label(
-                        recordingCoordinator.isCapturePaused ? "Resume" : "Pause",
-                        systemImage: recordingCoordinator.isCapturePaused ? "play.fill" : "pause.fill"
-                    )
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(Color.white)
-                    .padding(.horizontal, 13)
-                    .frame(height: 40)
-                    .background {
-                        Capsule(style: .continuous)
-                            .fill(Color.white.opacity(recordingCoordinator.isCapturePaused ? 0.20 : 0.10))
-                    }
-                }
-                .buttonStyle(LiquidButtonStyle())
-                .accessibilityLabel(recordingCoordinator.isCapturePaused ? "Resume session recording" : "Pause session recording")
-
-                Button {
-                    Task {
-                        await recordingCoordinator.toggleRecording()
-                    }
-                } label: {
-                    Label("Stop", systemImage: "stop.fill")
-                        .font(.caption.weight(.bold))
-                        .foregroundStyle(Color.white)
-                        .padding(.horizontal, 14)
-                        .frame(height: 40)
-                        .background {
-                            Capsule(style: .continuous)
-                                .fill(Color(uiColor: .systemRed))
+                HStack(spacing: 30) {
+                    Button {
+                        Task {
+                            await recordingCoordinator.togglePauseCaptureSession()
                         }
+                    } label: {
+                        ZStack {
+                            Circle()
+                                .fill(Color.black.opacity(0.56))
+                                .frame(width: 54, height: 54)
+                            Circle()
+                                .stroke(Color.white.opacity(0.82), lineWidth: 1.5)
+                                .frame(width: 48, height: 48)
+                            Image(systemName: recordingCoordinator.isCapturePaused ? "play.fill" : "pause.fill")
+                                .font(.system(size: 19, weight: .semibold))
+                                .foregroundStyle(Color.white)
+                                .offset(x: recordingCoordinator.isCapturePaused ? 1 : 0)
+                        }
+                        .contentShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(
+                        recordingCoordinator.isCapturePaused
+                            ? "Resume session recording"
+                            : "Pause session recording"
+                    )
+
+                    Button {
+                        Task {
+                            await recordingCoordinator.toggleRecording()
+                        }
+                    } label: {
+                        ZStack {
+                            Circle()
+                                .fill(Color.black.opacity(0.52))
+                                .frame(width: 72, height: 72)
+                            Circle()
+                                .stroke(Color.white.opacity(0.96), lineWidth: 3)
+                                .frame(width: 66, height: 66)
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .fill(Color(uiColor: .systemRed))
+                                .frame(width: 34, height: 34)
+                        }
+                        .contentShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Stop and save session recording")
+
+                    Color.clear
+                        .frame(width: 54, height: 54)
+                        .accessibilityHidden(true)
                 }
-                .buttonStyle(LiquidButtonStyle())
-                .accessibilityLabel("Stop and save session recording")
             }
-            .padding(8)
-            .glassPanel(
-                cornerRadius: 28,
-                blurStyle: .systemThinMaterial,
-                shadowRadius: 14,
-                shadowYOffset: 6
-            )
+            .frame(maxWidth: .infinity)
             .accessibilityElement(children: .contain)
         }
     }
 
-    private func recordingElapsedText(at date: Date) -> String {
-        guard let recordingStartDate else { return "0:00" }
-        return formattedDuration(from: recordingStartDate, to: date)
+    private func recordingElapsedText(at _: Date) -> String {
+        formattedDuration(seconds: recordingCoordinator.recordingElapsedSeconds())
     }
 
-    // MARK: - Export (same zip + activity flow as before)
+    // MARK: - Export
 
     private func presentLastSessionExport() {
         guard let folder = recordingCoordinator.lastSessionFolderURL else { return }
-        exportFolderURL = folder
-        showExportSheet = true
+        exportRequest = ExportRequest(folderURL: folder)
     }
 
+    private func presentPendingShareSheet() {
+        guard let items = pendingShareItems else { return }
+        shareItems = items
+        pendingShareItems = nil
+        isShowingShareSheet = true
+    }
 
     private func exportAndPresentShare(folder: URL) async {
         do {
             let zipURL = try await shareExportManager.zipSessionFolder(folder)
             await MainActor.run {
-                shareItems = [zipURL]
-                showExportSheet = false
-                exportFolderURL = nil
-            }
-            try await Task.sleep(nanoseconds: 350_000_000)
-            await MainActor.run {
-                isShowingShareSheet = true
+                pendingShareItems = [zipURL]
+                exportRequest = nil
             }
         } catch {
             print("Share export error: \(error)")
@@ -680,14 +691,11 @@ struct ARViewContainer: UIViewRepresentable {
         context.coordinator.meshVisualizationEnabled = recordingCoordinator.isMeshVisualizationEnabled
         context.coordinator.performanceMode = recordingCoordinator.capturePerformanceMode
         context.coordinator.isCaptureRecording = recordingCoordinator.isCaptureRecording
-        recordingCoordinator.depthCaptureManager.setRecording(recordingCoordinator.isCaptureRecording)
         return arView
     }
 
     @MainActor
     func updateUIView(_ uiView: ARView, context: Context) {
-        recordingCoordinator.depthCaptureManager.setRecording(recordingCoordinator.isCaptureRecording)
-
         let needsReconfiguration =
             context.coordinator.meshVisualizationEnabled != recordingCoordinator.isMeshVisualizationEnabled ||
             context.coordinator.performanceMode != recordingCoordinator.capturePerformanceMode ||

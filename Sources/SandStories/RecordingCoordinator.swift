@@ -66,6 +66,8 @@ final class RecordingCoordinator: ObservableObject {
     private var audioStartMonotonic: Double = 0
     private var usedExternalForCurrentSession = false
     private var activeDepthDiagnosticProfile: String?
+    private var accumulatedRecordingDuration: TimeInterval = 0
+    private var activeRecordingSegmentStartedUptime: TimeInterval?
 
     private enum StopReason {
         case manual
@@ -300,6 +302,14 @@ final class RecordingCoordinator: ObservableObject {
         isDepthDiagnosticRunning = false
     }
 
+    func recordingElapsedSeconds() -> TimeInterval {
+        var elapsed = accumulatedRecordingDuration
+        if let segmentStart = activeRecordingSegmentStartedUptime {
+            elapsed += max(0, ProcessInfo.processInfo.systemUptime - segmentStart)
+        }
+        return max(0, elapsed)
+    }
+
     func togglePauseCaptureSession() async {
         guard isCaptureRecording else { return }
         if isCapturePaused {
@@ -311,19 +321,30 @@ final class RecordingCoordinator: ObservableObject {
 
     func pauseCaptureSession() async {
         guard isCaptureRecording, !isCapturePaused else { return }
-        isCapturePaused = true
+
+        if let segmentStart = activeRecordingSegmentStartedUptime {
+            accumulatedRecordingDuration += max(
+                0,
+                ProcessInfo.processInfo.systemUptime - segmentStart
+            )
+            activeRecordingSegmentStartedUptime = nil
+        }
+
         audioRecorder.pauseRecording()
-        depthCaptureManager.setRecording(false)
+        await depthCaptureManager.pauseRecording()
         await handPoseManager.setPaused(true)
         await handPoseManager.clearStrokes()
+        isCapturePaused = true
     }
 
     func resumeCaptureSession() async {
         guard isCaptureRecording, isCapturePaused else { return }
-        isCapturePaused = false
+
+        await depthCaptureManager.resumeRecording()
         audioRecorder.resumeRecording()
-        depthCaptureManager.setRecording(true)
+        activeRecordingSegmentStartedUptime = ProcessInfo.processInfo.systemUptime
         await handPoseManager.setPaused(false)
+        isCapturePaused = false
     }
 
     func markSegment() async {
@@ -515,9 +536,11 @@ final class RecordingCoordinator: ObservableObject {
             await handPoseManager.resetGestureState()
             handPoseManager.setTargetFrameRate(15)
             handPoseManager.setCaptureActive(true)
+            accumulatedRecordingDuration = 0
+            await depthCaptureManager.beginRecording()
+            activeRecordingSegmentStartedUptime = ProcessInfo.processInfo.systemUptime
             isCaptureRecording = true
             isCapturePaused = false
-            depthCaptureManager.setRecording(true)
         } catch {
             activeDepthDiagnosticProfile = nil
             warningBanner = "Could not start session: \(error.localizedDescription)"
@@ -553,6 +576,14 @@ final class RecordingCoordinator: ObservableObject {
     }
 
     private func stopCaptureSession() async {
+        if let segmentStart = activeRecordingSegmentStartedUptime {
+            accumulatedRecordingDuration += max(
+                0,
+                ProcessInfo.processInfo.systemUptime - segmentStart
+            )
+            activeRecordingSegmentStartedUptime = nil
+        }
+
         handPoseManager.setCaptureActive(false)
         locationCaptureManager.stopCapture()
         await depthCaptureManager.stopAndFinishRecording()

@@ -1027,13 +1027,21 @@ final class DepthCaptureManager: NSObject, @preconcurrency ARSessionDelegate {
         }
     }
 
-    func setRecording(_ isRecording: Bool) {
-        self.isRecording = isRecording
-        if isRecording {
-            lastCaptureTimestamp = nil
-        }
-        let writer = self.writer
-        Task { await writer.setRecording(isRecording) }
+    func beginRecording() async {
+        await writer.setRecording(true)
+        lastCaptureTimestamp = nil
+        isRecording = true
+    }
+
+    func pauseRecording() async {
+        isRecording = false
+        await writer.setRecording(false)
+    }
+
+    func resumeRecording() async {
+        await writer.setRecording(true)
+        lastCaptureTimestamp = nil
+        isRecording = true
     }
 
     func session(_ session: ARSession, didUpdate frame: ARFrame) {

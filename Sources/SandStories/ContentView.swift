@@ -114,10 +114,12 @@ struct ContentView: View {
         if #available(iOS 26.0, *) {
             appTabView
                 .tabBarMinimizeBehavior(.never)
-                .tabViewBottomAccessory(isEnabled: selectedAppTab == .capture) {
-                    captureAccessory
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 6)
+                .tabViewBottomAccessory {
+                    if selectedAppTab == .capture {
+                        captureAccessory
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 6)
+                    }
                 }
         } else {
             appTabView

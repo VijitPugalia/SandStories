@@ -16,19 +16,53 @@ struct ContentView: View {
     @State private var exportFolderURL: URL?
     @State private var recordingStartDate: Date?
     @State private var showGestureGuide = false
-    @State private var selectedDockItem: DockItem = .record
+    @State private var selectedAppTab: SandStoriesTab = .capture
     private let shareExportManager = ShareExportManager()
 
-    private enum DockItem {
-        case clear
-        case pause
-        case record
-        case benchmark
-        case diagnostic
-        case more
+    var body: some View {
+        TabView(selection: $selectedAppTab) {
+            captureTab
+                .tabItem {
+                    Label("Capture", systemImage: "camera.fill")
+                }
+                .tag(SandStoriesTab.capture)
+
+            SessionsTabView(
+                destinationLabel: recordingCoordinator.destinationLabel,
+                lastSessionFolderURL: recordingCoordinator.lastSessionFolderURL,
+                isRecording: recordingCoordinator.isCaptureRecording,
+                onChooseStorage: {
+                    guard !recordingCoordinator.isCaptureRecording else { return }
+                    showStorageSheet = true
+                },
+                onExportLastSession: presentLastSessionExport
+            )
+            .tabItem {
+                Label("Sessions", systemImage: "rectangle.stack.fill")
+            }
+            .tag(SandStoriesTab.sessions)
+
+            SettingsTabView(
+                recordingCoordinator: recordingCoordinator,
+                onChooseStorage: {
+                    guard !recordingCoordinator.isCaptureRecording else { return }
+                    showStorageSheet = true
+                },
+                onShowUploadSettings: {
+                    guard !recordingCoordinator.isCaptureRecording else { return }
+                    showUploadSheet = true
+                }
+            )
+            .tabItem {
+                Label("Settings", systemImage: "gearshape.fill")
+            }
+            .tag(SandStoriesTab.settings)
+        }
+        .tint(Color(red: 0.94, green: 0.70, blue: 0.28))
+        .preferredColorScheme(.dark)
     }
 
-    var body: some View {
+    private var captureTab: some View {
         ZStack {
             ARViewContainer(
                 recordingCoordinator: recordingCoordinator,
@@ -40,7 +74,6 @@ struct ContentView: View {
             VStack(spacing: 0) {
                 topChrome
                 Spacer(minLength: 0)
-                bottomChrome
             }
             .padding(.top, 8)
             .zIndex(2)
@@ -80,6 +113,11 @@ struct ContentView: View {
                 .allowsHitTesting(false)
                 .zIndex(1)
             }
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            captureAccessory
+                .padding(.horizontal, 20)
+                .padding(.bottom, 10)
         }
         .preferredColorScheme(.dark)
         .sheet(isPresented: $showStorageSheet) {
@@ -433,240 +471,137 @@ struct ContentView: View {
             .glassPanel(cornerRadius: 15, blurStyle: .systemUltraThinMaterial, shadowRadius: 8, shadowYOffset: 3)
     }
 
-    // MARK: - Bottom
+    // MARK: - Contextual capture controls
 
-    private var bottomChrome: some View {
-        VStack(spacing: 8) {
-            HStack(spacing: 8) {
-                clearToolbarButton
-                pauseFloatingButton
-                recordFloatingButton
-                benchmarkToolbarButton
-                diagnosticToolbarButton
-                moreToolbarButton
-            }
-            .padding(.horizontal, 9)
-            .padding(.vertical, 8)
-            .frame(maxWidth: 430)
-            .liquidGlassDock()
-        }
-        .padding(.horizontal, 16)
-        .padding(.bottom, 10)
-        .safeAreaPadding(.bottom, 8)
-        .accessibilityElement(children: .contain)
-    }
-
-    private var pauseFloatingButton: some View {
-        let isDisabled = !recordingCoordinator.isCaptureRecording
-        return liquidDockButton(
-            item: .pause,
-            title: recordingCoordinator.isCapturePaused ? "Resume" : "Pause",
-            systemImage: recordingCoordinator.isCapturePaused ? "play.fill" : "pause.fill",
-            accessibilityLabel: recordingCoordinator.isCapturePaused ? "Resume session recording" : "Pause session recording",
-            foregroundStyle: recordingCoordinator.isCapturePaused ? Color.accentColor : Color(uiColor: .label),
-            isDisabled: isDisabled,
-            isHighlighted: recordingCoordinator.isCapturePaused
-        ) {
-            Task {
-                await recordingCoordinator.togglePauseCaptureSession()
-            }
+    @ViewBuilder
+    private var captureAccessory: some View {
+        if recordingCoordinator.isCaptureRecording {
+            recordingControlAccessory
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+        } else {
+            idleRecordAccessory
+                .transition(.scale(scale: 0.92).combined(with: .opacity))
         }
     }
 
-    private var recordFloatingButton: some View {
-        let isDisabled = !recordingCoordinator.isCaptureRecording && (recordingCoordinator.isBenchmarkRunning || recordingCoordinator.isDepthDiagnosticRunning)
-        return liquidDockButton(
-            item: .record,
-            title: recordingCoordinator.isCaptureRecording ? "Stop" : "Record",
-            systemImage: recordingCoordinator.isCaptureRecording ? "stop.fill" : "record.circle.fill",
-            accessibilityLabel: recordingCoordinator.isCaptureRecording ? "Stop session recording" : "Start session recording",
-            foregroundStyle: recordingCoordinator.isCaptureRecording ? Color(uiColor: .systemRed) : Color.accentColor,
-            isDisabled: isDisabled,
-            isHighlighted: recordingCoordinator.isCaptureRecording,
-            expandedWidth: 92
-        ) {
+    private var idleRecordAccessory: some View {
+        let isDisabled = recordingCoordinator.isBenchmarkRunning || recordingCoordinator.isDepthDiagnosticRunning
+
+        return Button {
             Task {
                 await recordingCoordinator.toggleRecording()
             }
-        }
-    }
-
-    private var clearToolbarButton: some View {
-        liquidDockButton(
-            item: .clear,
-            title: "Clear",
-            systemImage: "paintbrush.pointed",
-            accessibilityLabel: "Clear strokes",
-            foregroundStyle: Color(uiColor: .label),
-            isDisabled: false,
-            isHighlighted: false
-        ) {
-            Task {
-                await recordingCoordinator.handPoseManager.clearStrokes()
-            }
-        }
-    }
-
-    private var benchmarkToolbarButton: some View {
-        liquidDockButton(
-            item: .benchmark,
-            title: "Bench",
-            systemImage: "speedometer",
-            accessibilityLabel: "Run 15 second depth capture benchmark",
-            foregroundStyle: recordingCoordinator.isBenchmarkRunning ? Color(uiColor: .secondaryLabel) : Color.accentColor,
-            isDisabled: recordingCoordinator.isCaptureRecording || recordingCoordinator.isBenchmarkRunning || recordingCoordinator.isDepthDiagnosticRunning,
-            isHighlighted: recordingCoordinator.isBenchmarkRunning
-        ) {
-            Task {
-                await recordingCoordinator.runDepthBenchmark()
-            }
-        }
-    }
-
-    private var diagnosticToolbarButton: some View {
-        liquidDockButton(
-            item: .diagnostic,
-            title: "Depth",
-            systemImage: recordingCoordinator.isDepthDiagnosticRawOnly ? "waveform.path.ecg" : "waveform.path",
-            accessibilityLabel: "Run 20 second depth diagnostic capture",
-            foregroundStyle: recordingCoordinator.isDepthDiagnosticRunning ? Color(uiColor: .secondaryLabel) : Color.accentColor,
-            isDisabled: recordingCoordinator.isCaptureRecording || recordingCoordinator.isBenchmarkRunning || recordingCoordinator.isDepthDiagnosticRunning,
-            isHighlighted: recordingCoordinator.isDepthDiagnosticRunning || recordingCoordinator.isDepthDiagnosticRawOnly
-        ) {
-            Task {
-                await recordingCoordinator.runDepthDiagnostic()
-            }
-        }
-        .contextMenu {
-            Toggle("Raw only", isOn: $recordingCoordinator.isDepthDiagnosticRawOnly)
-        }
-    }
-
-    private var moreToolbarButton: some View {
-        Menu {
-            Button {
-                withAnimation(.spring(response: 0.34, dampingFraction: 0.78)) {
-                    selectedDockItem = .more
-                }
-                showUploadSheet = true
-            } label: {
-                Label("Upload Settings", systemImage: recordingCoordinator.uploadSettings.enabled ? "icloud.and.arrow.up.fill" : "icloud.and.arrow.up")
-            }
-            .disabled(recordingCoordinator.isCaptureRecording)
-
-            Button {
-                withAnimation(.spring(response: 0.34, dampingFraction: 0.78)) {
-                    selectedDockItem = .more
-                }
-                Task {
-                    guard let folder = recordingCoordinator.lastSessionFolderURL else {
-                        print("Share: no session folder yet - record a session first.")
-                        return
-                    }
-                    await MainActor.run {
-                        exportFolderURL = folder
-                        showExportSheet = true
-                    }
-                }
-            } label: {
-                Label("Export Last Session", systemImage: "square.and.arrow.up")
-            }
         } label: {
-            dockControl(
-                item: .more,
-                title: "More",
-                systemImage: "ellipsis",
-                foregroundStyle: recordingCoordinator.uploadSettings.enabled ? Color.accentColor : Color(uiColor: .label),
-                isHighlighted: recordingCoordinator.uploadSettings.enabled
-            )
-        }
-        .simultaneousGesture(
-            TapGesture().onEnded {
-                withAnimation(.spring(response: 0.34, dampingFraction: 0.78)) {
-                    selectedDockItem = .more
+            VStack(spacing: 6) {
+                ZStack {
+                    Circle()
+                        .fill(Color.black.opacity(0.52))
+                        .frame(width: 72, height: 72)
+                    Circle()
+                        .stroke(Color.white.opacity(0.92), lineWidth: 3)
+                        .frame(width: 66, height: 66)
+                    Circle()
+                        .fill(Color(uiColor: .systemRed))
+                        .frame(width: 54, height: 54)
                 }
+                Text("Record")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color.white)
             }
-        )
-        .buttonStyle(LiquidButtonStyle())
-        .accessibilityLabel("More capture actions")
-    }
-
-    private func liquidDockButton(
-        item: DockItem,
-        title: String,
-        systemImage: String,
-        accessibilityLabel: String,
-        foregroundStyle: Color,
-        isDisabled: Bool,
-        isHighlighted: Bool,
-        expandedWidth: CGFloat = 88,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button {
-            withAnimation(.spring(response: 0.34, dampingFraction: 0.78)) {
-                selectedDockItem = item
-            }
-            action()
-        } label: {
-            dockControl(
-                item: item,
-                title: title,
-                systemImage: systemImage,
-                foregroundStyle: foregroundStyle,
-                isHighlighted: isHighlighted,
-                expandedWidth: expandedWidth
-            )
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
         }
         .buttonStyle(LiquidButtonStyle())
         .disabled(isDisabled)
         .opacity(isDisabled ? 0.42 : 1)
-        .accessibilityLabel(accessibilityLabel)
+        .accessibilityLabel("Start session recording")
     }
 
-    private func dockControl(
-        item: DockItem,
-        title: String,
-        systemImage: String,
-        foregroundStyle: Color,
-        isHighlighted: Bool,
-        expandedWidth: CGFloat = 88
-    ) -> some View {
-        let isSelected = selectedDockItem == item
-        let tint = isHighlighted || isSelected
+    private var recordingControlAccessory: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { timeline in
+            HStack(spacing: 10) {
+                HStack(spacing: 7) {
+                    Circle()
+                        .fill(Color(uiColor: .systemRed))
+                        .frame(width: 8, height: 8)
+                    Text("REC")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(Color.white)
+                    Text(recordingElapsedText(at: timeline.date))
+                        .font(.caption.monospacedDigit().weight(.semibold))
+                        .foregroundStyle(Color.white.opacity(0.88))
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Recording, elapsed \(recordingElapsedText(at: timeline.date))")
 
-        return HStack(spacing: isSelected ? 7 : 0) {
-            Image(systemName: systemImage)
-                .font(.body.weight(.semibold))
-                .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(foregroundStyle)
-                .frame(width: 22, height: 22)
+                Divider()
+                    .overlay(Color.white.opacity(0.22))
+                    .frame(height: 28)
 
-            if isSelected {
-                Text(title)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(foregroundStyle)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.82)
-                    .transition(.opacity.combined(with: .move(edge: .trailing)))
-            }
-        }
-        .frame(width: isSelected ? expandedWidth : 42, height: 46)
-        .background {
-            if isSelected {
-                Capsule(style: .continuous)
-                    .fill(Color.white.opacity(isHighlighted ? 0.18 : 0.10))
-                    .overlay {
-                        Capsule(style: .continuous)
-                            .stroke(Color.white.opacity(0.16), lineWidth: 0.75)
+                Button {
+                    Task {
+                        await recordingCoordinator.togglePauseCaptureSession()
                     }
+                } label: {
+                    Label(
+                        recordingCoordinator.isCapturePaused ? "Resume" : "Pause",
+                        systemImage: recordingCoordinator.isCapturePaused ? "play.fill" : "pause.fill"
+                    )
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color.white)
+                    .padding(.horizontal, 13)
+                    .frame(height: 40)
+                    .background {
+                        Capsule(style: .continuous)
+                            .fill(Color.white.opacity(recordingCoordinator.isCapturePaused ? 0.20 : 0.10))
+                    }
+                }
+                .buttonStyle(LiquidButtonStyle())
+                .accessibilityLabel(recordingCoordinator.isCapturePaused ? "Resume session recording" : "Pause session recording")
+
+                Button {
+                    Task {
+                        await recordingCoordinator.toggleRecording()
+                    }
+                } label: {
+                    Label("Stop", systemImage: "stop.fill")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(Color.white)
+                        .padding(.horizontal, 14)
+                        .frame(height: 40)
+                        .background {
+                            Capsule(style: .continuous)
+                                .fill(Color(uiColor: .systemRed))
+                        }
+                }
+                .buttonStyle(LiquidButtonStyle())
+                .accessibilityLabel("Stop and save session recording")
             }
+            .padding(8)
+            .glassPanel(
+                cornerRadius: 28,
+                blurStyle: .systemThinMaterial,
+                shadowRadius: 14,
+                shadowYOffset: 6
+            )
+            .accessibilityElement(children: .contain)
         }
-        .opacity(tint ? 1 : 0.74)
-        .contentShape(Capsule(style: .continuous))
-        .animation(.easeOut(duration: 0.18), value: isSelected)
+    }
+
+    private func recordingElapsedText(at date: Date) -> String {
+        guard let recordingStartDate else { return "0:00" }
+        return formattedDuration(from: recordingStartDate, to: date)
     }
 
     // MARK: - Export (same zip + activity flow as before)
+
+    private func presentLastSessionExport() {
+        guard let folder = recordingCoordinator.lastSessionFolderURL else { return }
+        exportFolderURL = folder
+        showExportSheet = true
+    }
+
 
     private func exportAndPresentShare(folder: URL) async {
         do {

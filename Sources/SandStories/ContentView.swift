@@ -834,8 +834,11 @@ struct ARViewContainer: UIViewRepresentable {
             arView.debugOptions.remove(.showSceneUnderstanding)
         }
 
-        arView.session.run(configuration, options: options)
+        // Configure the underlying capture device before ARKit starts, then
+        // reapply after startup because ARKit may restore camera defaults.
         recordingCoordinator.zoomController.prepareForARSession()
+        arView.session.run(configuration, options: options)
+        recordingCoordinator.zoomController.reapplyAfterARSessionStart()
     }
 }
 // MARK: - Gesture UI Helpers

@@ -114,13 +114,6 @@ struct ContentView: View {
         if #available(iOS 26.0, *) {
             appTabView
                 .tabBarMinimizeBehavior(.never)
-                .tabViewBottomAccessory {
-                    if selectedAppTab == .capture {
-                        captureAccessory
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 6)
-                    }
-                }
         } else {
             appTabView
         }
@@ -167,18 +160,22 @@ struct ContentView: View {
         }
     }
 
-    @ViewBuilder
     private var captureTab: some View {
-        if #available(iOS 26.0, *) {
-            captureCanvas
-        } else {
-            captureCanvas
-                .safeAreaInset(edge: .bottom, spacing: 0) {
-                    captureAccessory
-                        .padding(.horizontal, 20)
-                        .padding(.bottom, 10)
-                }
-        }
+        captureCanvas
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                captureAccessory
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 10)
+                    .background {
+                        LinearGradient(
+                            colors: [.clear, Color.black.opacity(0.30)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                        .allowsHitTesting(false)
+                    }
+            }
     }
 
     private var captureCanvas: some View {

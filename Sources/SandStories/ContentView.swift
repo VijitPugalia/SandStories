@@ -112,8 +112,10 @@ struct ContentView: View {
         if #available(iOS 26.0, *) {
             appTabView
                 .tabBarMinimizeBehavior(.onScrollDown)
-                .tabViewBottomAccessory(isEnabled: selectedAppTab == .capture) {
-                    captureTabBarAccessory
+                .tabViewBottomAccessory {
+                    if selectedAppTab == .capture {
+                        captureTabBarAccessory
+                    }
                 }
         } else {
             appTabView

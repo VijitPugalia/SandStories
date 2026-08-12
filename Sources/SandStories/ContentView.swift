@@ -502,8 +502,9 @@ struct ContentView: View {
     @ViewBuilder
     private var captureAccessory: some View {
         if #available(iOS 26.0, *) {
-            // Grouping glass elements lets them share a sampling region and blend correctly.
-            GlassEffectContainer(spacing: 24) {
+            // Shared sampling region for nearby glass. Keep the blend spacing small so the
+            // REC pill and the stop button render as separate shapes instead of merging.
+            GlassEffectContainer(spacing: 4) {
                 captureAccessoryContent
             }
         } else {
@@ -552,7 +553,7 @@ struct ContentView: View {
 
     private var recordingControlAccessory: some View {
         TimelineView(.periodic(from: .now, by: 1)) { timeline in
-            VStack(spacing: 6) {
+            VStack(spacing: 16) {
                 HStack(spacing: 7) {
                     Image(systemName: recordingCoordinator.isCapturePaused ? "pause.fill" : "circle.fill")
                         .font(.system(size: 8, weight: .bold))

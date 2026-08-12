@@ -9,6 +9,12 @@ DerivedData/
 
 /xtool
 
+# Downloaded ML weights and generated local diagnostics
+/weights/
+/*.pt
+/sandstories_session_contact_sheet.png
+/NUL/
+
 # Local Python scratch work
 .venv*/
 /transcripts

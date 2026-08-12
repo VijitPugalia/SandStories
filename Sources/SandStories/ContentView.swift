@@ -115,13 +115,12 @@ struct ContentView: View {
     @ViewBuilder
     private var adaptiveTabView: some View {
         if #available(iOS 26.0, *) {
+            // The system tab bar renders as floating Liquid Glass automatically on iOS 26.
+            // The record controls intentionally live in the capture tab itself (safeAreaInset),
+            // NOT in tabViewBottomAccessory: conditional accessories collapse and hide the
+            // primary capture action (regressed twice — see PR #11 / PR #13).
             appTabView
                 .tabBarMinimizeBehavior(.onScrollDown)
-                .tabViewBottomAccessory {
-                    if selectedAppTab == .capture {
-                        captureTabBarAccessory
-                    }
-                }
         } else {
             appTabView
         }
@@ -169,122 +168,40 @@ struct ContentView: View {
         }
     }
 
-    @ViewBuilder
     private var captureTab: some View {
-        if #available(iOS 26.0, *) {
-            captureCanvas
-        } else {
-            captureCanvas
-                .safeAreaInset(edge: .bottom, spacing: 0) {
-                    legacyCaptureAccessory
-                }
-        }
+        captureCanvas
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                captureControlsBar
+            }
     }
 
-    private var legacyCaptureAccessory: some View {
-        captureAccessory
+    @ViewBuilder
+    private var captureControlsBar: some View {
+        let bar = captureAccessory
             .frame(maxWidth: .infinity)
             .padding(.horizontal, 20)
             .padding(.vertical, 10)
-            .background {
-                LinearGradient(
-                    colors: [.clear, Color.black.opacity(0.30)],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .allowsHitTesting(false)
-            }
             .onAppear {
                 diagnostics.recordOnce(
-                    key: "legacy-record-accessory",
+                    key: "record-controls-bar",
                     category: "Navigation",
-                    message: "Legacy record accessory appeared"
+                    message: "Record controls bar appeared"
                 )
             }
-    }
 
-    @available(iOS 26.0, *)
-    private var captureTabBarAccessory: some View {
-        AdaptiveTabBarAccessory {
-            captureAccessory
-                .frame(maxWidth: .infinity)
-                .padding(.horizontal, 20)
-                .padding(.vertical, 8)
-        } inline: {
-            compactCaptureAccessory
-        }
-    }
-
-    @ViewBuilder
-    private var compactCaptureAccessory: some View {
-        if recordingCoordinator.isCaptureRecording {
-            TimelineView(.periodic(from: .now, by: 1)) { timeline in
-                HStack(spacing: 10) {
-                    Button {
-                        Task {
-                            await recordingCoordinator.togglePauseCaptureSession()
-                        }
-                    } label: {
-                        Image(systemName: recordingCoordinator.isCapturePaused ? "play.fill" : "pause.fill")
-                            .font(.caption.weight(.bold))
-                            .frame(width: 30, height: 30)
-                            .contentShape(Circle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(recordingCoordinator.isCapturePaused ? "Resume recording" : "Pause recording")
-
-                    HStack(spacing: 5) {
-                        Circle()
-                            .fill(
-                                recordingCoordinator.isCapturePaused
-                                    ? Color(red: 0.94, green: 0.70, blue: 0.28)
-                                    : Color(uiColor: .systemRed)
-                            )
-                            .frame(width: 7, height: 7)
-                        Text(recordingElapsedText(at: timeline.date))
-                            .font(.caption.monospacedDigit().weight(.semibold))
-                    }
-                    .accessibilityElement(children: .combine)
-                    .accessibilityLabel(
-                        "\(recordingCoordinator.isCapturePaused ? "Paused" : "Recording"), \(recordingElapsedText(at: timeline.date))"
-                    )
-
-                    Button {
-                        Task {
-                            await recordingCoordinator.toggleRecording()
-                        }
-                    } label: {
-                        Image(systemName: "stop.fill")
-                            .font(.caption.weight(.bold))
-                            .foregroundStyle(Color(uiColor: .systemRed))
-                            .frame(width: 30, height: 30)
-                            .contentShape(Circle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Stop and save recording")
-                }
-                .padding(.horizontal, 4)
-            }
+        if #available(iOS 26.0, *) {
+            // No darkening gradient: it interferes with the Liquid Glass scroll edge effect.
+            bar
         } else {
-            let isDisabled = recordingCoordinator.isBenchmarkRunning || recordingCoordinator.isDepthDiagnosticRunning
-
-            Button {
-                diagnostics.record("Inline record button tapped", category: "Capture")
-                Task {
-                    await recordingCoordinator.toggleRecording()
+            bar
+                .background {
+                    LinearGradient(
+                        colors: [.clear, Color.black.opacity(0.30)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    .allowsHitTesting(false)
                 }
-            } label: {
-                Label("Record", systemImage: "record.circle.fill")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(Color(uiColor: .systemRed))
-                    .padding(.horizontal, 8)
-                    .frame(height: 36)
-                    .contentShape(Capsule(style: .continuous))
-            }
-            .buttonStyle(.plain)
-            .disabled(isDisabled)
-            .opacity(isDisabled ? 0.42 : 1)
-            .accessibilityLabel("Start session recording")
         }
     }
 
@@ -584,6 +501,18 @@ struct ContentView: View {
 
     @ViewBuilder
     private var captureAccessory: some View {
+        if #available(iOS 26.0, *) {
+            // Grouping glass elements lets them share a sampling region and blend correctly.
+            GlassEffectContainer(spacing: 24) {
+                captureAccessoryContent
+            }
+        } else {
+            captureAccessoryContent
+        }
+    }
+
+    @ViewBuilder
+    private var captureAccessoryContent: some View {
         if recordingCoordinator.isCaptureRecording {
             recordingControlAccessory
                 .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -604,15 +533,14 @@ struct ContentView: View {
         } label: {
             ZStack {
                 Circle()
-                    .fill(Color.black.opacity(0.52))
-                    .frame(width: 72, height: 72)
-                Circle()
                     .stroke(Color.white.opacity(0.96), lineWidth: 3)
                     .frame(width: 66, height: 66)
                 Circle()
                     .fill(Color(uiColor: .systemRed))
                     .frame(width: 54, height: 54)
             }
+            .frame(width: 72, height: 72)
+            .interactiveGlassCircle()
             .padding(.vertical, 4)
             .contentShape(Circle())
         }
@@ -642,10 +570,7 @@ struct ContentView: View {
                 }
                 .padding(.horizontal, 12)
                 .frame(height: 28)
-                .background {
-                    Capsule(style: .continuous)
-                        .fill(Color.black.opacity(0.52))
-                }
+                .liquidGlassDock()
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel(
                     "\(recordingCoordinator.isCapturePaused ? "Paused" : "Recording"), elapsed \(recordingElapsedText(at: timeline.date))"
@@ -659,9 +584,6 @@ struct ContentView: View {
                     } label: {
                         ZStack {
                             Circle()
-                                .fill(Color.black.opacity(0.56))
-                                .frame(width: 54, height: 54)
-                            Circle()
                                 .stroke(Color.white.opacity(0.82), lineWidth: 1.5)
                                 .frame(width: 48, height: 48)
                             Image(systemName: recordingCoordinator.isCapturePaused ? "play.fill" : "pause.fill")
@@ -669,6 +591,8 @@ struct ContentView: View {
                                 .foregroundStyle(Color.white)
                                 .offset(x: recordingCoordinator.isCapturePaused ? 1 : 0)
                         }
+                        .frame(width: 54, height: 54)
+                        .interactiveGlassCircle(fallbackFillOpacity: 0.56)
                         .contentShape(Circle())
                     }
                     .buttonStyle(.plain)
@@ -685,15 +609,14 @@ struct ContentView: View {
                     } label: {
                         ZStack {
                             Circle()
-                                .fill(Color.black.opacity(0.52))
-                                .frame(width: 72, height: 72)
-                            Circle()
                                 .stroke(Color.white.opacity(0.96), lineWidth: 3)
                                 .frame(width: 66, height: 66)
                             RoundedRectangle(cornerRadius: 7, style: .continuous)
                                 .fill(Color(uiColor: .systemRed))
                                 .frame(width: 34, height: 34)
                         }
+                        .frame(width: 72, height: 72)
+                        .interactiveGlassCircle()
                         .contentShape(Circle())
                     }
                     .buttonStyle(.plain)
@@ -736,45 +659,6 @@ struct ContentView: View {
             }
         } catch {
             print("Share export error: \(error)")
-        }
-    }
-}
-
-@available(iOS 26.0, *)
-@MainActor
-private struct AdaptiveTabBarAccessory<Expanded: View, Inline: View>: View {
-    @Environment(\.tabViewBottomAccessoryPlacement) private var placement
-    let expanded: Expanded
-    let inline: Inline
-
-    init(
-        @ViewBuilder expanded: () -> Expanded,
-        @ViewBuilder inline: () -> Inline
-    ) {
-        self.expanded = expanded()
-        self.inline = inline()
-    }
-
-    @ViewBuilder
-    var body: some View {
-        Group {
-            if placement == .inline {
-                inline
-            } else {
-                expanded
-            }
-        }
-        .onAppear {
-            AppDiagnostics.shared.record(
-                "Liquid Glass accessory appeared in \(placement == .inline ? "inline" : "expanded") placement",
-                category: "Navigation"
-            )
-        }
-        .onChange(of: placement == .inline) { _, isInline in
-            AppDiagnostics.shared.record(
-                "Liquid Glass accessory moved to \(isInline ? "inline" : "expanded") placement",
-                category: "Navigation"
-            )
         }
     }
 }

@@ -27,8 +27,6 @@ struct ContentView: View {
         adaptiveTabView
             .tint(Color(red: 0.94, green: 0.70, blue: 0.28))
             .preferredColorScheme(.dark)
-            .toolbarBackground(.visible, for: .tabBar)
-            .toolbarColorScheme(.dark, for: .tabBar)
             .sheet(isPresented: $showStorageSheet) {
                 StorageDestinationSheet(
                     destinationLabel: recordingCoordinator.destinationLabel,
@@ -113,7 +111,10 @@ struct ContentView: View {
     private var adaptiveTabView: some View {
         if #available(iOS 26.0, *) {
             appTabView
-                .tabBarMinimizeBehavior(.never)
+                .tabBarMinimizeBehavior(.onScrollDown)
+                .tabViewBottomAccessory(isEnabled: selectedAppTab == .capture) {
+                    captureTabBarAccessory
+                }
         } else {
             appTabView
         }
@@ -160,22 +161,115 @@ struct ContentView: View {
         }
     }
 
+    @ViewBuilder
     private var captureTab: some View {
-        captureCanvas
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                captureAccessory
-                    .frame(maxWidth: .infinity)
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 10)
-                    .background {
-                        LinearGradient(
-                            colors: [.clear, Color.black.opacity(0.30)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                        .allowsHitTesting(false)
-                    }
+        if #available(iOS 26.0, *) {
+            captureCanvas
+        } else {
+            captureCanvas
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    legacyCaptureAccessory
+                }
+        }
+    }
+
+    private var legacyCaptureAccessory: some View {
+        captureAccessory
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 10)
+            .background {
+                LinearGradient(
+                    colors: [.clear, Color.black.opacity(0.30)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .allowsHitTesting(false)
             }
+    }
+
+    @available(iOS 26.0, *)
+    private var captureTabBarAccessory: some View {
+        AdaptiveTabBarAccessory {
+            captureAccessory
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 8)
+        } inline: {
+            compactCaptureAccessory
+        }
+    }
+
+    @ViewBuilder
+    private var compactCaptureAccessory: some View {
+        if recordingCoordinator.isCaptureRecording {
+            TimelineView(.periodic(from: .now, by: 1)) { timeline in
+                HStack(spacing: 10) {
+                    Button {
+                        Task {
+                            await recordingCoordinator.togglePauseCaptureSession()
+                        }
+                    } label: {
+                        Image(systemName: recordingCoordinator.isCapturePaused ? "play.fill" : "pause.fill")
+                            .font(.caption.weight(.bold))
+                            .frame(width: 30, height: 30)
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(recordingCoordinator.isCapturePaused ? "Resume recording" : "Pause recording")
+
+                    HStack(spacing: 5) {
+                        Circle()
+                            .fill(
+                                recordingCoordinator.isCapturePaused
+                                    ? Color(red: 0.94, green: 0.70, blue: 0.28)
+                                    : Color(uiColor: .systemRed)
+                            )
+                            .frame(width: 7, height: 7)
+                        Text(recordingElapsedText(at: timeline.date))
+                            .font(.caption.monospacedDigit().weight(.semibold))
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel(
+                        "\(recordingCoordinator.isCapturePaused ? "Paused" : "Recording"), \(recordingElapsedText(at: timeline.date))"
+                    )
+
+                    Button {
+                        Task {
+                            await recordingCoordinator.toggleRecording()
+                        }
+                    } label: {
+                        Image(systemName: "stop.fill")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(Color(uiColor: .systemRed))
+                            .frame(width: 30, height: 30)
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Stop and save recording")
+                }
+                .padding(.horizontal, 4)
+            }
+        } else {
+            let isDisabled = recordingCoordinator.isBenchmarkRunning || recordingCoordinator.isDepthDiagnosticRunning
+
+            Button {
+                Task {
+                    await recordingCoordinator.toggleRecording()
+                }
+            } label: {
+                Label("Record", systemImage: "record.circle.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color(uiColor: .systemRed))
+                    .padding(.horizontal, 8)
+                    .frame(height: 36)
+                    .contentShape(Capsule(style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .disabled(isDisabled)
+            .opacity(isDisabled ? 0.42 : 1)
+            .accessibilityLabel("Start session recording")
+        }
     }
 
     private var captureCanvas: some View {
@@ -625,6 +719,30 @@ struct ContentView: View {
             }
         } catch {
             print("Share export error: \(error)")
+        }
+    }
+}
+
+@available(iOS 26.0, *)
+private struct AdaptiveTabBarAccessory<Expanded: View, Inline: View>: View {
+    @Environment(\.tabViewBottomAccessoryPlacement) private var placement
+    let expanded: Expanded
+    let inline: Inline
+
+    init(
+        @ViewBuilder expanded: () -> Expanded,
+        @ViewBuilder inline: () -> Inline
+    ) {
+        self.expanded = expanded()
+        self.inline = inline()
+    }
+
+    @ViewBuilder
+    var body: some View {
+        if placement == .inline {
+            inline
+        } else {
+            expanded
         }
     }
 }

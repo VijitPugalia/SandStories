@@ -13,6 +13,7 @@ struct ContentView: View {
     @StateObject private var remoteControlManager = RemoteControlManager()
     @StateObject private var liveKitPreviewManager = LiveKitPreviewManager()
     @StateObject private var thermalMonitor = ThermalMonitor()
+    @StateObject private var diagnostics = AppDiagnostics.shared
     @State private var shareItems: [Any] = []
     @State private var pendingShareItems: [Any]?
     @State private var isShowingShareSheet = false
@@ -95,6 +96,7 @@ struct ContentView: View {
                 }
             }
             .onAppear {
+                diagnostics.recordLaunchContext()
                 remoteControlManager.start(settings: experimentSettings, coordinator: recordingCoordinator)
                 Task { await liveKitPreviewManager.connect(settings: experimentSettings) }
             }
@@ -104,6 +106,9 @@ struct ContentView: View {
             }
             .onChange(of: experimentSettings.previewEnabled) { _, _ in
                 Task { await liveKitPreviewManager.connect(settings: experimentSettings) }
+            }
+            .onChange(of: selectedAppTab) { _, tab in
+                diagnostics.record("Selected tab: \(tab.diagnosticsName)", category: "Navigation")
             }
     }
 
@@ -147,6 +152,7 @@ struct ContentView: View {
 
             SettingsTabView(
                 recordingCoordinator: recordingCoordinator,
+                diagnostics: diagnostics,
                 onChooseStorage: {
                     guard !recordingCoordinator.isCaptureRecording else { return }
                     showStorageSheet = true
@@ -187,6 +193,13 @@ struct ContentView: View {
                     endPoint: .bottom
                 )
                 .allowsHitTesting(false)
+            }
+            .onAppear {
+                diagnostics.recordOnce(
+                    key: "legacy-record-accessory",
+                    category: "Navigation",
+                    message: "Legacy record accessory appeared"
+                )
             }
     }
 
@@ -256,6 +269,7 @@ struct ContentView: View {
             let isDisabled = recordingCoordinator.isBenchmarkRunning || recordingCoordinator.isDepthDiagnosticRunning
 
             Button {
+                diagnostics.record("Inline record button tapped", category: "Capture")
                 Task {
                     await recordingCoordinator.toggleRecording()
                 }
@@ -583,6 +597,7 @@ struct ContentView: View {
         let isDisabled = recordingCoordinator.isBenchmarkRunning || recordingCoordinator.isDepthDiagnosticRunning
 
         return Button {
+            diagnostics.record("Expanded record button tapped", category: "Capture")
             Task {
                 await recordingCoordinator.toggleRecording()
             }
@@ -726,6 +741,7 @@ struct ContentView: View {
 }
 
 @available(iOS 26.0, *)
+@MainActor
 private struct AdaptiveTabBarAccessory<Expanded: View, Inline: View>: View {
     @Environment(\.tabViewBottomAccessoryPlacement) private var placement
     let expanded: Expanded
@@ -741,10 +757,24 @@ private struct AdaptiveTabBarAccessory<Expanded: View, Inline: View>: View {
 
     @ViewBuilder
     var body: some View {
-        if placement == .inline {
-            inline
-        } else {
-            expanded
+        Group {
+            if placement == .inline {
+                inline
+            } else {
+                expanded
+            }
+        }
+        .onAppear {
+            AppDiagnostics.shared.record(
+                "Liquid Glass accessory appeared in \(placement == .inline ? "inline" : "expanded") placement",
+                category: "Navigation"
+            )
+        }
+        .onChange(of: placement == .inline) { _, isInline in
+            AppDiagnostics.shared.record(
+                "Liquid Glass accessory moved to \(isInline ? "inline" : "expanded") placement",
+                category: "Navigation"
+            )
         }
     }
 }

@@ -15,6 +15,7 @@ if [[ ! -f "$EXTRA_PLIST" ]]; then
 fi
 python3 - "$ROOT" <<'PY'
 import plistlib
+import os
 import sys
 from pathlib import Path
 root = Path(sys.argv[1])
@@ -24,6 +25,13 @@ base = plistlib.loads(app_plist.read_bytes())
 extra = plistlib.loads(extra_plist.read_bytes())
 for k, v in extra.items():
     base[k] = v
+run_number = os.environ.get("GITHUB_RUN_NUMBER")
+run_attempt = os.environ.get("GITHUB_RUN_ATTEMPT", "1")
+commit = os.environ.get("GITHUB_SHA", "local")
+if run_number and run_number.isdigit():
+    base["CFBundleVersion"] = f"{run_number}.{run_attempt}"
+base["SandStoriesBuildRun"] = run_number or "local"
+base["SandStoriesBuildCommit"] = commit
 app_plist.write_bytes(plistlib.dumps(base))
-print("Merged privacy keys into", app_plist)
+print("Merged privacy keys and build fingerprint into", app_plist)
 PY

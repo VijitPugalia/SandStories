@@ -7,6 +7,19 @@ enum SandStoriesTab: Hashable {
     case settings
 }
 
+extension SandStoriesTab {
+    var diagnosticsName: String {
+        switch self {
+        case .capture:
+            return "Capture"
+        case .sessions:
+            return "Sessions"
+        case .settings:
+            return "Settings"
+        }
+    }
+}
+
 @MainActor
 struct SessionsTabView: View {
     let destinationLabel: String
@@ -120,6 +133,7 @@ struct SessionsTabView: View {
 @MainActor
 struct SettingsTabView: View {
     @ObservedObject var recordingCoordinator: RecordingCoordinator
+    @ObservedObject var diagnostics: AppDiagnostics
     let onChooseStorage: () -> Void
     let onShowUploadSettings: () -> Void
 
@@ -193,6 +207,14 @@ struct SettingsTabView: View {
                         )
                     }
                     .disabled(recordingCoordinator.isCaptureRecording)
+                }
+
+                Section("Support") {
+                    NavigationLink {
+                        DiagnosticsView(diagnostics: diagnostics)
+                    } label: {
+                        Label("App diagnostics", systemImage: "waveform.path.ecg.rectangle")
+                    }
                 }
             }
             .navigationTitle("Settings")

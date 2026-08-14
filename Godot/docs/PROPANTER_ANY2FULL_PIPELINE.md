@@ -108,7 +108,7 @@ Kinect/LiDAR raw depth ──► quality filtering + grid4 sparse anchors (~4.37
 | `SandStories/Godot/docs/KINECT_CASPER_ANY2FULL_V22_WORKFLOW.md` | v22d→v22p end-to-end (Casper memory fix, low-frequency fusion, VDA, corner lock / stable plane / RG16, temporal anchors), commits and numbers |
 | `SandStories/Godot/docs/AGENT_HANDOFF.md` | authoritative v21b end-to-end production flow (9 steps: freeze depth → masks → QA gates → ProPainter → packaging → playback gate) |
 | `SandStories/Godot/docs/LIDAR_RECONSTRUCTION_PIPELINE.md` | iPhone LiDAR path, v23b failure lessons, v24b temporal anchors |
-| `.codex_worktrees/experiment-platform-pr/docs/ANY2FULL.md`, `AUTOMATIC_ANY2FULL.md` | Any2Full as an optional offline derived-data step + automatic field-console queueing (Docker / native runs) |
+| `docs/ANY2FULL.md`, `docs/AUTOMATIC_ANY2FULL.md` | Any2Full as an optional offline derived-data step + automatic field-console queueing (Docker / native runs) |
 
 > Honest boundary: all accuracy numbers are holdout consistency against the
 > **same quality-filtered sensor**, not independent external ground truth;

@@ -351,6 +351,96 @@ def _sample_v2_frames(frames: list[dict[str, Any]], max_frames: int | None = Non
     return [frames[int(i)] for i in np.unique(indices)]
 
 
+def _stable_baseline_frames(
+    depth_stream: Path,
+    frames: list[dict[str, Any]],
+    sand_mask: np.ndarray,
+    *,
+    max_window_frames: int,
+    min_stable_frames: int,
+    gate_deviation_m: float,
+    baseline_frame_key: str = "baselinePhase",
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Select a stable untouched-sand baseline from the opening baseline window.
+
+    Frames marked ``baselinePhase=true`` are candidate baseline frames. The
+    per-pixel median of the candidates gives a provisional untouched surface;
+    any candidate frame whose median absolute deviation over the sand mask
+    exceeds ``gate_deviation_m`` (e.g. a hand entering at the start of the
+    recording) is rejected. The median is recomputed on the survivors and the
+    gate is re-applied until it stabilises. If too few frames survive, the
+    window is extended forward until ``min_stable_frames`` stable frames are
+    found, so a hand at the very start does not corrupt the baseline.
+
+    Returns ``(stable_frames, diagnostics)``.
+    """
+    marked = [f for f in frames if f.get(baseline_frame_key) and f.get("depthByteOffset") is not None]
+    if not marked:
+        marked = frames[:max_window_frames]
+    if len(marked) > max_window_frames:
+        marked = marked[:max_window_frames]
+
+    def _median(selected: list[dict[str, Any]]) -> np.ndarray:
+        stack = np.stack([_read_v2_depth(depth_stream, f) for f in selected]).astype(np.float32)
+        return np.nanmedian(stack, axis=0)
+
+    def _deviations(selected: list[dict[str, Any]], baseline: np.ndarray) -> list[float]:
+        out: list[float] = []
+        for f in selected:
+            depth = _read_v2_depth(depth_stream, f)
+            delta = depth - baseline
+            valid = sand_mask & np.isfinite(delta)
+            if not np.any(valid):
+                out.append(float("inf"))
+                continue
+            out.append(float(np.nanmedian(np.abs(delta[valid]))))
+        return out
+
+    accepted: list[dict[str, Any]] = marked
+    rejected_in_phase = 0
+    for _ in range(8):
+        if not accepted:
+            break
+        baseline = _median(accepted)
+        devs = _deviations(accepted, baseline)
+        kept = [f for f, d in zip(accepted, devs) if d <= gate_deviation_m]
+        newly_rejected = len(accepted) - len(kept)
+        rejected_in_phase += newly_rejected
+        if not kept:
+            break
+        accepted = kept
+        if newly_rejected == 0:
+            break
+
+    if len(accepted) < min_stable_frames:
+        used_ids = {id(f) for f in accepted}
+        extended = list(accepted)
+        for f in frames[max_window_frames:]:
+            if id(f) in used_ids:
+                continue
+            extended.append(f)
+            if len(extended) >= min_stable_frames:
+                break
+        accepted = extended
+        baseline = _median(accepted)
+        devs = _deviations(accepted, baseline)
+        kept = [f for f, d in zip(accepted, devs) if d <= gate_deviation_m]
+        if len(kept) >= min_stable_frames:
+            accepted = kept
+        rejected_in_phase += len(extended) - len(accepted)
+
+    diagnostics = {
+        "method": "baseline_phase_median_stability_gated",
+        "markedCandidateFrames": len(marked),
+        "stableFramesUsed": len(accepted),
+        "rejectedFrames": rejected_in_phase,
+        "gateDeviationMeters": gate_deviation_m,
+        "maxWindowFrames": max_window_frames,
+        "note": "Candidates are the frames marked baselinePhase=true; frames deviating more than gateDeviationMeters from the running sand median are treated as hand/motion and rejected.",
+    }
+    return accepted, diagnostics
+
+
 def _iter_rgb_video_frames(video_path: Path, size: tuple[int, int], count: int):
     width, height = size
     frame_size = width * height * 3
@@ -414,8 +504,10 @@ def _prepare_v2_session(session_dir: Path, project_dir: Path, manifest: dict[str
 
     streams = manifest.get("v2Streams", {})
     depth_stream = session_dir / streams.get("depthStreamPath", "streams/depth.f32")
-    smooth_stream = session_dir / streams.get("smoothedDepthStreamPath", "streams/smoothed_depth.f32")
-    confidence_stream = session_dir / streams.get("confidenceStreamPath", "streams/confidence.bin")
+    smooth_path = streams.get("smoothedDepthStreamPath")
+    confidence_path = streams.get("confidenceStreamPath")
+    smooth_stream = session_dir / (smooth_path or "streams/smoothed_depth.f32")
+    confidence_stream = session_dir / (confidence_path or "streams/confidence.bin")
     rgb_video = session_dir / streams.get("rgbVideoPath", "streams/rgb.mp4")
 
     probe_frames = v2_frames[: min(180, len(v2_frames))]
@@ -431,8 +523,29 @@ def _prepare_v2_session(session_dir: Path, project_dir: Path, manifest: dict[str
     Image.fromarray(_mask_to_png(sand_mask)).save(output_dir / "surface_mask.png")
 
     baseline_count = min(60, len(v2_frames))
-    baseline_stack = np.stack([_read_v2_depth(depth_stream, frame) for frame in v2_frames[:baseline_count]]).astype(np.float32)
-    fixed_camera_baseline = np.nanmedian(baseline_stack, axis=0)
+    baseline_window = v2_frames[:baseline_count]
+    baseline_diagnostics: dict[str, Any] = {}
+    baseline_window_seconds = float(manifest.get("baselinePhase", {}).get("windowSeconds", 2.0))
+    if manifest.get("baselinePhase", {}).get("frameCount", 0) > 0:
+        max_baseline_window = max(baseline_count, int(manifest["baselinePhase"]["frameCount"]))
+    else:
+        max_baseline_window = baseline_count
+    stable_frames, baseline_diagnostics = _stable_baseline_frames(
+        depth_stream,
+        v2_frames,
+        sand_mask,
+        max_window_frames=max_baseline_window,
+        min_stable_frames=min(15, max(5, len(v2_frames) // 4)),
+        gate_deviation_m=0.004,
+    )
+    if not stable_frames:
+        stable_frames = baseline_window
+    fixed_camera_baseline = np.nanmedian(
+        np.stack([_read_v2_depth(depth_stream, f) for f in stable_frames]).astype(np.float32),
+        axis=0,
+    )
+    baseline_diagnostics["windowSeconds"] = baseline_window_seconds
+    baseline_diagnostics["stableFrameCount"] = len(stable_frames)
     valid_baseline = fixed_camera_baseline[sand_mask & np.isfinite(fixed_camera_baseline)]
     if valid_baseline.size == 0:
         fixed_depth_range = (0.0, 1.0)
@@ -527,15 +640,16 @@ def _prepare_v2_session(session_dir: Path, project_dir: Path, manifest: dict[str
         "frameSize": {"width": int(v2_frames[0]["width"]), "height": int(v2_frames[0]["height"])},
         "depthEncoding": manifest.get("depthEncoding", {}),
         "depthNormalization": {
-            "method": "baseline_first_60_frame_median_percentile_range_meters",
+            "method": "baseline_phase_median_stability_gated_percentile_range_meters",
             "p02BaselineMeters": fixed_depth_range[0],
             "p98BaselineMeters": fixed_depth_range[1],
+            "baseline": baseline_diagnostics,
         },
         "fixedCameraDetail": {
-            "method": "unsmoothed_sceneDepth_minus_first_60_frame_median",
+            "method": "unsmoothed_sceneDepth_minus_stability_gated_baseline_median",
             "neutralGray": 128,
             "scaleMeters": DETAIL_DEPTH_SCALE_METERS,
-            "note": "detail_depth uses unsmoothed ARKit sceneDepth; smoothedSceneDepth is retained in source streams for comparison.",
+            "note": "detail_depth uses the opening baselinePhase window, stability-gated to ignore hand/motion frames, then subtracts the fixed sand median so grooves/drawings appear as deviations from neutral gray.",
         },
         "diagnostics": {
             "rawDeltaStdMmMedian": float(np.median(raw_delta_std_mm)) if raw_delta_std_mm else None,

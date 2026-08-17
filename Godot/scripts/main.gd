@@ -55,7 +55,10 @@ const SESSION_PRESETS := [
 	{"label": "Balanced detail", "path": "res://assets/processed_sessions/session_kinect_20260623_154953_last12_balanced_detail_godot/session.json"},
 	{"label": "SAM RGB repair bold", "path": "res://assets/processed_sessions/session_kinect_20260623_154953_object_removed_sam_full_gpu_rgb_reference_repair_bold/session.json"},
 	{"label": "RGB-delta depth v44", "path": "res://assets/processed_sessions/session_kinect_20260623_154953_object_removed_rgb_delta_depth_v44/session.json"},
-	{"label": "Posterior contact intent82", "path": "res://assets/processed_sessions/session_kinect_20260623_154953_object_removed_posterior_repair_core_target_contact_intent82/session.json"}
+	{"label": "Posterior contact intent82", "path": "res://assets/processed_sessions/session_kinect_20260623_154953_object_removed_posterior_repair_core_target_contact_intent82/session.json"},
+	{"label": "Azure Kinect 2026-08-14 (your recording)", "path": "res://assets/processed_sessions/session_azure_kinect_20260814_131426/session.json"},
+	{"label": "Azure Kinect 2026-08-14 top-down (new)", "path": "res://assets/processed_sessions/session_azure_kinect_20260814_142712/session.json"},
+	{"label": "Azure Kinect 2026-08-14 hand-removed (ProPainter)", "path": "res://assets/processed_sessions/session_azure_kinect_20260814_142712_hand_removed_propainter/session.json"}
 ]
 
 var session := {}

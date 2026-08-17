@@ -1,1 +1,15 @@
+# Git LFS attributes
 Godot/assets/processed_sessions/session_kinect_20260623_154953_object_removed_sam_full_gpu_rgb_reference_repair_bold/*.png filter=lfs diff=lfs merge=lfs -text
+
+# GitHub Linguist Overrides
+# Focus language breakdown on primary iOS app source code (Swift)
+Godot/** linguist-vendored
+server/** linguist-vendored
+scripts/** linguist-vendored
+tests/** linguist-vendored
+ui-preview/** linguist-vendored
+deploy/** linguist-vendored
+docs/** linguist-documentation
+*.py linguist-vendored
+*.sh linguist-vendored
+*.ps1 linguist-vendored

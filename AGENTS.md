@@ -36,3 +36,16 @@ Fall back to Grep/Glob/Read **only** when the graph doesn't cover what you need.
 2. Use `detect_changes` for code review.
 3. Use `get_affected_flows` to understand impact.
 4. Use `query_graph` pattern="tests_for" to check coverage.
+
+## Shared Project Memory
+
+Read PROJECT_CONTEXT.md near the start of every task in this repo. It stores
+durable product decisions, build/distribution notes, device limitations, and UI
+direction that should be shared across Codex chats.
+
+Update PROJECT_CONTEXT.md whenever a task changes durable project direction,
+fixes an important behavior, changes the IPA/GitHub Actions flow, or discovers a
+device-specific limitation. If you cannot update it, tell Vijit exactly what to
+add.
+
+

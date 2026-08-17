@@ -27,6 +27,9 @@ param(
     [ValidateRange(1, 99)]
     [int]$Replicate = 1,
 
+    [ValidateRange(0, 60)]
+    [double]$BaselineSeconds = 3.0,
+
     [string]$AudioDevice = "Microphone Array (Azure Kinect Microphone Array)",
     [switch]$SkipAudio,
     [switch]$SkipConversion,
@@ -142,7 +145,7 @@ $kinectArguments = @(
     ('"{0}"' -f $mkvPath)
 )
 Write-Host "Recording Azure Kinect session $SessionId for $DurationSeconds seconds..."
-Write-Host "Make one visible and audible clap near the beginning for synchronization."
+Write-Host "Keep the sand untouched for the first $BaselineSeconds seconds (baseline phase), then make one visible and audible clap near the start for synchronization."
 $kinectProcess = Start-Process -FilePath $recorder -ArgumentList $kinectArguments -PassThru -WindowStyle Hidden
 $kinectProcess.WaitForExit()
 if ($audioProcess) {
@@ -193,6 +196,7 @@ if (-not $SkipConversion) {
         "--replicate", $Replicate,
         "--ffmpeg", $(if ($ffmpegCommand) { $ffmpegCommand.Source } else { $FFmpeg }),
         "--ffprobe", $(if ($ffprobeCommand) { $ffprobeCommand.Source } else { $FFprobe }),
+        "--baseline-seconds", $BaselineSeconds,
         "--no-copy-source"
     )
     if (-not $SkipAudio) {

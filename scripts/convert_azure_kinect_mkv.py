@@ -348,8 +348,11 @@ def convert_capture_sequence(
     allow_resized_color: bool = False,
     video_sink_factory: Callable[[Path, int, int, float], Any] | None = None,
     color_to_depth_transform: Callable[[np.ndarray, np.ndarray], np.ndarray | None] | None = None,
+    baseline_seconds: float = 3.0,
 ) -> dict[str, Any]:
     """Convert decoded captures. This core is injectable so it can be tested without hardware."""
+    if baseline_seconds < 0.0:
+        raise ValueError("baseline_seconds must be non-negative")
     if fps <= 0:
         raise ValueError("fps must be positive")
     session_dir = session_dir.resolve()
@@ -424,8 +427,10 @@ def convert_capture_sequence(
                 depth_handle.write(encoded)
                 valid_values = depth_m[valid]
                 frame_index = len(frame_records) + 1
+                is_baseline_phase = elapsed <= baseline_seconds
                 record: dict[str, Any] = {
                     "frameIndex": frame_index,
+                    "baselinePhase": is_baseline_phase,
                     "arTimestamp": depth_timestamp / 1_000_000.0,
                     "monotonicElapsedSeconds": elapsed,
                     "width": width,
@@ -468,6 +473,11 @@ def convert_capture_sequence(
 
     if not frame_records:
         raise RuntimeError("No synchronized Azure Kinect depth/colour captures were decoded")
+
+    baseline_frame_count = sum(1 for record in frame_records if record.get("baselinePhase"))
+    baseline_window_seconds = float(baseline_seconds)
+    if baseline_frame_count == 0 and frame_records:
+        baseline_window_seconds = 0.0
 
     with metadata_path.open("w", encoding="utf-8") as metadata_handle:
         for record in frame_records:
@@ -518,6 +528,11 @@ def convert_capture_sequence(
             "maxDepthMeters": float(recording_metadata.get("maxDepthMeters", 5.46)),
             "deltaMeanAbsThresholdU16": 0.0,
             "note": "Azure Kinect DEPTH16 millimetres converted losslessly to Float32 metres; zero samples are stored as NaN.",
+        },
+        "baselinePhase": {
+            "windowSeconds": baseline_window_seconds,
+            "frameCount": baseline_frame_count,
+            "note": "Frames within the first baselinePhase.windowSeconds of retained depth time are marked baselinePhase=true in v2_frames.jsonl. The offline pipeline uses these (stability-gated) to fix the untouched sand baseline so later grooves/drawings are encoded as deltas.",
         },
         "depthFrames": [],
         "rgbFrames": [],
@@ -591,6 +606,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--replicate", type=int, default=1)
     parser.add_argument("--allow-resized-color", action="store_true", help="Permit uncalibrated RGB resize only for diagnostics")
     parser.add_argument("--no-copy-source", action="store_true", help="Reference an external MKV instead of copying it into the package")
+    parser.add_argument("--baseline-seconds", type=float, default=3.0, help="Untouched-sand baseline window in seconds; frames in this window are marked baselinePhase=true in v2_frames.jsonl")
     return parser.parse_args()
 
 
@@ -671,6 +687,7 @@ def main() -> int:
             ffmpeg=args.ffmpeg,
             ffprobe=args.ffprobe,
             allow_resized_color=args.allow_resized_color,
+            baseline_seconds=args.baseline_seconds,
             color_to_depth_transform=transform_mjpeg_color_to_depth,
         )
     except Exception as exc:

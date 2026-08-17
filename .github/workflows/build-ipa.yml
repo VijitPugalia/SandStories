@@ -72,20 +72,15 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Delete old release object so GitHub updates the release creation timestamp to NOW
+          gh release delete "$RELEASE_TAG" -y || true
+
           git tag -f "$RELEASE_TAG" "$GITHUB_SHA"
           git push origin "refs/tags/$RELEASE_TAG" --force
 
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release edit "$RELEASE_TAG" \
-              --title "Latest SandStories IPA" \
-              --notes "Rolling latest private IPA build from main. Commit: $GITHUB_SHA"
-          else
-            gh release create "$RELEASE_TAG" \
-              --title "Latest SandStories IPA" \
-              --notes "Rolling latest private IPA build from main. Commit: $GITHUB_SHA"
-          fi
-
-          gh release upload "$RELEASE_TAG" "$IPA_PATH#SandStories.ipa" --clobber
+          gh release create "$RELEASE_TAG" "$IPA_PATH#SandStories.ipa" \
+            --title "Latest SandStories IPA" \
+            --notes "Rolling latest private IPA build from main branch (Commit: $GITHUB_SHA)."
 
           {
             echo "### Latest private IPA"

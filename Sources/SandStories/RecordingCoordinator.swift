@@ -32,6 +32,16 @@ final class RecordingCoordinator: ObservableObject {
     @Published private(set) var benchmarkSummary: String?
     @Published private(set) var depthDiagnosticSummary: String?
     @Published var isDepthDiagnosticRawOnly: Bool = false
+    /// When enabled, measure a static-baseline motion-gate floor over the first
+    /// `motionGateCalibrationFrames` saved frames, then set the gate threshold to
+    /// `floor * multiplier` instead of a hard-coded constant. Off by default.
+    @Published var isMotionGateCalibrationEnabled: Bool = UserDefaults.standard.object(forKey: "isMotionGateCalibrationEnabled") as? Bool ?? false {
+        didSet {
+            UserDefaults.standard.set(isMotionGateCalibrationEnabled, forKey: "isMotionGateCalibrationEnabled")
+        }
+    }
+    var motionGateMultiplier: Float = 4.0
+    var motionGateCalibrationFrames: Int = 30
     @Published private(set) var uploadStatus: String?
     @Published private(set) var capturePerformanceMode: CapturePerformanceMode = .fullQuality
     @Published var isMeshVisualizationEnabled: Bool = UserDefaults.standard.object(forKey: "isMeshVisualizationEnabled") as? Bool ?? false {
@@ -295,7 +305,13 @@ final class RecordingCoordinator: ObservableObject {
 
         let elapsed = Date().timeIntervalSince(start)
         let snapshot = await depthCaptureManager.benchmarkSnapshot()
-        let summary = snapshot.diagnosticSummary(elapsedSeconds: elapsed, profile: profile)
+        var summary = snapshot.diagnosticSummary(elapsedSeconds: elapsed, profile: profile)
+        if let cal = snapshot.gateCalibration {
+            let th = cal.finalThresholdU16.map { String(format: "%.2f", $0) } ?? "n/a"
+            let floor = cal.floorMeanAbsDeltaU16.map { String(format: "%.2f", $0) } ?? "n/a"
+            let mult = cal.multiplier.map { String(format: "%.2f", $0) } ?? "n/a"
+            summary += " | gate floor \(floor) mult \(mult) -> thr \(th)"
+        }
         depthDiagnosticSummary = summary
         warningBanner = "Depth diagnostic complete. \(summary)"
         print(summary)
@@ -499,6 +515,9 @@ final class RecordingCoordinator: ObservableObject {
                 targetCaptureFPS: 30,
                 captureProfile: captureProfile,
                 enabledFrameSemantics: enabledSemantics,
+                gateMode: isMotionGateCalibrationEnabled ? "measure_floor_then_enable" : "off",
+                gateMultiplier: motionGateMultiplier,
+                gateCalibrationFrameGoal: motionGateCalibrationFrames,
                 onSaved: nil,
                 onV2Saved: { record in
                     try? await session.appendV2StreamFrame(record)

@@ -157,6 +157,9 @@ struct SettingsTabView: View {
 
                     Toggle("Raw depth diagnostic only", isOn: $recordingCoordinator.isDepthDiagnosticRawOnly)
                         .disabled(toolsAreBusy)
+
+                    Toggle("Auto-calibrate motion gate from baseline", isOn: $recordingCoordinator.isMotionGateCalibrationEnabled)
+                        .disabled(recordingCoordinator.isCaptureRecording)
                 }
 
                 Section("Recording gestures") {

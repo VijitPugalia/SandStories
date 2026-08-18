@@ -153,6 +153,20 @@ struct CaptureSessionManifest: Codable, Sendable {
         var confidenceHeight: Int?
         var confidencePixelFormat: String?
         var confidenceBytesPerRow: Int?
+        var gateCalibration: CaptureGateCalibrationInfo? = nil
+    }
+
+    /// Records how the depth motion gate threshold was derived, when calibrated.
+    /// Units are mean-abs-delta on the 32x32 downsampled UInt16 (8 m) depth, matching
+    /// `deltaMeanAbsThresholdU16`. A nil value means the gate is off / uncalibrated.
+    struct CaptureGateCalibrationInfo: Codable, Sendable {
+        var mode: String                     // "off" | "measure_floor_then_enable"
+        var floorMeanAbsDeltaU16: Float?     // measured per-adjacent-frame mean-abs delta during calibration
+        var multiplier: Float?               // threshold = floor * multiplier
+        var calibrationFrameCount: Int?      // frames used to estimate the floor
+        var calibrationDurationSeconds: Double?
+        var finalThresholdU16: Float?         // resulting deltaMeanAbsThresholdU16 (nil when off)
+        var note: String?
     }
 }
 

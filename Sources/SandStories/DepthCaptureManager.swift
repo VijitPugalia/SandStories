@@ -77,7 +77,6 @@ struct DepthCaptureBenchmarkSnapshot: Sendable {
             framesSkippedLowQuality: framesSkippedLowQuality,
             framesWritten: framesWritten,
             selectedDepthSource: selectedDepthSource,
-            gateCalibration: gateCalibration,
             lastDepthValidPixelRatio: lastDepthValidPixelRatio,
             lastDepthMinMeters: lastDepthMinMeters,
             lastDepthMedianMeters: lastDepthMedianMeters,
@@ -96,7 +95,8 @@ struct DepthCaptureBenchmarkSnapshot: Sendable {
             confidenceWidth: confidenceWidth,
             confidenceHeight: confidenceHeight,
             confidencePixelFormat: confidencePixelFormat,
-            confidenceBytesPerRow: confidenceBytesPerRow
+            confidenceBytesPerRow: confidenceBytesPerRow,
+            gateCalibration: gateCalibration
         )
     }
 

@@ -26,7 +26,6 @@ struct DepthCaptureBenchmarkSnapshot: Sendable {
     var confidenceHeight: Int?
     var confidencePixelFormat: String?
     var confidenceBytesPerRow: Int?
-    var gateCalibration: CaptureSessionManifest.CaptureGateCalibrationInfo? = nil
     var writerCaptureCalls: Int = 0
     var framesSkippedWriting: Int = 0
     var framesSkippedMotion: Int = 0
@@ -95,8 +94,7 @@ struct DepthCaptureBenchmarkSnapshot: Sendable {
             confidenceWidth: confidenceWidth,
             confidenceHeight: confidenceHeight,
             confidencePixelFormat: confidencePixelFormat,
-            confidenceBytesPerRow: confidenceBytesPerRow,
-            gateCalibration: gateCalibration
+            confidenceBytesPerRow: confidenceBytesPerRow
         )
     }
 
@@ -144,16 +142,6 @@ actor DepthCaptureWriter {
     private var onSaved: (@Sendable (TimeInterval, String, String, String?, [Float]?, [Float]?) async -> Void)?
     private var onV2Saved: (@Sendable (V2StreamFrameRecord) async -> Void)?
     private var benchmarkMetrics = DepthCaptureBenchmarkSnapshot()
-    // Motion-gate auto-calibration: measure a per-adjacent-frame mean-abs-delta
-    // floor over the initial static baseline, then enable gating with
-    // threshold = floor * multiplier. Kept off unless requested.
-    private var gateMode: String = "off"
-    private var gateMultiplier: Float = 4.0
-    private var gateCalibrationFloor: Float?
-    private var gateCalibrationDeltas: [Float] = []
-    private var gateCalibrationGoal: Int = 30
-    private var gateCalibrationFramesMeasured: Int = 0
-    private var gateCalibrationDone: Bool = false
 
     func setRecording(_ isRecording: Bool) {
         if isRecording, !self.isRecording {
@@ -171,10 +159,7 @@ actor DepthCaptureWriter {
         captureProfile: String,
         enabledFrameSemantics: [String],
         onSaved: (@Sendable (TimeInterval, String, String, String?, [Float]?, [Float]?) async -> Void)?,
-        onV2Saved: (@Sendable (V2StreamFrameRecord) async -> Void)?,
-        gateMode: String = "off",
-        gateMultiplier: Float = 4.0,
-        gateCalibrationFrameGoal: Int = 30
+        onV2Saved: (@Sendable (V2StreamFrameRecord) async -> Void)?
     ) async {
         await finishRecording()
         self.depthDirectory = depthDirectory
@@ -186,13 +171,6 @@ actor DepthCaptureWriter {
         self.enabledFrameSemantics = enabledFrameSemantics
         self.onSaved = onSaved
         self.onV2Saved = onV2Saved
-        self.gateMode = gateMode
-        self.gateMultiplier = max(1.001, gateMultiplier)
-        self.gateCalibrationGoal = max(4, gateCalibrationFrameGoal)
-        self.gateCalibrationFloor = nil
-        self.gateCalibrationDeltas.removeAll(keepingCapacity: true)
-        self.gateCalibrationFramesMeasured = 0
-        self.gateCalibrationDone = false
         sequentialIndex = 0
         lastDownsample = nil
         firstDepthTimestamp = nil
@@ -290,42 +268,14 @@ actor DepthCaptureWriter {
 
             let depthU16 = Self.depthFloat32ToUInt16(depthValues, maxDepthMeters: maxDepthMeters)
             let down = Self.downsampleMean(depthU16, width: width, height: height, outW: 32, outH: 32)
-
-            // Motion gate with optional baseline floor auto-calibration.
-            // During calibration we measure the per-adjacent-frame mean-abs-delta
-            // floor and do NOT skip, so the threshold is grounded in the sensor's
-            // actual static noise rather than a hard-coded constant.
-            if gateMode == "measure_floor_then_enable" && !gateCalibrationDone {
-                if let prev = lastDownsample {
-                    gateCalibrationDeltas.append(Self.meanAbsoluteDifference(down, prev))
-                    gateCalibrationFramesMeasured += 1
-                }
-                if gateCalibrationFramesMeasured >= gateCalibrationGoal, !gateCalibrationDeltas.isEmpty {
-                    let floor = Self.robustMedian(gateCalibrationDeltas)
-                    gateCalibrationFloor = floor
-                    deltaThresholdMeanU16 = floor * gateMultiplier
-                    gateCalibrationDone = true
-                    benchmarkMetrics.gateCalibration = .init(
-                        mode: gateMode,
-                        floorMeanAbsDeltaU16: floor,
-                        multiplier: gateMultiplier,
-                        calibrationFrameCount: gateCalibrationFramesMeasured,
-                        calibrationDurationSeconds: nil,
-                        finalThresholdU16: deltaThresholdMeanU16,
-                        note: "Threshold = median(adjacent 32x32 mean-abs delta) * multiplier; measured over the baseline window."
-                    )
-                }
-                lastDownsample = down
-            } else if deltaThresholdMeanU16 > 0, let prev = lastDownsample {
+            if deltaThresholdMeanU16 > 0, let prev = lastDownsample {
                 let meanAbs = Self.meanAbsoluteDifference(down, prev)
                 if meanAbs < deltaThresholdMeanU16 {
                     benchmarkMetrics.framesSkippedMotion += 1
                     return
                 }
-                lastDownsample = down
-            } else {
-                lastDownsample = down
             }
+            lastDownsample = down
 
             sequentialIndex += 1
             let idx = sequentialIndex
@@ -722,18 +672,6 @@ actor DepthCaptureWriter {
         return Float(sum) / Float(a.count)
     }
 
-    /// Robust median (odd-count average of two middle values). Used to estimate the
-    /// static-baseline motion-gate floor without being distorted by a few large deltas.
-    private static func robustMedian(_ values: [Float]) -> Float {
-        guard !values.isEmpty else { return 0 }
-        let sorted = values.sorted()
-        let mid = sorted.count / 2
-        if sorted.count.isMultiple(of: 2) {
-            return (sorted[mid - 1] + sorted[mid]) / 2
-        }
-        return sorted[mid]
-    }
-
     private static func convertDepthToUInt16(_ depthMap: CVPixelBuffer, maxDepthMeters: Float) throws -> [UInt16] {
         let width = CVPixelBufferGetWidth(depthMap)
         let height = CVPixelBufferGetHeight(depthMap)
@@ -1042,9 +980,6 @@ final class DepthCaptureManager: NSObject, @preconcurrency ARSessionDelegate {
         targetCaptureFPS: Double = 30,
         captureProfile: String = "standard",
         enabledFrameSemantics: [String] = ["sceneDepth", "smoothedSceneDepth"],
-        gateMode: String = "off",
-        gateMultiplier: Float = 4.0,
-        gateCalibrationFrameGoal: Int = 30,
         onSaved: (@Sendable (TimeInterval, String, String, String?, [Float]?, [Float]?) async -> Void)?,
         onV2Saved: (@Sendable (V2StreamFrameRecord) async -> Void)? = nil
     ) {
@@ -1058,9 +993,6 @@ final class DepthCaptureManager: NSObject, @preconcurrency ARSessionDelegate {
         lastCaptureTimestamp = nil
         let profile = captureProfile
         let semantics = enabledFrameSemantics
-        let gm = gateMode
-        let gmult = gateMultiplier
-        let ggoal = gateCalibrationFrameGoal
         let cb = onSaved
         let v2 = onV2Saved
         Task {
@@ -1073,10 +1005,7 @@ final class DepthCaptureManager: NSObject, @preconcurrency ARSessionDelegate {
                 captureProfile: profile,
                 enabledFrameSemantics: semantics,
                 onSaved: cb,
-                onV2Saved: v2,
-                gateMode: gm,
-                gateMultiplier: gmult,
-                gateCalibrationFrameGoal: ggoal
+                onV2Saved: v2
             )
         }
     }

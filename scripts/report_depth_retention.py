@@ -4,8 +4,12 @@ Report on-device LiDAR depth retention from a SandStories v2 session manifest.
 
 Reads `manifest.json` -> `diagnostic.counters` and reports where depth frames are
 being skipped (warmup, low-quality / valid-ratio, in-flight, writing, motion gate),
-plus the new motion-gate auto-calibration block (`gateCalibration`) produced by the
-"Auto-calibrate motion gate from baseline" toggle.
+plus the motion-gate auto-calibration block (`gateCalibration`) if present.
+
+Note: the "Auto-calibrate motion gate from baseline" feature that produced
+`gateCalibration` was reverted (2026-08-18) after on-device testing showed it
+collapsed retention to ~5% vs ~95.5% with the gate off. This tool still reports the
+field when present, and remains the way to confirm retention / skip counts.
 
 Usage:
   python scripts/report_depth_retention.py /path/to/session_UUID

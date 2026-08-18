@@ -1,4 +1,4 @@
-# SandStories Project Context
+﻿# SandStories Project Context
 
 This is the durable shared memory for agents and people working in this repository. Read `AGENTS.md` and this file before making product or implementation decisions. Update this file only when repository evidence or an explicit decision changes durable project direction.
 
@@ -183,10 +183,17 @@ Update this file when a task changes durable product direction, architecture, bu
 - There is **no autofocus/exposure lock API** on `ARWorldTrackingConfiguration`. `configuration.isAutofocusEnabled`
   does not exist. ARKit manages the camera; focus/exposure locking would require lower-level AVCaptureDevice access
   that an active ARSession generally overrides. Do not plan a "one-line autofocus lock". Control lighting instead.
-- **New feature (this session):** added a Settings toggle *"Auto-calibrate motion gate from baseline"*.
-  When enabled, capture measures a robust median (adjacent 32x32 mean-abs-delta) floor over the first 30
-  saved frames and sets `threshold = floor * multiplier` (multiplier 4), recording
-  `CaptureGateCalibrationInfo` into the manifest diagnostic counters. Default off (behavior unchanged).
+- **Motion-gate auto-calibration was implemented, then REVERTED (2026-08-18).** A Settings toggle
+  *"Auto-calibrate motion gate from baseline"* measured a median of adjacent 32x32 mean-abs-delta over the
+  first 30 saved frames and set `threshold = floor * 4`. On-device depth-diagnostic testing proved it
+  **harmful**: with the toggle ON, retention collapsed to 5.3% (32/600 frames; 545 motion-gate skips) because
+  the baseline window caught ARKit settling/early motion and inflated the floor to ~40 UInt16 units
+  (threshold 160 ≈ 19.5 mm mean surface change per frame). With the gate OFF (the default), the SAME rig
+  retained **95.5%** (573/600), losing only 23 warmup frames.
+- **Verified retention fact:** normal capture with the motion gate off already retains ~95.5% of AR depth
+  frames; the earlier ~2% `depthRetention` figure from old pilot stats is NOT reproducible and was wrong.
+  There is no retention problem to solve. Do not re-add a motion gate unless it is gated on true stillness
+  and a low-percentile physical-mm threshold; the naive version was reverted from source.
 - Post-processing strengths to use: temporal median+outlier aggregation, per-device bias-field subtraction,
   RANSAC/corner-marker plane leveling, gauge-block (5 mm / 10 mm) recovery as the acceptance metric.
   Constrain any RGB-guided upsampling to edge-preserving interpolation between measured pixels (never snap

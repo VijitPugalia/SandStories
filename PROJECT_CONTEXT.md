@@ -141,6 +141,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\record_azure_kinect.ps1 <para
 - The active Godot project supports aligned RGB-D surface playback, hand/object/annotation layers, modality ablations, experiment phases, evidence marking, questionnaires, Web export, and local review serving.
 - Experiment-platform readiness was hardened to prevent formal runs from silently using unready sessions or client-only allocation.
 - Selected research artifacts are documented rather than treated as universal production pipelines: iPhone LiDAR temporal-anchor repair v24b and Kinect full-sequence/temporal-anchor work through v22p. See `Godot/docs/LIDAR_RECONSTRUCTION_PIPELINE.md` and `Godot/docs/KINECT_CASPER_ANY2FULL_V22_WORKFLOW.md`.
+- The capture-specific Azure hand-free v12 workflow is documented from aligned RGB/depth pairs through automatic actor masks, metric completion, bidirectional reconstruction, progressive v9 geometry, and RGB-only intrinsic/albedo repair. It is a derived reconstruction with explicit sensor/model provenance; see `Godot/docs/AZURE_HAND_FREE_V12_PRODUCTION_RUNBOOK.md`.
 - GitHub Actions produces a rolling private IPA on successful `main` builds.
 
 ## Known Limitations and Deferred Work

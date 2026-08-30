@@ -39,7 +39,9 @@ def parse_args() -> argparse.Namespace:
 
 
 def free_gib(path: Path) -> float:
-    probe = path if path.exists() else path.parent
+    probe = path
+    while not probe.exists() and probe.parent != probe:
+        probe = probe.parent
     return shutil.disk_usage(probe).free / (1024**3)
 
 

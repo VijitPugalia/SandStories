@@ -43,6 +43,11 @@ This runbook does not cover MKV decoding or RGB-depth registration. If the
 starting RGB and depth are not already spatially aligned, stop and perform
 calibrated registration first.
 
+For variable-length MKV ingestion, resumable web submission, queued execution,
+and selectable PNG or video-stream artifacts, see
+[`RGBD_JOB_GATEWAY.md`](RGBD_JOB_GATEWAY.md). The gateway wraps this production
+profile without changing the capture-specific thresholds documented below.
+
 ## 2. Final dependency graph
 
 ```text

@@ -1,0 +1,17 @@
+http://sandstories.example.org {
+	redir https://sandstories.example.org{uri} 308
+}
+
+https://sandstories.example.org {
+	# Each resumable PATCH is 1 MiB. Reject accidental monolithic uploads.
+	request_body {
+		max_size 16MB
+	}
+	reverse_proxy 10.0.0.20:8787 {
+		flush_interval -1
+		header_down -Server
+		transport http {
+			dial_timeout 10s
+		}
+	}
+}

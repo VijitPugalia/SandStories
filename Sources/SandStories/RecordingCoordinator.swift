@@ -1,5 +1,6 @@
 import ARKit
 import Foundation
+import GestureRecognition
 import ImageIO
 import SwiftUI
 

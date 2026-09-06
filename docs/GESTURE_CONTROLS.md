@@ -1,68 +1,56 @@
 # UI Gestures and Control Heuristics
 
-This document describes the design, heuristics, and integration of touchless hands-free UI control gestures used to manage SandStories sessions. These gestures allow operators to control the recording session when the capturing iPhone is mounted overhead/face-down on a tripod and out of reach.
+SandStories uses touchless gestures while the iPhone is mounted out of reach. Vision hand-pose observations feed a separate, time-based state machine. Drawing strokes and UI-control gestures remain separate data paths.
 
-## 1. Hand Pose Pipeline Architecture
+The normal hand-pose processing target is 15 fps and may reduce to 8 fps under thermal pressure. Gesture timing uses timestamps rather than frame counts, so the same holds and windows apply at either rate.
 
-The gesture detection system leverages Apple's `Vision` framework (`VNDetectHumanHandPoseRequest`) serialized inside a dedicated background actor (`HandPoseVisionProcessor`) at 30 fps.
+Vision image orientation follows the active interface orientation. Portrait, upside-down portrait, landscape-left, and landscape-right frames are mapped before hand-pose detection.
 
-To maintain cultural safety and drawing fidelity, the **UI Control Gesture** detection runs on a completely separate code path from the narrative drawing stroke capture. Drawing strokes are captured continuously during normal recording, and gestures only trigger system state events (Start, Stop, Pause, Resume, Mark Segment) without labeling or classifying the sand art or narrative gestures.
+## Gesture controls
 
----
+Operators can enable or disable each gesture in Settings. Disabling a gesture clears its partial recognition state.
 
-## 2. Gesture Control Heuristics
+### Open Palm: Pause or Resume
 
-All coordinate checks and distance checks are computed in normalized image space: $[0.0, 1.0] \times [0.0, 1.0]$. The coordinate origin is mapped with the wrist serving as the primary anchor point.
+Hold an open palm relatively still for 3 seconds.
 
-Operators can selectively enable/disable any of these gestures in the **Gestures** configuration tab.
+All five fingers must be extended. The wrist range during the hold must stay below 0.08 on both normalized image axes. A successful hold pauses an active recording or resumes a paused recording.
 
-### A. Raised Open Palm (Pause / Resume)
+The gesture fires once per hold. The hand must stop presenting an open palm for at least 0.5 seconds before another palm hold can trigger.
 
-*   **Action**: Pauses current recording (stops depth/RGB frames and stroke logs, pauses audio recording) if active. Resumes recording if paused.
-*   **Trigger Condition**: The user holds their hand open and relatively still, facing the camera.
-*   **State Detection**:
-    *   Fingers (Index, Middle, Ring, Little) are determined to be *extended* if:
-        $$\text{distance}(\text{FingerTip}, \text{Wrist}) > \text{distance}(\text{FingerMCP}, \text{Wrist}) \times 1.2$$
-    *   Thumb is *extended* if:
-        $$\text{distance}(\text{ThumbTip}, \text{Wrist}) > \text{distance}(\text{ThumbIP}, \text{Wrist}) \times 1.1$$
-    *   All 5 fingers must meet the extension requirement simultaneously.
-    *   **Still-Hand Check**: To prevent other gestures like waving from accidentally triggering a pause, the normalized displacement of the wrist over the 90-frame window must be small on both axes:
-        $$X_{\text{max}} - X_{\text{min}} < 0.08 \quad \text{and} \quad Y_{\text{max}} - Y_{\text{min}} < 0.08$$
-*   **Debounce/Hold**: Must be detected continuously for 90 frames ($\approx 3.0$ seconds) with the Still-Hand Check satisfied. Once triggered, it activates a 60-frame (2-second) cooldown to prevent double-triggering.
+Pausing stops RGB/depth frame capture, stroke capture, and audio recording. Resuming restarts those streams.
 
-### B. Open Hand Wave (Stop Session)
+### Wave Hand: Stop Recording
 
-*   **Action**: Stops and finalizes the active recording session if recording (paused or active). Waving does not start sessions.
-*   **Trigger Condition**: The user waves their open hand back and forth horizontally at least 3 times within a 4-second period.
-*   **State Detection**:
-    *   Hand must be detected as an Open Palm (see above).
-    *   The horizontal ($X$) coordinate of the wrist is stored in a 30-frame sliding history window.
-    *   The maximum displacement in the window must exceed the threshold:
-        $$X_{\text{max}} - X_{\text{min}} > 0.18$$
-    *   The direction of movement must reverse at least 3 times within the 30-frame history window (counting transitions of $\Delta X$ sign exceeding a minimal noise gate of $0.005$).
-    *   Upon detection of a wave event, the history window is cleared to prevent a continuous wave from registering multiple wave counts in the same window.
-    *   **Wave Counting**: If 3 wave events are detected within 4.0 seconds, the `.stop` command is emitted.
-*   **Cooldown**: Triggers the `.stop` command immediately upon the third wave event, clearing the timestamps window and activating a 60-frame (2-second) cooldown.
+Present an open palm and move the wrist horizontally back and forth.
 
-### C. One-Finger Triple Tap (Mark Segment)
+The state machine keeps four seconds of timestamped wrist positions. It emits Stop when all of these are true:
 
-*   **Action**: Appends a segment marker containing the current monotonic and Unix timestamp to `segments` in the session manifest.
-*   **Trigger Condition**: The user pinches their index fingertip to their thumb fingertip 3 times in quick succession (within 2.0 seconds), with middle, ring, and little fingers curled.
-*   **State Detection**:
-    *   Only the index finger is extended. Middle, ring, and little fingers must be curled:
-        $$\text{distance}(\text{FingerTip}, \text{Wrist}) < \text{distance}(\text{FingerMCP}, \text{Wrist}) \times 1.1$$
-    *   A pinch is *active* when the index tip is close to the thumb tip:
-        $$\text{distance}(\text{IndexTip}, \text{ThumbTip}) < 0.05$$
-*   **Triple Tap Counting**:
-    *   Monitors transitions from `pinchActive = false` to `pinchActive = true`.
-    *   If 3 transitions occur within a window of $2.0$ seconds, a `.markSegment` command is emitted.
-    *   Activates a 60-frame (2-second) cooldown.
+- The horizontal span is at least 0.12 in normalized image coordinates.
+- Movement crosses the existing 0.005 per-sample noise gate.
+- The qualified horizontal direction changes at least three times.
 
----
+Three direction changes are the complete gesture. There is no second layer that asks for three complete wave detections. After Stop fires, the open palm must leave the frame or close before another wave can trigger.
 
-## 3. Developer Configuration & Tuning
+### Pinch and Hold (2s): Mark Segment
 
-To tune these thresholds on a new device configuration or distance layout:
-1.  **Pinch Thresholds**: If pinch detection is failing, increase the fingertip‑to‑thumbtip threshold from `0.05` to `0.07` in `HandPoseVisionProcessor.processFrameForFingertipAndGestures`.
-2.  **Wave Amplitude**: For wider lens cameras or further mounting setups, lower the wave horizontal displacement from `0.18` to `0.12` to increase sensitivity.
-3.  **Frame Rates**: The consecutive frame counts assume a standard 30 fps capture pipeline. If running at 60 fps, double the consecutive frames threshold (e.g., set open palm frame check to `180` instead of `90`).
+Bring the thumb tip and index fingertip together and hold them together continuously for 2 seconds.
+
+A pinch becomes active at a normalized fingertip distance of 0.05 or less. It remains active through the dead band and is released at 0.07 or more. A successful hold writes one segment marker to the session manifest. Continued holding cannot create duplicates; the fingers must separate before another mark.
+
+If the hand disappears or either fingertip becomes unreliable before two seconds, the partial hold is cleared.
+
+## On-screen feedback
+
+Feedback appears only after the requested action is accepted. It is a small, non-blocking glass popup that disappears after two seconds. A new message replaces the previous one.
+
+- Gesture captured: Recording paused
+- Gesture captured: Recording resumed
+- Gesture captured: Recording stopped
+- Gesture captured: Segment marked
+
+The segment message appears only after the manifest write succeeds. Gesture feedback has no app sound or haptic.
+
+## State clearing and cooldown
+
+Hand loss and invalid landmark observations clear incomplete palm, wave, and pinch candidates. Each disabled setting also clears its candidate state. Accepted commands retain the existing two-second command cooldown, with release-to-rearm rules preventing repeated commands from a continuously held gesture.

@@ -65,6 +65,7 @@ package struct GestureRecognitionStateMachine: Sendable {
     private var pauseReleaseStartedAt: TimeInterval?
 
     private var waveSamples: [WristSample] = []
+    private var waveRequiresRelease = false
 
     private var pinchStartedAt: TimeInterval?
     private var pinchIsActive = false
@@ -80,6 +81,7 @@ package struct GestureRecognitionStateMachine: Sendable {
         pauseRequiresRelease = false
         pauseReleaseStartedAt = nil
         waveSamples.removeAll(keepingCapacity: true)
+        waveRequiresRelease = false
         pinchStartedAt = nil
         pinchIsActive = false
         pinchRequiresSeparation = false
@@ -104,6 +106,7 @@ package struct GestureRecognitionStateMachine: Sendable {
 
         if settings.stopEnabled, waveIsComplete {
             waveSamples.removeAll(keepingCapacity: true)
+            waveRequiresRelease = true
             pauseSamples.removeAll(keepingCapacity: true)
             cooldownUntil = frame.timestamp + commandCooldown
             return .stop
@@ -161,26 +164,37 @@ package struct GestureRecognitionStateMachine: Sendable {
         }
 
         pauseSamples.append(WristSample(timestamp: frame.timestamp, x: wristX, y: wristY))
-        prune(&pauseSamples, olderThan: frame.timestamp - pauseHoldDuration)
+        Self.prune(&pauseSamples, olderThan: frame.timestamp - pauseHoldDuration)
 
-        if horizontalSpan(of: pauseSamples) >= pauseStillnessLimit ||
-            verticalSpan(of: pauseSamples) >= pauseStillnessLimit {
+        if Self.horizontalSpan(of: pauseSamples) >= pauseStillnessLimit ||
+            Self.verticalSpan(of: pauseSamples) >= pauseStillnessLimit {
             pauseSamples.removeAll(keepingCapacity: true)
             pauseSamples.append(WristSample(timestamp: frame.timestamp, x: wristX, y: wristY))
         }
     }
 
     private mutating func updateWaveState(_ frame: GestureRecognitionFrame, enabled: Bool) {
-        guard enabled,
-              frame.isOpenPalm == true,
+        guard enabled else {
+            waveSamples.removeAll(keepingCapacity: true)
+            waveRequiresRelease = false
+            return
+        }
+
+        guard frame.isOpenPalm == true,
               let wristX = frame.wristX,
               let wristY = frame.wristY else {
+            waveSamples.removeAll(keepingCapacity: true)
+            waveRequiresRelease = false
+            return
+        }
+
+        guard !waveRequiresRelease else {
             waveSamples.removeAll(keepingCapacity: true)
             return
         }
 
         waveSamples.append(WristSample(timestamp: frame.timestamp, x: wristX, y: wristY))
-        prune(&waveSamples, olderThan: frame.timestamp - waveWindow)
+        Self.prune(&waveSamples, olderThan: frame.timestamp - waveWindow)
     }
 
     private mutating func updatePinchState(_ frame: GestureRecognitionFrame, enabled: Bool) {
@@ -216,15 +230,15 @@ package struct GestureRecognitionStateMachine: Sendable {
     private var pauseIsComplete: Bool {
         guard let first = pauseSamples.first,
               let last = pauseSamples.last,
-              last.timestamp - first.timestamp >= pauseHoldDuration else {
+              last.timestamp - first.timestamp >= pauseHoldDuration - 0.000_001 else {
             return false
         }
-        return horizontalSpan(of: pauseSamples) < pauseStillnessLimit &&
-            verticalSpan(of: pauseSamples) < pauseStillnessLimit
+        return Self.horizontalSpan(of: pauseSamples) < pauseStillnessLimit &&
+            Self.verticalSpan(of: pauseSamples) < pauseStillnessLimit
     }
 
     private var waveIsComplete: Bool {
-        guard horizontalSpan(of: waveSamples) >= waveMinimumHorizontalSpan else {
+        guard Self.horizontalSpan(of: waveSamples) >= waveMinimumHorizontalSpan else {
             return false
         }
 
@@ -244,7 +258,7 @@ package struct GestureRecognitionStateMachine: Sendable {
         return directionChanges >= 3
     }
 
-    private func horizontalSpan(of samples: [WristSample]) -> Double {
+    private static func horizontalSpan(of samples: [WristSample]) -> Double {
         guard let minimum = samples.map(\.x).min(),
               let maximum = samples.map(\.x).max() else {
             return 0
@@ -252,7 +266,7 @@ package struct GestureRecognitionStateMachine: Sendable {
         return maximum - minimum
     }
 
-    private func verticalSpan(of samples: [WristSample]) -> Double {
+    private static func verticalSpan(of samples: [WristSample]) -> Double {
         guard let minimum = samples.map(\.y).min(),
               let maximum = samples.map(\.y).max() else {
             return 0
@@ -260,8 +274,8 @@ package struct GestureRecognitionStateMachine: Sendable {
         return maximum - minimum
     }
 
-    private func prune(_ samples: inout [WristSample], olderThan cutoff: TimeInterval) {
-        while let first = samples.first, first.timestamp < cutoff {
+    private static func prune(_ samples: inout [WristSample], olderThan cutoff: TimeInterval) {
+        while let first = samples.first, first.timestamp < cutoff - 0.000_001 {
             samples.removeFirst()
         }
     }

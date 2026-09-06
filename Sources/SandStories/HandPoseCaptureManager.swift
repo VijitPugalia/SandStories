@@ -1,35 +1,16 @@
 import ARKit
 import CoreVideo
 import Foundation
+import GestureRecognition
+import ImageIO
 import RealityKit
+import UIKit
 import Vision
-
-enum UIGestureCommand: Sendable {
-    case start
-    case stop
-    case pause
-    case resume
-    case markSegment
-}
 
 // Serializes Vision hand pose requests so we never build up a backlog.
 actor HandPoseVisionProcessor {
     private let request = VNDetectHumanHandPoseRequest()
-
-    // State for gesture detection
-    private var openPalmStartedAt: TimeInterval?
-    private var gestureCooldownUntil: TimeInterval = 0
-    
-    // Separate wrist histories for still-palm check vs wave check
-    private var pauseWristXHistory: [CGFloat] = []
-    private var pauseWristYHistory: [CGFloat] = []
-    private var waveWristXHistory: [CGFloat] = []
-    private var waveWristYHistory: [CGFloat] = []
-    
-    // Tap / Pinch state
-    private var lastPinchActive = false
-    private var pinchTimestamps: [TimeInterval] = []
-    private var waveTimestamps: [TimeInterval] = []
+    private var gestureStateMachine = GestureRecognitionStateMachine()
 
     init() {
         request.maximumHandCount = 1
@@ -37,15 +18,7 @@ actor HandPoseVisionProcessor {
 
     /// Reset all gesture-recognition state so no stale commands fire.
     func reset() {
-        openPalmStartedAt = nil
-        gestureCooldownUntil = ProcessInfo.processInfo.systemUptime + 2
-        pauseWristXHistory.removeAll()
-        pauseWristYHistory.removeAll()
-        waveWristXHistory.removeAll()
-        waveWristYHistory.removeAll()
-        lastPinchActive = false
-        pinchTimestamps.removeAll()
-        waveTimestamps.removeAll()
+        gestureStateMachine.reset(at: ProcessInfo.processInfo.systemUptime)
     }
 
     struct DetectionResult: Sendable {
@@ -61,181 +34,114 @@ actor HandPoseVisionProcessor {
         stopEnabled: Bool,
         markEnabled: Bool
     ) async -> DetectionResult {
-        // Process every frame — actor already serializes concurrent requests.
-        let handler = VNImageRequestHandler(cvPixelBuffer: pixelBufferBox.pixelBuffer, orientation: orientation)
+        let settings = GestureRecognitionSettings(
+            pauseEnabled: pauseEnabled,
+            stopEnabled: stopEnabled,
+            markEnabled: markEnabled
+        )
+        let handler = VNImageRequestHandler(
+            cvPixelBuffer: pixelBufferBox.pixelBuffer,
+            orientation: orientation
+        )
+
         do {
             try handler.perform([request])
         } catch {
             print("HandPoseVisionProcessor perform error: \(error)")
-            return DetectionResult(fingertip: nil, command: nil)
+            let command = gestureStateMachine.process(
+                emptyFrame(timestamp: timestamp),
+                settings: settings
+            )
+            return DetectionResult(fingertip: nil, command: command)
         }
 
-        let observations = request.results ?? []
-        guard let obs = observations.first else {
-            openPalmStartedAt = nil
-            if !pauseWristXHistory.isEmpty { pauseWristXHistory.removeFirst() }
-            if !pauseWristYHistory.isEmpty { pauseWristYHistory.removeFirst() }
-            if !waveWristXHistory.isEmpty { waveWristXHistory.removeFirst() }
-            if !waveWristYHistory.isEmpty { waveWristYHistory.removeFirst() }
-            return DetectionResult(fingertip: nil, command: nil)
-        }
-        let trackedIndexPoint = try? obs.recognizedPoint(.indexTip)
-        let trackedFingertip = trackedIndexPoint.flatMap {
-            $0.confidence >= 0.15 ? $0.location : nil
+        guard let observation = request.results?.first else {
+            let command = gestureStateMachine.process(
+                emptyFrame(timestamp: timestamp),
+                settings: settings
+            )
+            return DetectionResult(fingertip: nil, command: command)
         }
 
-        guard let wrist = try? obs.recognizedPoint(.wrist), wrist.confidence >= 0.15,
-              let thumbTip = try? obs.recognizedPoint(.thumbTip), thumbTip.confidence >= 0.15,
-              let thumbIP = try? obs.recognizedPoint(.thumbIP), thumbIP.confidence >= 0.15,
-              let indexTip = try? obs.recognizedPoint(.indexTip), indexTip.confidence >= 0.15,
-              let indexMCP = try? obs.recognizedPoint(.indexMCP), indexMCP.confidence >= 0.15,
-              let middleTip = try? obs.recognizedPoint(.middleTip), middleTip.confidence >= 0.15,
-              let middleMCP = try? obs.recognizedPoint(.middleMCP), middleMCP.confidence >= 0.15,
-              let ringTip = try? obs.recognizedPoint(.ringTip), ringTip.confidence >= 0.15,
-              let ringMCP = try? obs.recognizedPoint(.ringMCP), ringMCP.confidence >= 0.15,
-              let littleTip = try? obs.recognizedPoint(.littleTip), littleTip.confidence >= 0.15,
-              let littleMCP = try? obs.recognizedPoint(.littleMCP), littleMCP.confidence >= 0.15
-        else {
-            openPalmStartedAt = nil
-            if !pauseWristXHistory.isEmpty { pauseWristXHistory.removeFirst() }
-            if !pauseWristYHistory.isEmpty { pauseWristYHistory.removeFirst() }
-            if !waveWristXHistory.isEmpty { waveWristXHistory.removeFirst() }
-            if !waveWristYHistory.isEmpty { waveWristYHistory.removeFirst() }
-            return DetectionResult(fingertip: trackedFingertip, command: nil)
-        }
+        let wrist = recognizedLocation(.wrist, in: observation)
+        let thumbTip = recognizedLocation(.thumbTip, in: observation)
+        let thumbIP = recognizedLocation(.thumbIP, in: observation)
+        let indexTip = recognizedLocation(.indexTip, in: observation)
+        let indexMCP = recognizedLocation(.indexMCP, in: observation)
+        let middleTip = recognizedLocation(.middleTip, in: observation)
+        let middleMCP = recognizedLocation(.middleMCP, in: observation)
+        let ringTip = recognizedLocation(.ringTip, in: observation)
+        let ringMCP = recognizedLocation(.ringMCP, in: observation)
+        let littleTip = recognizedLocation(.littleTip, in: observation)
+        let littleMCP = recognizedLocation(.littleMCP, in: observation)
 
-        let wLoc = wrist.location
-        let tTip = thumbTip.location
-        let tIP = thumbIP.location
-        let iTip = indexTip.location
-        let iMCP = indexMCP.location
-        let mTip = middleTip.location
-        let mMCP = middleMCP.location
-        let rTip = ringTip.location
-        let rMCP = ringMCP.location
-        let lTip = littleTip.location
-        let lMCP = littleMCP.location
-
-        let isThumbExtended = distance(tTip, wLoc) > distance(tIP, wLoc) * 1.1
-        let isIndexExtended = distance(iTip, wLoc) > distance(iMCP, wLoc) * 1.2
-        let isMiddleExtended = distance(mTip, wLoc) > distance(mMCP, wLoc) * 1.2
-        let isRingExtended = distance(rTip, wLoc) > distance(rMCP, wLoc) * 1.2
-        let isLittleExtended = distance(lTip, wLoc) > distance(lMCP, wLoc) * 1.2
-
-        let isOpenPalm = isThumbExtended && isIndexExtended && isMiddleExtended && isRingExtended && isLittleExtended
-
-        var command: UIGestureCommand? = nil
-
-        // Update wrist movement histories
-        if isOpenPalm {
-            pauseWristXHistory.append(wLoc.x)
-            pauseWristYHistory.append(wLoc.y)
-            if pauseWristXHistory.count > 90 {
-                pauseWristXHistory.removeFirst()
-            }
-            if pauseWristYHistory.count > 90 {
-                pauseWristYHistory.removeFirst()
-            }
-            
-            waveWristXHistory.append(wLoc.x)
-            waveWristYHistory.append(wLoc.y)
-            if waveWristXHistory.count > 30 {
-                waveWristXHistory.removeFirst()
-            }
-            if waveWristYHistory.count > 30 {
-                waveWristYHistory.removeFirst()
-            }
+        var isOpenPalm: Bool?
+        if let wrist,
+           let thumbTip,
+           let thumbIP,
+           let indexTip,
+           let indexMCP,
+           let middleTip,
+           let middleMCP,
+           let ringTip,
+           let ringMCP,
+           let littleTip,
+           let littleMCP {
+            let isThumbExtended = distance(thumbTip, wrist) > distance(thumbIP, wrist) * 1.1
+            let isIndexExtended = distance(indexTip, wrist) > distance(indexMCP, wrist) * 1.2
+            let isMiddleExtended = distance(middleTip, wrist) > distance(middleMCP, wrist) * 1.2
+            let isRingExtended = distance(ringTip, wrist) > distance(ringMCP, wrist) * 1.2
+            let isLittleExtended = distance(littleTip, wrist) > distance(littleMCP, wrist) * 1.2
+            isOpenPalm = isThumbExtended &&
+                isIndexExtended &&
+                isMiddleExtended &&
+                isRingExtended &&
+                isLittleExtended
         } else {
-            if !pauseWristXHistory.isEmpty { pauseWristXHistory.removeFirst() }
-            if !pauseWristYHistory.isEmpty { pauseWristYHistory.removeFirst() }
-            if !waveWristXHistory.isEmpty { waveWristXHistory.removeFirst() }
-            if !waveWristYHistory.isEmpty { waveWristYHistory.removeFirst() }
+            isOpenPalm = nil
         }
 
-        // Heuristic 1: Open Palm held for three elapsed seconds, independent of frame rate.
-        if isOpenPalm && pauseEnabled {
-            if openPalmStartedAt == nil {
-                openPalmStartedAt = timestamp
-            }
-            if timestamp >= gestureCooldownUntil,
-               let openPalmStartedAt,
-               timestamp - openPalmStartedAt >= 3 {
-                let rangeX = (pauseWristXHistory.max() ?? 0) - (pauseWristXHistory.min() ?? 0)
-                let rangeY = (pauseWristYHistory.max() ?? 0) - (pauseWristYHistory.min() ?? 0)
-                self.openPalmStartedAt = nil
-
-                if rangeX < 0.08 && rangeY < 0.08 {
-                    gestureCooldownUntil = timestamp + 2
-                    pauseWristXHistory.removeAll()
-                    pauseWristYHistory.removeAll()
-                    command = .pause
-                }
-            }
+        let pinchDistance: Double?
+        if let indexTip, let thumbTip {
+            pinchDistance = Double(distance(indexTip, thumbTip))
         } else {
-            openPalmStartedAt = nil
+            pinchDistance = nil
         }
 
-        // Heuristic 2: Open Hand Wave (moving side-to-side, 3 times to Stop)
-        if isOpenPalm && stopEnabled {
-            if command == nil && timestamp >= gestureCooldownUntil && waveWristXHistory.count >= 20 {
-                let minX = waveWristXHistory.min() ?? 0
-                let maxX = waveWristXHistory.max() ?? 0
-                if (maxX - minX) > 0.18 {
-                    var directionChanges = 0
-                    var lastDelta: CGFloat = 0
-                    for i in 1..<waveWristXHistory.count {
-                        let delta = waveWristXHistory[i] - waveWristXHistory[i-1]
-                        if abs(delta) > 0.005 {
-                            if (delta > 0 && lastDelta < 0) || (delta < 0 && lastDelta > 0) {
-                                directionChanges += 1
-                            }
-                            lastDelta = delta
-                        }
-                    }
-                    if directionChanges >= 3 {
-                        waveWristXHistory.removeAll()
-                        waveWristYHistory.removeAll()
-                        
-                        waveTimestamps.append(timestamp)
-                        waveTimestamps = waveTimestamps.filter { timestamp - $0 < 4.0 }
-                        
-                        if waveTimestamps.count >= 3 {
-                            waveTimestamps.removeAll()
-                            gestureCooldownUntil = timestamp + 2
-                            openPalmStartedAt = nil
-                            command = .stop
-                        }
-                    }
-                }
-            }
-        }
-
-        // Heuristic 3: One-Finger Triple Tap (Mark Segment)
-        let isOneFingerExtended = isIndexExtended && !isMiddleExtended && !isRingExtended && !isLittleExtended
-        let pinchActive = distance(iTip, tTip) < 0.05
-
-        if isOneFingerExtended && markEnabled {
-            if pinchActive && !lastPinchActive {
-                pinchTimestamps.append(timestamp)
-                pinchTimestamps = pinchTimestamps.filter { timestamp - $0 < 2.0 }
-                if command == nil && timestamp >= gestureCooldownUntil && pinchTimestamps.count >= 3 {
-                    pinchTimestamps.removeAll()
-                    command = .markSegment
-                    gestureCooldownUntil = timestamp + 2
-                }
-            }
-            lastPinchActive = pinchActive
-        } else {
-            lastPinchActive = false
-        }
-
-        return DetectionResult(fingertip: iTip, command: command)
+        let frame = GestureRecognitionFrame(
+            timestamp: timestamp,
+            isOpenPalm: isOpenPalm,
+            wristX: wrist.map { Double($0.x) },
+            wristY: wrist.map { Double($0.y) },
+            pinchDistance: pinchDistance
+        )
+        let command = gestureStateMachine.process(frame, settings: settings)
+        return DetectionResult(fingertip: indexTip, command: command)
     }
 
-    private func distance(_ p1: CGPoint, _ p2: CGPoint) -> CGFloat {
-        let dx = p1.x - p2.x
-        let dy = p1.y - p2.y
-        return sqrt(dx*dx + dy*dy)
+    private func emptyFrame(timestamp: TimeInterval) -> GestureRecognitionFrame {
+        GestureRecognitionFrame(
+            timestamp: timestamp,
+            isOpenPalm: nil,
+            wristX: nil,
+            wristY: nil,
+            pinchDistance: nil
+        )
+    }
+
+    private func recognizedLocation(
+        _ joint: VNHumanHandPoseObservation.JointName,
+        in observation: VNHumanHandPoseObservation
+    ) -> CGPoint? {
+        guard let point = try? observation.recognizedPoint(joint),
+              point.confidence >= 0.15 else {
+            return nil
+        }
+        return point.location
+    }
+
+    private func distance(_ first: CGPoint, _ second: CGPoint) -> CGFloat {
+        hypot(first.x - second.x, first.y - second.y)
     }
 }
 
@@ -255,8 +161,32 @@ final class HandPoseSceneRenderer: @unchecked Sendable {
         self.viewportSize = arView.bounds.size
     }
 
+    @MainActor
     func currentViewportSize() -> CGSize {
-        viewportSize
+        if let arView {
+            viewportSize = arView.bounds.size
+        }
+        return viewportSize
+    }
+
+    @MainActor
+    func currentImageOrientation() -> CGImagePropertyOrientation {
+        guard let interfaceOrientation = arView?.window?.windowScene?.interfaceOrientation else {
+            return .right
+        }
+
+        switch interfaceOrientation {
+        case .portrait:
+            return .right
+        case .portraitUpsideDown:
+            return .left
+        case .landscapeLeft:
+            return .up
+        case .landscapeRight:
+            return .down
+        default:
+            return .right
+        }
     }
 
     /// Raycasts the screen point into the AR world using RealityKit's ARView.
@@ -434,7 +364,7 @@ final class HandPoseCaptureManager: NSObject, @preconcurrency ARSessionDelegate 
         isProcessingFrame = true
 
         let pixelBuffer = PixelBufferBox(frame.capturedImage)
-        let orientation: CGImagePropertyOrientation = .right
+        let orientation = renderer.currentImageOrientation()
         let frameTimestamp = frame.timestamp
         let viewportSize = renderer.currentViewportSize()
         let pauseEnabled = self.isPauseGestureEnabled

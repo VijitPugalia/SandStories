@@ -227,7 +227,15 @@ struct ContentView: View {
                     .zIndex(3)
                     .transition(.opacity)
             }
+
+            if let feedback = recordingCoordinator.gestureFeedback {
+                gestureFeedbackPopup(feedback.message)
+                    .id(feedback.id)
+                    .zIndex(4)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
         }
+        .animation(.easeInOut(duration: 0.2), value: recordingCoordinator.gestureFeedback)
         .preferredColorScheme(.dark)
     }
 
@@ -352,7 +360,7 @@ struct ContentView: View {
             )
             InteractiveGestureRow(
                 icon: "hand.point.up.left.fill",
-                gestureName: "One-Finger Triple Tap",
+                gestureName: "Pinch and Hold (2s)",
                 actionDescription: "Mark Segment",
                 isEnabled: $recordingCoordinator.isMarkGestureEnabled
             )
@@ -541,6 +549,21 @@ struct ContentView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(recordingCoordinator.isDepthDiagnosticRawOnly ? "Depth diagnostic raw only" : "Depth diagnostic raw and smoothed")
+    }
+
+    private func gestureFeedbackPopup(_ message: String) -> some View {
+        Text(message)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(Color(uiColor: .label))
+            .lineLimit(1)
+            .minimumScaleFactor(0.8)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .glassPanel(cornerRadius: 18, blurStyle: .systemThinMaterial, shadowRadius: 10, shadowYOffset: 4)
+            .padding(.horizontal, 20)
+            .padding(.top, 72)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .allowsHitTesting(false)
     }
 
     private func statusGlassText(_ text: String, monospaced: Bool = false) -> some View {

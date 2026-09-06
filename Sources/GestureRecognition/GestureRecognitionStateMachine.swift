@@ -1,0 +1,268 @@
+import Foundation
+
+package enum UIGestureCommand: Sendable, Equatable {
+    case start
+    case stop
+    case pause
+    case resume
+    case markSegment
+}
+
+package struct GestureRecognitionFrame: Sendable {
+    package let timestamp: TimeInterval
+    package let isOpenPalm: Bool?
+    package let wristX: Double?
+    package let wristY: Double?
+    package let pinchDistance: Double?
+
+    package init(
+        timestamp: TimeInterval,
+        isOpenPalm: Bool?,
+        wristX: Double?,
+        wristY: Double?,
+        pinchDistance: Double?
+    ) {
+        self.timestamp = timestamp
+        self.isOpenPalm = isOpenPalm
+        self.wristX = wristX
+        self.wristY = wristY
+        self.pinchDistance = pinchDistance
+    }
+}
+
+package struct GestureRecognitionSettings: Sendable {
+    package let pauseEnabled: Bool
+    package let stopEnabled: Bool
+    package let markEnabled: Bool
+
+    package init(pauseEnabled: Bool, stopEnabled: Bool, markEnabled: Bool) {
+        self.pauseEnabled = pauseEnabled
+        self.stopEnabled = stopEnabled
+        self.markEnabled = markEnabled
+    }
+}
+
+package struct GestureRecognitionStateMachine: Sendable {
+    private struct WristSample: Sendable {
+        let timestamp: TimeInterval
+        let x: Double
+        let y: Double
+    }
+
+    private let pauseHoldDuration: TimeInterval = 3
+    private let pauseStillnessLimit = 0.08
+    private let pauseReleaseDuration: TimeInterval = 0.5
+    private let waveWindow: TimeInterval = 4
+    private let waveMinimumHorizontalSpan = 0.12
+    private let waveNoiseGate = 0.005
+    private let pinchHoldDuration: TimeInterval = 2
+    private let pinchActiveThreshold = 0.05
+    private let pinchReleaseThreshold = 0.07
+    private let commandCooldown: TimeInterval = 2
+
+    private var pauseSamples: [WristSample] = []
+    private var pauseRequiresRelease = false
+    private var pauseReleaseStartedAt: TimeInterval?
+
+    private var waveSamples: [WristSample] = []
+
+    private var pinchStartedAt: TimeInterval?
+    private var pinchIsActive = false
+    private var pinchRequiresSeparation = false
+
+    private var cooldownUntil: TimeInterval = 0
+    private var lastTimestamp: TimeInterval?
+
+    package init() {}
+
+    package mutating func reset(at timestamp: TimeInterval, initialCooldown: TimeInterval = 2) {
+        pauseSamples.removeAll(keepingCapacity: true)
+        pauseRequiresRelease = false
+        pauseReleaseStartedAt = nil
+        waveSamples.removeAll(keepingCapacity: true)
+        pinchStartedAt = nil
+        pinchIsActive = false
+        pinchRequiresSeparation = false
+        cooldownUntil = timestamp + initialCooldown
+        lastTimestamp = timestamp
+    }
+
+    package mutating func process(
+        _ frame: GestureRecognitionFrame,
+        settings: GestureRecognitionSettings
+    ) -> UIGestureCommand? {
+        if let lastTimestamp, frame.timestamp < lastTimestamp {
+            reset(at: frame.timestamp, initialCooldown: 0)
+        }
+        lastTimestamp = frame.timestamp
+
+        updatePauseState(frame, enabled: settings.pauseEnabled)
+        updateWaveState(frame, enabled: settings.stopEnabled)
+        updatePinchState(frame, enabled: settings.markEnabled)
+
+        guard frame.timestamp >= cooldownUntil else { return nil }
+
+        if settings.stopEnabled, waveIsComplete {
+            waveSamples.removeAll(keepingCapacity: true)
+            pauseSamples.removeAll(keepingCapacity: true)
+            cooldownUntil = frame.timestamp + commandCooldown
+            return .stop
+        }
+
+        if settings.pauseEnabled, pauseIsComplete {
+            pauseSamples.removeAll(keepingCapacity: true)
+            pauseRequiresRelease = true
+            pauseReleaseStartedAt = nil
+            cooldownUntil = frame.timestamp + commandCooldown
+            return .pause
+        }
+
+        if settings.markEnabled,
+           pinchIsActive,
+           !pinchRequiresSeparation,
+           let pinchStartedAt,
+           frame.timestamp - pinchStartedAt >= pinchHoldDuration {
+            self.pinchStartedAt = nil
+            pinchRequiresSeparation = true
+            cooldownUntil = frame.timestamp + commandCooldown
+            return .markSegment
+        }
+
+        return nil
+    }
+
+    private mutating func updatePauseState(_ frame: GestureRecognitionFrame, enabled: Bool) {
+        guard enabled else {
+            pauseSamples.removeAll(keepingCapacity: true)
+            pauseReleaseStartedAt = nil
+            pauseRequiresRelease = false
+            return
+        }
+
+        guard frame.isOpenPalm == true,
+              let wristX = frame.wristX,
+              let wristY = frame.wristY else {
+            pauseSamples.removeAll(keepingCapacity: true)
+            if pauseRequiresRelease {
+                if pauseReleaseStartedAt == nil {
+                    pauseReleaseStartedAt = frame.timestamp
+                } else if frame.timestamp - (pauseReleaseStartedAt ?? frame.timestamp) >= pauseReleaseDuration {
+                    pauseRequiresRelease = false
+                    pauseReleaseStartedAt = nil
+                }
+            }
+            return
+        }
+
+        pauseReleaseStartedAt = nil
+        guard !pauseRequiresRelease else {
+            pauseSamples.removeAll(keepingCapacity: true)
+            return
+        }
+
+        pauseSamples.append(WristSample(timestamp: frame.timestamp, x: wristX, y: wristY))
+        prune(&pauseSamples, olderThan: frame.timestamp - pauseHoldDuration)
+
+        if horizontalSpan(of: pauseSamples) >= pauseStillnessLimit ||
+            verticalSpan(of: pauseSamples) >= pauseStillnessLimit {
+            pauseSamples.removeAll(keepingCapacity: true)
+            pauseSamples.append(WristSample(timestamp: frame.timestamp, x: wristX, y: wristY))
+        }
+    }
+
+    private mutating func updateWaveState(_ frame: GestureRecognitionFrame, enabled: Bool) {
+        guard enabled,
+              frame.isOpenPalm == true,
+              let wristX = frame.wristX,
+              let wristY = frame.wristY else {
+            waveSamples.removeAll(keepingCapacity: true)
+            return
+        }
+
+        waveSamples.append(WristSample(timestamp: frame.timestamp, x: wristX, y: wristY))
+        prune(&waveSamples, olderThan: frame.timestamp - waveWindow)
+    }
+
+    private mutating func updatePinchState(_ frame: GestureRecognitionFrame, enabled: Bool) {
+        guard enabled else {
+            pinchStartedAt = nil
+            pinchIsActive = false
+            pinchRequiresSeparation = false
+            return
+        }
+
+        guard let distance = frame.pinchDistance else {
+            pinchStartedAt = nil
+            pinchIsActive = false
+            return
+        }
+
+        if pinchIsActive {
+            if distance >= pinchReleaseThreshold {
+                pinchIsActive = false
+                pinchStartedAt = nil
+                pinchRequiresSeparation = false
+            }
+        } else if distance <= pinchActiveThreshold {
+            pinchIsActive = true
+            if !pinchRequiresSeparation {
+                pinchStartedAt = frame.timestamp
+            }
+        } else if distance >= pinchReleaseThreshold {
+            pinchRequiresSeparation = false
+        }
+    }
+
+    private var pauseIsComplete: Bool {
+        guard let first = pauseSamples.first,
+              let last = pauseSamples.last,
+              last.timestamp - first.timestamp >= pauseHoldDuration else {
+            return false
+        }
+        return horizontalSpan(of: pauseSamples) < pauseStillnessLimit &&
+            verticalSpan(of: pauseSamples) < pauseStillnessLimit
+    }
+
+    private var waveIsComplete: Bool {
+        guard horizontalSpan(of: waveSamples) >= waveMinimumHorizontalSpan else {
+            return false
+        }
+
+        var directionChanges = 0
+        var lastDirection = 0
+
+        for index in 1..<waveSamples.count {
+            let delta = waveSamples[index].x - waveSamples[index - 1].x
+            guard abs(delta) > waveNoiseGate else { continue }
+            let direction = delta > 0 ? 1 : -1
+            if lastDirection != 0, direction != lastDirection {
+                directionChanges += 1
+            }
+            lastDirection = direction
+        }
+
+        return directionChanges >= 3
+    }
+
+    private func horizontalSpan(of samples: [WristSample]) -> Double {
+        guard let minimum = samples.map(\.x).min(),
+              let maximum = samples.map(\.x).max() else {
+            return 0
+        }
+        return maximum - minimum
+    }
+
+    private func verticalSpan(of samples: [WristSample]) -> Double {
+        guard let minimum = samples.map(\.y).min(),
+              let maximum = samples.map(\.y).max() else {
+            return 0
+        }
+        return maximum - minimum
+    }
+
+    private func prune(_ samples: inout [WristSample], olderThan cutoff: TimeInterval) {
+        while let first = samples.first, first.timestamp < cutoff {
+            samples.removeFirst()
+        }
+    }
+}

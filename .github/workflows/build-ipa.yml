@@ -38,7 +38,7 @@ jobs:
           swift --version
 
       - name: Test gesture recognition
-        run: swift test --filter GestureRecognitionStateMachineTests
+        run: SANDSTORIES_GESTURE_TESTS_ONLY=1 swift test --filter GestureRecognitionStateMachineTests
 
       - name: Install xtool
         run: bash scripts/ci-setup-xtool-macos.sh

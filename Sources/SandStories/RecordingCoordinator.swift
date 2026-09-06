@@ -3,6 +3,11 @@ import Foundation
 import ImageIO
 import SwiftUI
 
+struct GestureFeedback: Identifiable, Equatable {
+    let id = UUID()
+    let message: String
+}
+
 /// Owns capture session lifecycle: manifest, depth/RGB paths, audio, strokes, tray + object hooks, storage.
 @MainActor
 final class RecordingCoordinator: ObservableObject {
@@ -26,6 +31,7 @@ final class RecordingCoordinator: ObservableObject {
     @Published private(set) var isCapturePaused = false
     @Published private(set) var isSavingSession = false
     @Published private(set) var savingStatusMessage: String?
+    @Published private(set) var gestureFeedback: GestureFeedback?
     @Published var saveSuccessBanner: String?
     @Published var destinationLabel: String = "Saving to: Internal"
     @Published var warningBanner: String?
@@ -107,22 +113,34 @@ final class RecordingCoordinator: ObservableObject {
                         await self.startCaptureSession(recordAudio: true)
                     }
                 case .stop:
-                    if self.isCaptureRecording && !self.isSavingSession {
-                        await self.stopActiveCaptureSession(reason: .gesture)
-                    }
+                    guard self.isCaptureRecording, !self.isSavingSession else { return }
+                    self.presentGestureFeedback("Gesture captured: Recording stopped")
+                    await self.stopActiveCaptureSession(reason: .gesture)
                 case .pause:
-                    guard !self.isSavingSession else { return }
-                    if self.isCapturePaused {
+                    guard self.isCaptureRecording, !self.isSavingSession else { return }
+                    let wasPaused = self.isCapturePaused
+                    if wasPaused {
                         await self.resumeCaptureSession()
+                        if self.isCapturePaused != wasPaused {
+                            self.presentGestureFeedback("Gesture captured: Recording resumed")
+                        }
                     } else {
                         await self.pauseCaptureSession()
+                        if self.isCapturePaused != wasPaused {
+                            self.presentGestureFeedback("Gesture captured: Recording paused")
+                        }
                     }
                 case .resume:
-                    guard !self.isSavingSession else { return }
+                    guard self.isCaptureRecording, self.isCapturePaused, !self.isSavingSession else { return }
                     await self.resumeCaptureSession()
+                    if !self.isCapturePaused {
+                        self.presentGestureFeedback("Gesture captured: Recording resumed")
+                    }
                 case .markSegment:
                     guard !self.isSavingSession else { return }
-                    await self.markSegment()
+                    if await self.markSegment() {
+                        self.presentGestureFeedback("Gesture captured: Segment marked")
+                    }
                 }
             }
         }
@@ -354,9 +372,30 @@ final class RecordingCoordinator: ObservableObject {
         isCapturePaused = false
     }
 
-    func markSegment() async {
-        guard isCaptureRecording else { return }
-        try? await captureSession.markSegment()
+    @discardableResult
+    func markSegment() async -> Bool {
+        guard isCaptureRecording else { return false }
+        do {
+            try await captureSession.markSegment()
+            return true
+        } catch {
+            warningBanner = "Could not mark segment: \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    private func presentGestureFeedback(_ message: String) {
+        let feedback = GestureFeedback(message: message)
+        gestureFeedbackDismissTask?.cancel()
+        gestureFeedback = feedback
+        gestureFeedbackDismissTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard !Task.isCancelled,
+                  self?.gestureFeedback?.id == feedback.id else {
+                return
+            }
+            self?.gestureFeedback = nil
+        }
     }
 
     func processAuxiliaryCaptureFrame(arTimestamp: TimeInterval, capturedImage: PixelBufferBox) async {

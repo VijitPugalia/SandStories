@@ -1,0 +1,21 @@
+[Unit]
+Description=SandStories private job API
+After=network-online.target
+Wants=network-online.target
+RequiresMountsFor=/srv/sandstories
+
+[Service]
+Type=simple
+User=sandstories
+Group=sandstories
+ExecStart=/opt/sandstories/venv/bin/python /opt/SandStories/Godot/tools/job_gateway.py --config /etc/sandstories-job-gateway/gateway.json serve
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/sandstories-job-gateway /srv/sandstories/jobs
+
+[Install]
+WantedBy=multi-user.target

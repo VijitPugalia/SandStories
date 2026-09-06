@@ -1,0 +1,24 @@
+[Unit]
+Description=SandStories single v12 pipeline worker
+After=network-online.target
+Wants=network-online.target
+RequiresMountsFor=/srv/sandstories
+
+[Service]
+Type=simple
+User=sandstories
+Group=sandstories
+EnvironmentFile=/etc/sandstories-job-gateway/pipeline.env
+ExecStart=/opt/sandstories/venv/bin/python /opt/SandStories/Godot/tools/job_gateway.py --config /etc/sandstories-job-gateway/gateway.json worker
+Restart=on-failure
+RestartSec=10
+KillMode=control-group
+TimeoutStopSec=45
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/sandstories-job-gateway /srv/sandstories/jobs /var/tmp/sandstories-job-scratch
+
+[Install]
+WantedBy=multi-user.target

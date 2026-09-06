@@ -1,0 +1,37 @@
+{
+  "listen_host": "10.0.0.20",
+  "listen_port": 8787,
+  "database_path": "/var/lib/sandstories-job-gateway/jobs.sqlite3",
+  "storage_root": "/srv/sandstories/jobs",
+  "scratch_root": "/var/tmp/sandstories-job-scratch",
+  "submit_token_file": "/etc/sandstories-job-gateway/submit.token",
+  "admin_token_file": "/etc/sandstories-job-gateway/admin.token",
+  "max_upload_bytes": 214748364800,
+  "max_chunk_bytes": 67108864,
+  "poll_seconds": 3,
+  "manual_review_required": false,
+  "web_auth_enabled": true,
+  "public_base_url": "https://sandstories.example.org",
+  "github_oauth_client_id": "replace-with-github-client-id",
+  "github_oauth_client_secret_file": "/etc/sandstories-job-gateway/github-oauth-client-secret",
+  "bootstrap_admin_emails": [
+    "administrator@example.org"
+  ],
+  "session_hours": 12,
+  "oauth_proxy": "",
+  "webhook_allowed_hosts": [],
+  "webhook_proxy": "",
+  "webhook_max_attempts": 8,
+  "pipeline_command": [
+    "/opt/sandstories/venv/bin/python",
+    "/opt/SandStories/Godot/tools/run_azure_hand_free_v12_job.py",
+    "--job-id",
+    "{job_id}",
+    "--job-root",
+    "{job_root}",
+    "--input",
+    "{input_path}",
+    "--scratch-root",
+    "{scratch_root}"
+  ]
+}

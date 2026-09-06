@@ -79,6 +79,7 @@ final class RecordingCoordinator: ObservableObject {
     private var activeDepthDiagnosticProfile: String?
     private var accumulatedRecordingDuration: TimeInterval = 0
     private var activeRecordingSegmentStartedUptime: TimeInterval?
+    private var gestureFeedbackDismissTask: Task<Void, Never>?
 
     private enum StopReason {
         case manual

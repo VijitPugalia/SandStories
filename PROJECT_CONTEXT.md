@@ -1,4 +1,4 @@
-﻿# SandStories Project Context
+# SandStories Project Context
 
 This is the durable shared memory for agents and people working in this repository. Read `AGENTS.md` and this file before making product or implementation decisions. Update this file only when repository evidence or an explicit decision changes durable project direction.
 
@@ -86,12 +86,16 @@ docker compose -f deploy/docker-compose.lan.yml up
 ### Azure Kinect DK
 
 ```powershell
-py -3.12 -m pip install -r .\scripts\requirements-azure-kinect.txt
+py -3.12 -m pip install -r .\kinect_dashboard\requirements.txt
+# Launch the Multimodal Capture Dashboard (Physical Kinect DK or --mock fallback):
+py -3.12 run_dashboard.py
+# Or command-line capture/conversion script:
 powershell -ExecutionPolicy Bypass -File .\scripts\azure_kinect_preflight.ps1 -ListAudioDevices
 powershell -ExecutionPolicy Bypass -File .\scripts\record_azure_kinect.ps1 <parameters>
 ```
 
 - Follow `docs/AZURE_KINECT_RECORDING.md`; both `readyToRecord` and `readyToConvert` must be true before capture.
+- `kinect_dashboard` provides the real-time Python PyQt6 capture instrument (30 FPS RGB-D, 48kHz audio, 21-joint 3D hand tracking, hands-free gesture state machine, and FAIR export).
 - The official MKV is immutable source data. Conversion produces the common `v2_streams` package without replacing the MKV.
 
 ## Device Requirements and Constraints
@@ -112,6 +116,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\record_azure_kinect.ps1 <para
 - Azure MKV does not contain the required microphone audio; the recorder captures separate 48 kHz mono audio and records timing offsets. A visible/audible clap is required for synchronization review.
 - Direct sunlight can degrade active-infrared depth. Treat direct sun as a labelled stress condition, not evidence for indoor/shade performance.
 - Azure capture supplies RGB-D, calibration, timing, and audio. Gesture strokes, boundary confidence, and object detections require offline processing or manual evidence.
+- The PyQt Kinect dashboard is a preview/explicit-demo surface, not the authoritative research recorder. Research capture must continue through `scripts/record_azure_kinect.ps1` and `scripts/convert_azure_kinect_mkv.py`, preserving the immutable source MKV and separate audio timing metadata.
+- Dashboard production mode is fail-closed: missing SDKs, devices, or audio inputs must block capture. Synthetic RGB-D/audio is allowed only behind explicit `--mock` demo mode and its output is labelled `research_valid: false`.
 
 ## Product and UI Decisions
 
@@ -153,6 +159,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\record_azure_kinect.ps1 <para
 - Video inpainting and shadow removal may alter appearance inside model-derived masks. They must not modify measured depth provenance or be presented as original RGB.
 - Simultaneous or cross-device results are not interchangeable without an explicit device comparison design and calibration.
 - Azure Kinect direct-sun performance, separate audio synchronization, and offline gesture/object derivation require explicit validation per session.
+- The dashboard cannot offer a trustworthy pause while the official immutable-MKV recorder owns the device. Do not expose hardware pause until segment recording, conversion, and cross-segment timing are implemented and validated on a connected Kinect; current dashboard writer output remains legacy/demo-only.
 - Local WSL USB device installation may be unreliable; the supported distribution path is the private GitHub IPA followed by manual iPhone import/install.
 - Optional Any2Full and large reconstruction workflows require separately installed model checkpoints and suitable GPU/runtime environments; large generated artifacts are not stored in Git.
 - The repository contains historical documentation with machine-specific paths and older project names. Use current repository-relative paths and `Godot/ACTIVE_PROJECT.md` as authoritative.
@@ -199,3 +206,10 @@ Update this file when a task changes durable product direction, architecture, bu
   RANSAC/corner-marker plane leveling, gauge-block (5 mm / 10 mm) recovery as the acceptance metric.
   Constrain any RGB-guided upsampling to edge-preserving interpolation between measured pixels (never snap
   depth to drawing edges / shadows) and label output as derived.
+
+## Automatic Session Storage & Saving Lifecycle (2026-09)
+
+- **Automatic Persistence**: Sessions are automatically saved directly to the configured storage (`SandStoriesSessions/` on internal storage, or the chosen external SSD folder) upon recording completion without requiring any manual export.
+- **Files App Sharing**: `AppSupport/SandStories-App-Info.plist` enables `UIFileSharingEnabled` and `LSSupportsOpeningDocumentsInPlace`. Internal captures are browsable directly in the iOS Files app under `On My iPhone > SandStories > SandStoriesSessions`.
+- **Saving Lifecycle & Safety**: `RecordingCoordinator.isSavingSession` manages the multi-step stream finalization (`stopAndFinishRecording`, `stopRecording` audio, `stopSession` manifest write, RO-Crate metadata generation). UI shows a dedicated glass saving indicator and locks controls while saving executes, preventing duplicate sessions or SSD disconnection before file flushing completes.
+- **Sessions Tab Clarification**: The Sessions tab highlights that captures are already auto-saved on disk with exact folder paths, clarifying that "Share / AirDrop ZIP" is an optional export utility.

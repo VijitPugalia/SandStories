@@ -25,8 +25,17 @@ struct SessionsTabView: View {
     let destinationLabel: String
     let lastSessionFolderURL: URL?
     let isRecording: Bool
+    var isSaving: Bool = false
     let onChooseStorage: () -> Void
     let onExportLastSession: () -> Void
+
+    private var storageKindText: String {
+        destinationLabel.replacingOccurrences(of: "Saving to: ", with: "")
+    }
+
+    private var isExternalStorage: Bool {
+        destinationLabel.contains("SSD") || destinationLabel.contains("External folder")
+    }
 
     var body: some View {
         NavigationStack {
@@ -35,7 +44,7 @@ struct SessionsTabView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Captured stories")
                             .font(.title2.weight(.bold))
-                        Text("Review where sessions are saved and export the latest complete capture.")
+                        Text("Sessions are automatically saved immediately when recording stops. Review your saved captures or share a packaged ZIP.")
                             .font(.subheadline)
                             .foregroundStyle(Color(uiColor: .secondaryLabel))
                     }
@@ -60,15 +69,15 @@ struct SessionsTabView: View {
     private var storageCard: some View {
         Button(action: onChooseStorage) {
             HStack(spacing: 14) {
-                Image(systemName: "internaldrive.fill")
+                Image(systemName: isExternalStorage ? "externaldrive.fill" : "internaldrive.fill")
                     .font(.title3)
                     .foregroundStyle(Color.accentColor)
                     .frame(width: 34, height: 34)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Save location")
+                    Text("Auto-save destination")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(Color(uiColor: .secondaryLabel))
-                    Text(destinationLabel.replacingOccurrences(of: "Saving to: ", with: ""))
+                    Text(storageKindText)
                         .font(.body.weight(.semibold))
                         .foregroundStyle(Color(uiColor: .label))
                         .lineLimit(1)
@@ -82,30 +91,52 @@ struct SessionsTabView: View {
             .glassPanel(cornerRadius: 20, blurStyle: .systemThinMaterial, shadowRadius: 8, shadowYOffset: 3)
         }
         .buttonStyle(.plain)
-        .disabled(isRecording)
-        .opacity(isRecording ? 0.55 : 1)
-        .accessibilityHint(isRecording ? "Stop recording before changing storage." : "Choose where new sessions are saved.")
+        .disabled(isRecording || isSaving)
+        .opacity((isRecording || isSaving) ? 0.55 : 1)
+        .accessibilityHint((isRecording || isSaving) ? "Wait until capture and saving are complete." : "Choose where new sessions are saved.")
     }
 
     private func latestSessionCard(_ folderURL: URL) -> some View {
         VStack(alignment: .leading, spacing: 14) {
-            Label("Latest session", systemImage: "checkmark.circle.fill")
-                .font(.headline)
-                .foregroundStyle(Color.accentColor)
+            HStack {
+                Label("Latest session", systemImage: "checkmark.circle.fill")
+                    .font(.headline)
+                    .foregroundStyle(Color.accentColor)
+                Spacer()
+                Text("Saved")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(Color.accentColor)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Color.accentColor.opacity(0.12))
+                    .clipShape(Capsule())
+            }
 
-            Text(folderURL.lastPathComponent)
-                .font(.body.monospaced().weight(.semibold))
-                .foregroundStyle(Color(uiColor: .label))
-                .lineLimit(2)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(folderURL.lastPathComponent)
+                    .font(.body.monospaced().weight(.semibold))
+                    .foregroundStyle(Color(uiColor: .label))
+                    .lineLimit(2)
+
+                Text(isExternalStorage ? "Saved directly on your external SSD" : "Saved on this iPhone (Files app > On My iPhone > SandStories > SandStoriesSessions)")
+                    .font(.caption)
+                    .foregroundStyle(Color(uiColor: .secondaryLabel))
+            }
 
             Button(action: onExportLastSession) {
-                Label("Export last session", systemImage: "square.and.arrow.up")
+                Label("Share / AirDrop ZIP", systemImage: "square.and.arrow.up")
                     .font(.body.weight(.semibold))
                     .frame(maxWidth: .infinity)
                     .frame(height: 46)
             }
             .buttonStyle(.borderedProminent)
             .tint(Color(red: 0.94, green: 0.70, blue: 0.28))
+
+            Text("This session is already stored automatically. Tap above only if you want to export an archive to AirDrop, Mail, or another app.")
+                .font(.caption2)
+                .foregroundStyle(Color(uiColor: .tertiaryLabel))
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity)
         }
         .padding(18)
         .glassPanel(cornerRadius: 22, blurStyle: .systemThinMaterial, shadowRadius: 10, shadowYOffset: 4)
@@ -118,7 +149,7 @@ struct SessionsTabView: View {
                 .foregroundStyle(Color(uiColor: .secondaryLabel))
             Text("No completed session yet")
                 .font(.headline)
-            Text("Record a session in Capture and it will appear here for export.")
+            Text("Record a session in Capture and it will automatically save to your chosen storage.")
                 .font(.subheadline)
                 .foregroundStyle(Color(uiColor: .secondaryLabel))
                 .multilineTextAlignment(.center)

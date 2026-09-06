@@ -138,8 +138,9 @@ struct ContentView: View {
                 destinationLabel: recordingCoordinator.destinationLabel,
                 lastSessionFolderURL: recordingCoordinator.lastSessionFolderURL,
                 isRecording: recordingCoordinator.isCaptureRecording,
+                isSaving: recordingCoordinator.isSavingSession,
                 onChooseStorage: {
-                    guard !recordingCoordinator.isCaptureRecording else { return }
+                    guard !recordingCoordinator.isCaptureRecording, !recordingCoordinator.isSavingSession else { return }
                     showStorageSheet = true
                 },
                 onExportLastSession: presentLastSessionExport
@@ -153,11 +154,11 @@ struct ContentView: View {
                 recordingCoordinator: recordingCoordinator,
                 diagnostics: diagnostics,
                 onChooseStorage: {
-                    guard !recordingCoordinator.isCaptureRecording else { return }
+                    guard !recordingCoordinator.isCaptureRecording, !recordingCoordinator.isSavingSession else { return }
                     showStorageSheet = true
                 },
                 onShowUploadSettings: {
-                    guard !recordingCoordinator.isCaptureRecording else { return }
+                    guard !recordingCoordinator.isCaptureRecording, !recordingCoordinator.isSavingSession else { return }
                     showUploadSheet = true
                 }
             )
@@ -220,8 +221,49 @@ struct ContentView: View {
             }
             .padding(.top, 8)
             .zIndex(2)
+
+            if recordingCoordinator.isSavingSession {
+                savingOverlay
+                    .zIndex(3)
+                    .transition(.opacity)
+            }
         }
         .preferredColorScheme(.dark)
+    }
+
+    private var savingOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.38)
+                .ignoresSafeArea()
+
+            VStack(spacing: 16) {
+                ProgressView()
+                    .controlSize(.large)
+                    .tint(Color.accentColor)
+
+                VStack(spacing: 6) {
+                    Text("Saving Session…")
+                        .font(.title3.weight(.bold))
+                        .foregroundStyle(Color(uiColor: .label))
+
+                    Text(recordingCoordinator.savingStatusMessage ?? "Please wait while session data is saved.")
+                        .font(.subheadline)
+                        .foregroundStyle(Color(uiColor: .secondaryLabel))
+                        .multilineTextAlignment(.center)
+                }
+
+                Text("Do not close app or disconnect external SSD")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 5)
+                    .background(Color.accentColor.opacity(0.12))
+                    .clipShape(Capsule())
+            }
+            .padding(24)
+            .frame(maxWidth: 320)
+            .glassPanel(cornerRadius: 24, blurStyle: .systemUltraThinMaterial, shadowRadius: 18, shadowYOffset: 6)
+        }
     }
 
     // MARK: - Top
@@ -241,7 +283,7 @@ struct ContentView: View {
                     gestureGuideButton
                     meshVisualizationPill
 
-                    if !recordingCoordinator.isCaptureRecording && !recordingCoordinator.isBenchmarkRunning && !recordingCoordinator.isDepthDiagnosticRunning {
+                    if !recordingCoordinator.isCaptureRecording && !recordingCoordinator.isSavingSession && !recordingCoordinator.isBenchmarkRunning && !recordingCoordinator.isDepthDiagnosticRunning {
                         depthDiagnosticModePill
                     }
 
@@ -252,6 +294,12 @@ struct ContentView: View {
 
             if showGestureGuide {
                 gestureGuidePanel
+                    .padding(.horizontal, 16)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+
+            if let success = recordingCoordinator.saveSuccessBanner {
+                statusGlassText("✓ " + success)
                     .padding(.horizontal, 16)
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
@@ -316,7 +364,7 @@ struct ContentView: View {
 
     private var destinationPill: some View {
         Button {
-            guard !recordingCoordinator.isCaptureRecording else { return }
+            guard !recordingCoordinator.isCaptureRecording, !recordingCoordinator.isSavingSession else { return }
             showStorageSheet = true
         } label: {
             HStack(spacing: 12) {
@@ -345,8 +393,8 @@ struct ContentView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(recordingCoordinator.destinationLabel)
-        .disabled(recordingCoordinator.isCaptureRecording)
-        .opacity(recordingCoordinator.isCaptureRecording ? 0.82 : 1)
+        .disabled(recordingCoordinator.isCaptureRecording || recordingCoordinator.isSavingSession)
+        .opacity((recordingCoordinator.isCaptureRecording || recordingCoordinator.isSavingSession) ? 0.82 : 1)
     }
 
     private var destinationSystemImage: String {
@@ -368,7 +416,14 @@ struct ContentView: View {
 
     private var sessionStatusHUD: some View {
         VStack(alignment: .trailing, spacing: 4) {
-            if recordingCoordinator.isCaptureRecording {
+            if recordingCoordinator.isSavingSession {
+                ProgressView()
+                    .controlSize(.mini)
+                    .tint(Color.accentColor)
+                Text("Saving…")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(Color.accentColor)
+            } else if recordingCoordinator.isCaptureRecording {
                 TimelineView(.periodic(from: .now, by: 1)) { timeline in
                     Text(recordingElapsedText(at: timeline.date))
                         .font(.caption.monospacedDigit().weight(.semibold))
@@ -399,6 +454,9 @@ struct ContentView: View {
     }
 
     private var sessionAccessibilityLabel: String {
+        if recordingCoordinator.isSavingSession {
+            return "Saving session to storage"
+        }
         guard recordingCoordinator.isCaptureRecording else {
             return "Ready, not recording"
         }
@@ -432,6 +490,7 @@ struct ContentView: View {
         let isSupported = ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh)
         let isAvailable = isSupported &&
             !recordingCoordinator.isCaptureRecording &&
+            !recordingCoordinator.isSavingSession &&
             recordingCoordinator.capturePerformanceMode == .fullQuality
         return Button {
             guard isAvailable else { return }
@@ -514,7 +573,10 @@ struct ContentView: View {
 
     @ViewBuilder
     private var captureAccessoryContent: some View {
-        if recordingCoordinator.isCaptureRecording {
+        if recordingCoordinator.isSavingSession {
+            savingControlAccessory
+                .transition(.scale(scale: 0.95).combined(with: .opacity))
+        } else if recordingCoordinator.isCaptureRecording {
             recordingControlAccessory
                 .transition(.move(edge: .bottom).combined(with: .opacity))
         } else {
@@ -523,8 +585,24 @@ struct ContentView: View {
         }
     }
 
+    private var savingControlAccessory: some View {
+        HStack(spacing: 10) {
+            ProgressView()
+                .controlSize(.small)
+                .tint(Color.accentColor)
+            Text("SAVING RECORDING…")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(Color.white)
+        }
+        .padding(.horizontal, 22)
+        .frame(height: 52)
+        .liquidGlassDock()
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Saving recording in progress")
+    }
+
     private var idleRecordAccessory: some View {
-        let isDisabled = recordingCoordinator.isBenchmarkRunning || recordingCoordinator.isDepthDiagnosticRunning
+        let isDisabled = recordingCoordinator.isSavingSession || recordingCoordinator.isBenchmarkRunning || recordingCoordinator.isDepthDiagnosticRunning
 
         return Button {
             diagnostics.record("Expanded record button tapped", category: "Capture")

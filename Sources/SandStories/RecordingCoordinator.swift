@@ -15,6 +15,7 @@ final class RecordingCoordinator: ObservableObject {
     let locationCaptureManager = LocationCaptureManager()
     let uploadSettings = UploadSettingsStore()
     let uploadManager = SessionUploadManager()
+    let shareExportManager = ShareExportManager()
 
     private let objectDetector: any StoryObjectDetecting = StubStoryObjectDetector()
 
@@ -23,6 +24,9 @@ final class RecordingCoordinator: ObservableObject {
 
     @Published private(set) var isCaptureRecording = false
     @Published private(set) var isCapturePaused = false
+    @Published private(set) var isSavingSession = false
+    @Published private(set) var savingStatusMessage: String?
+    @Published var saveSuccessBanner: String?
     @Published var destinationLabel: String = "Saving to: Internal"
     @Published var warningBanner: String?
     @Published var showingFolderPicker = false
@@ -99,22 +103,25 @@ final class RecordingCoordinator: ObservableObject {
                 case .start:
                     if self.isCaptureRecording {
                         await self.stopActiveCaptureSession(reason: .gesture)
-                    } else {
+                    } else if !self.isSavingSession {
                         await self.startCaptureSession(recordAudio: true)
                     }
                 case .stop:
-                    if self.isCaptureRecording {
+                    if self.isCaptureRecording && !self.isSavingSession {
                         await self.stopActiveCaptureSession(reason: .gesture)
                     }
                 case .pause:
+                    guard !self.isSavingSession else { return }
                     if self.isCapturePaused {
                         await self.resumeCaptureSession()
                     } else {
                         await self.pauseCaptureSession()
                     }
                 case .resume:
+                    guard !self.isSavingSession else { return }
                     await self.resumeCaptureSession()
                 case .markSegment:
+                    guard !self.isSavingSession else { return }
                     await self.markSegment()
                 }
             }
@@ -173,18 +180,18 @@ final class RecordingCoordinator: ObservableObject {
         if isCaptureRecording {
             await stopActiveCaptureSession(reason: .manual)
         } else {
-            guard !isBenchmarkRunning, !isDepthDiagnosticRunning else { return }
+            guard !isSavingSession, !isBenchmarkRunning, !isDepthDiagnosticRunning else { return }
             await startCaptureSession()
         }
     }
 
     func startFromRemote(recordAudio: Bool = true) async {
-        guard !isCaptureRecording, !isBenchmarkRunning, !isDepthDiagnosticRunning else { return }
+        guard !isCaptureRecording, !isSavingSession, !isBenchmarkRunning, !isDepthDiagnosticRunning else { return }
         await startCaptureSession(recordAudio: recordAudio)
     }
 
     func stopFromRemote() async {
-        guard isCaptureRecording else { return }
+        guard isCaptureRecording, !isSavingSession else { return }
         await stopActiveCaptureSession(reason: .remote)
     }
 
@@ -203,7 +210,7 @@ final class RecordingCoordinator: ObservableObject {
     }
 
     func stopForThermal() async {
-        guard isCaptureRecording else { return }
+        guard isCaptureRecording, !isSavingSession else { return }
         await stopActiveCaptureSession(reason: .thermal)
     }
 
@@ -219,7 +226,7 @@ final class RecordingCoordinator: ObservableObject {
     }
 
     func runDepthBenchmark() async {
-        guard !isCaptureRecording, !isBenchmarkRunning, !isDepthDiagnosticRunning else { return }
+        guard !isCaptureRecording, !isSavingSession, !isBenchmarkRunning, !isDepthDiagnosticRunning else { return }
 
         isBenchmarkRunning = true
         benchmarkSummary = "Benchmark running for 15 seconds..."
@@ -256,7 +263,7 @@ final class RecordingCoordinator: ObservableObject {
     }
 
     func runDepthDiagnostic() async {
-        guard !isCaptureRecording, !isBenchmarkRunning, !isDepthDiagnosticRunning else { return }
+        guard !isCaptureRecording, !isSavingSession, !isBenchmarkRunning, !isDepthDiagnosticRunning else { return }
 
         let durationSeconds: Double = 20
         let capturesSmoothed = !isDepthDiagnosticRawOnly
@@ -552,7 +559,7 @@ final class RecordingCoordinator: ObservableObject {
     }
 
     private func stopActiveCaptureSession(reason: StopReason) async {
-        guard isCaptureRecording else { return }
+        guard isCaptureRecording, !isSavingSession else { return }
         let wasBenchmarkRunning = isBenchmarkRunning
         let wasDepthDiagnosticRunning = isDepthDiagnosticRunning
 
@@ -576,6 +583,9 @@ final class RecordingCoordinator: ObservableObject {
     }
 
     private func stopCaptureSession() async {
+        isSavingSession = true
+        savingStatusMessage = "Finalizing capture..."
+
         if let segmentStart = activeRecordingSegmentStartedUptime {
             accumulatedRecordingDuration += max(
                 0,
@@ -586,11 +596,14 @@ final class RecordingCoordinator: ObservableObject {
 
         handPoseManager.setCaptureActive(false)
         locationCaptureManager.stopCapture()
-        await depthCaptureManager.stopAndFinishRecording()
         isCaptureRecording = false
         isCapturePaused = false
+
+        savingStatusMessage = "Saving video & LiDAR depth streams..."
+        await depthCaptureManager.stopAndFinishRecording()
         let diagnosticSnapshot = await depthCaptureManager.benchmarkSnapshot()
 
+        savingStatusMessage = "Saving audio & metadata..."
         let audioInfo = audioRecorder.stopRecording()
         if let info = audioInfo {
             try? await captureSession.setAudioEntry(
@@ -617,9 +630,15 @@ final class RecordingCoordinator: ObservableObject {
             try? await captureSession.setDepthDiagnosticCounters(diagnosticSnapshot.diagnosticCounters())
         }
 
+        savingStatusMessage = "Writing session manifest to storage..."
         let folder = try? await captureSession.stopSession()
         lastSessionFolderURL = folder
         activeDepthDiagnosticProfile = nil
+
+        if let folder {
+            savingStatusMessage = "Packaging metadata..."
+            try? await shareExportManager.writeROCrateMetadata(for: folder)
+        }
 
         if let folder, uploadSettings.isEnabled(), let endpoint = uploadSettings.endpointURL() {
             uploadStatus = "Uploading session..."
@@ -656,6 +675,32 @@ final class RecordingCoordinator: ObservableObject {
         if let ext = externalScopedURL {
             ext.stopAccessingSecurityScopedResource()
             externalScopedURL = nil
+        }
+
+        let destinationName = usedExternalForCurrentSession
+            ? (storageStore.externalDisplayName().map { "External SSD (\($0))" } ?? "External SSD")
+            : "On My iPhone"
+
+        if let folder {
+            savingStatusMessage = "Saved to \(destinationName)!"
+            saveSuccessBanner = "Session automatically saved to \(destinationName): \(folder.lastPathComponent)"
+        } else {
+            savingStatusMessage = "Save failed"
+            warningBanner = "Failed to save session to storage."
+        }
+
+        try? await Task.sleep(nanoseconds: 1_200_000_000)
+        isSavingSession = false
+        savingStatusMessage = nil
+
+        let currentFolder = folder
+        Task {
+            try? await Task.sleep(nanoseconds: 4_500_000_000)
+            await MainActor.run {
+                if let currentFolder, self.saveSuccessBanner?.contains(currentFolder.lastPathComponent) == true {
+                    self.saveSuccessBanner = nil
+                }
+            }
         }
     }
 

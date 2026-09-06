@@ -147,7 +147,7 @@ actor ShareExportManager {
         }
     }
 
-    private func writeROCrateMetadata(for sessionFolder: URL) async throws {
+    func writeROCrateMetadata(for sessionFolder: URL) async throws {
         let fm = FileManager.default
         let relativePaths = try fm.subpathsOfDirectory(atPath: sessionFolder.path)
         

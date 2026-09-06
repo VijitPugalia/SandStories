@@ -123,6 +123,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\record_azure_kinect.ps1 <para
 
 - The capture UI should remain quiet, native-feeling, and close to Apple's Camera app: visible top bar, native tab bar, and an obvious bottom Record control.
 - Pause must actually pause depth/RGB, strokes, and audio; it must not be a blocking overlay while capture continues.
+- iPhone gesture timing is elapsed-time based so 8, 15, and 30 fps inputs behave consistently. Open Palm holds for 3 seconds and requires release to rearm; Wave stops after three qualified horizontal direction changes within four seconds; Pinch and Hold marks once after 2 seconds and requires finger separation to rearm.
+- Gesture recognition uses the current interface orientation. Accepted gestures show a two-second text-only glass popup; segment feedback is shown only after the manifest write succeeds.
 - Bottom controls must remain legible over the camera feed. Prefer stable APIs to decorative effects that reduce capture reliability.
 - The LiDAR mesh overlay is intentional. A picture-in-picture depth preview is not the selected design.
 - Regression to check whenever export UI changes: Export Session previously showed a blank grey screen on first open but worked after reopening.
@@ -141,7 +143,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\record_azure_kinect.ps1 <para
 ## Completed Work
 
 - iOS multimodal capture, manifest/session packaging, diagnostics, depth benchmark, hand/stroke capture, gesture controls, export/share, remote control, LiveKit preview, and server upload paths are implemented in the repository.
-- Gesture controls include open-palm pause/resume, open-hand wave stop, and triple-pinch segment marking; drawing strokes and UI-control gestures remain separate data paths.
+- Gesture controls include 3-second open-palm pause/resume, three-direction-change open-hand wave stop, and 2-second pinch-and-hold segment marking; release-to-rearm prevents duplicates, and drawing strokes remain a separate data path.
 - Azure Kinect preflight, MKV/audio recording, calibrated RGB-D conversion, package validation, and evaluator/Godot adapters are implemented.
 - The FastAPI field console implements device management, WebSockets, upload validation, package download, LiveKit token generation, and optional queued Any2Full completion.
 - The active Godot project supports aligned RGB-D surface playback, hand/object/annotation layers, modality ablations, experiment phases, evidence marking, questionnaires, Web export, and local review serving.

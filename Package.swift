@@ -1,4 +1,3 @@
-
 // swift-tools-version: 6.0
 
 import PackageDescription
@@ -22,8 +21,12 @@ let package = Package(
     ],
     targets: [
         .target(
+            name: "GestureRecognition"
+        ),
+        .target(
             name: "SandStories",
             dependencies: [
+                "GestureRecognition",
                 .product(name: "LiveKit", package: "client-sdk-swift"),
             ],
             linkerSettings: [
@@ -33,6 +36,10 @@ let package = Package(
                 .linkedFramework("Vision", .when(platforms: [.iOS])),
                 .linkedFramework("AVFoundation", .when(platforms: [.iOS])),
             ]
+        ),
+        .testTarget(
+            name: "GestureRecognitionTests",
+            dependencies: ["GestureRecognition"]
         ),
     ]
 )

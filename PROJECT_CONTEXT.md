@@ -123,9 +123,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\record_azure_kinect.ps1 <para
 
 - The capture UI should remain quiet, native-feeling, and close to Apple's Camera app: visible top bar, native tab bar, and an obvious bottom Record control.
 - Pause must actually pause depth/RGB, strokes, and audio; it must not be a blocking overlay while capture continues.
-- iPhone gesture timing is elapsed-time based so 8, 15, and 30 fps inputs behave consistently. Open Palm holds for 3 seconds and requires release to rearm; Wave stops after three qualified horizontal direction changes within four seconds; Pinch and Hold marks once after 2 seconds and requires finger separation to rearm.
+- iPhone gesture timing is elapsed-time based so 8, 15, and 30 fps inputs behave consistently. The Yo gesture holds for 2 seconds to pause or resume, covering the rear camera for 3 seconds stops and saves, and Pinch and Hold marks once after 2 seconds. Each control requires release before it can trigger again.
 - Gesture recognition uses the current interface orientation. Accepted gestures show a two-second text-only glass popup; segment feedback is shown only after the manifest write succeeds.
-- Real-device validation showed that requiring every finger plus the thumb to pass continuously rejected normal open palms and waves. Open-palm classification now requires three reliable, extended non-thumb fingers, tolerates one unreliable or curled finger, and bridges a wrist-tracked landmark gap for at most 0.2 seconds. The camera viewfinder must not render a fingertip tracking dot.
+- Real-device validation showed that open-palm and wave controls remained unreliable while thumb/index pinch worked. Pause/resume therefore uses a static Yo pose (thumb, index, and little finger extended; middle and ring folded), and Stop uses a three-second camera-cover luminance test that does not depend on Vision hand landmarks. The camera viewfinder must not render a fingertip tracking dot.
 - Bottom controls must remain legible over the camera feed. Prefer stable APIs to decorative effects that reduce capture reliability.
 - The LiDAR mesh overlay is intentional. A picture-in-picture depth preview is not the selected design.
 - Regression to check whenever export UI changes: Export Session previously showed a blank grey screen on first open but worked after reopening.
@@ -144,7 +144,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\record_azure_kinect.ps1 <para
 ## Completed Work
 
 - iOS multimodal capture, manifest/session packaging, diagnostics, depth benchmark, hand/stroke capture, gesture controls, export/share, remote control, LiveKit preview, and server upload paths are implemented in the repository.
-- Gesture controls include 3-second open-palm pause/resume, three-direction-change open-hand wave stop, and 2-second pinch-and-hold segment marking; release-to-rearm prevents duplicates, and drawing strokes remain a separate data path.
+- Gesture controls include a 2-second Yo pose for pause/resume, a 3-second rear-camera cover for stop and save, and a 2-second pinch-and-hold for segment marking. Release-to-rearm prevents duplicates, and drawing strokes remain a separate data path.
 - Azure Kinect preflight, MKV/audio recording, calibrated RGB-D conversion, package validation, and evaluator/Godot adapters are implemented.
 - The FastAPI field console implements device management, WebSockets, upload validation, package download, LiveKit token generation, and optional queued Any2Full completion.
 - The active Godot project supports aligned RGB-D surface playback, hand/object/annotation layers, modality ablations, experiment phases, evidence marking, questionnaires, Web export, and local review serving.

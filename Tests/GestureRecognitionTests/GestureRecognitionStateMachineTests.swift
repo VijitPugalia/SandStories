@@ -94,7 +94,7 @@ final class GestureRecognitionStateMachineTests: XCTestCase {
             commands += feed(
                 machine: &machine,
                 time: &time,
-                duration: 0.1,
+                duration: 0,
                 frameRate: frameRate,
                 settings: pauseOnly
             ) { .unknownYo(timestamp: $0, wristTracked: true) }

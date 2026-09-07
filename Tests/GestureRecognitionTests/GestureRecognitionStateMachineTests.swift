@@ -368,6 +368,16 @@ final class GestureRecognitionStateMachineTests: XCTestCase {
             true
         )
 
+        XCTAssertEqual(
+            HandPoseGestureClassifier.isOpenPalm(
+                wrist: wrist,
+                fingers: open,
+                pinchDistance: 0.03
+            ),
+            false,
+            "A pinch must not also classify as an open palm"
+        )
+
         var oneMissing = open
         oneMissing[0] = FingerGestureObservation(tip: nil, base: nil)
         XCTAssertEqual(

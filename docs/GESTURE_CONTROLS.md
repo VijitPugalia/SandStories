@@ -14,7 +14,9 @@ Operators can enable or disable each gesture in Settings. Disabling a gesture cl
 
 Hold an open palm relatively still for 3 seconds.
 
-All five fingers must be extended. The wrist range during the hold must stay below 0.08 on both normalized image axes. A successful hold pauses an active recording or resumes a paused recording.
+At least three of the four non-thumb fingers must have reliable tip/base landmarks and be extended. The thumb is not part of the open-palm gate because its foreshortened camera angle made real palms fail continuously. One unreliable or curled non-thumb finger is tolerated. A brief landmark dropout of up to 0.2 seconds is bridged only while the wrist remains tracked.
+
+The wrist range during the hold must stay below 0.08 on both normalized image axes. A successful hold pauses an active recording or resumes a paused recording.
 
 The gesture fires once per hold. The hand must stop presenting an open palm for at least 0.5 seconds before another palm hold can trigger.
 
@@ -51,6 +53,8 @@ Feedback appears only after the requested action is accepted. It is a small, non
 
 The segment message appears only after the manifest write succeeds. Gesture feedback has no app sound or haptic.
 
+No fingertip or hand-tracking dot is rendered in the camera viewfinder.
+
 ## State clearing and cooldown
 
-Hand loss and invalid landmark observations clear incomplete palm, wave, and pinch candidates. Each disabled setting also clears its candidate state. Accepted commands retain the existing two-second command cooldown, with release-to-rearm rules preventing repeated commands from a continuously held gesture.
+Hand loss clears incomplete palm, wave, and pinch candidates. Invalid palm landmarks clear the candidate unless the wrist remains tracked and the gap lasts no more than 0.2 seconds. Each disabled setting also clears its candidate state. Accepted commands retain the existing two-second command cooldown, with release-to-rearm rules preventing repeated commands from a continuously held gesture.

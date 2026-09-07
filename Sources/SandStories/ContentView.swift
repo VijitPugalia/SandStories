@@ -348,14 +348,14 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 8) {
             InteractiveGestureRow(
                 icon: "hand.raised.fill",
-                gestureName: "Open Palm (hold 3s)",
+                gestureName: "Yo Gesture (hold 2s)",
                 actionDescription: "Pause / Resume Recording",
                 isEnabled: $recordingCoordinator.isPauseGestureEnabled
             )
             InteractiveGestureRow(
-                icon: "hand.wave.fill",
-                gestureName: "Wave Hand (3 times)",
-                actionDescription: "Stop Recording Session",
+                icon: "camera.fill",
+                gestureName: "Cover Camera (hold 3s)",
+                actionDescription: "Stop and Save Recording",
                 isEnabled: $recordingCoordinator.isStopGestureEnabled
             )
             InteractiveGestureRow(

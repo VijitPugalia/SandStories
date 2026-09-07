@@ -74,6 +74,13 @@ actor HandPoseVisionProcessor {
         let littleTip = recognizedLocation(.littleTip, in: observation)
         let littleMCP = recognizedLocation(.littleMCP, in: observation)
 
+        let pinchDistance: Double?
+        if let indexTip, let thumbTip {
+            pinchDistance = Double(distance(indexTip, thumbTip))
+        } else {
+            pinchDistance = nil
+        }
+
         let isOpenPalm = HandPoseGestureClassifier.isOpenPalm(
             wrist: gesturePoint(wrist),
             fingers: [
@@ -81,15 +88,9 @@ actor HandPoseVisionProcessor {
                 FingerGestureObservation(tip: gesturePoint(middleTip), base: gesturePoint(middleMCP)),
                 FingerGestureObservation(tip: gesturePoint(ringTip), base: gesturePoint(ringMCP)),
                 FingerGestureObservation(tip: gesturePoint(littleTip), base: gesturePoint(littleMCP)),
-            ]
+            ],
+            pinchDistance: pinchDistance
         )
-
-        let pinchDistance: Double?
-        if let indexTip, let thumbTip {
-            pinchDistance = Double(distance(indexTip, thumbTip))
-        } else {
-            pinchDistance = nil
-        }
 
         let frame = GestureRecognitionFrame(
             timestamp: timestamp,

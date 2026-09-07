@@ -31,8 +31,12 @@ package struct FingerGestureObservation: Sendable, Equatable {
 package enum HandPoseGestureClassifier {
     package static func isOpenPalm(
         wrist: GesturePoint2D?,
-        fingers: [FingerGestureObservation]
+        fingers: [FingerGestureObservation],
+        pinchDistance: Double? = nil
     ) -> Bool? {
+        if let pinchDistance, pinchDistance <= 0.05 {
+            return false
+        }
         guard let wrist else { return nil }
 
         let knownExtensionStates = fingers.compactMap { finger -> Bool? in

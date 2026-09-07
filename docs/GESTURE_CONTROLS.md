@@ -14,7 +14,7 @@ Operators can enable or disable each gesture in Settings. Disabling a gesture cl
 
 Hold an open palm relatively still for 3 seconds.
 
-At least three of the four non-thumb fingers must have reliable tip/base landmarks and be extended. The thumb is not part of the open-palm gate because its foreshortened camera angle made real palms fail continuously. One unreliable or curled non-thumb finger is tolerated. A brief landmark dropout of up to 0.2 seconds is bridged only while the wrist remains tracked.
+At least three of the four non-thumb fingers must have reliable tip/base landmarks and be extended. The thumb is not part of the open-palm extension gate because its foreshortened camera angle made real palms fail continuously. One unreliable or curled non-thumb finger is tolerated. An active thumb/index pinch is explicitly excluded. A brief landmark dropout of up to 0.2 seconds is bridged only while the wrist remains tracked.
 
 The wrist range during the hold must stay below 0.08 on both normalized image axes. A successful hold pauses an active recording or resumes a paused recording.
 

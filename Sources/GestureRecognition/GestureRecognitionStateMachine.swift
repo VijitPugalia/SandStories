@@ -8,6 +8,52 @@ package enum UIGestureCommand: Sendable, Equatable {
     case markSegment
 }
 
+package struct GesturePoint2D: Sendable, Equatable {
+    package let x: Double
+    package let y: Double
+
+    package init(x: Double, y: Double) {
+        self.x = x
+        self.y = y
+    }
+}
+
+package struct FingerGestureObservation: Sendable, Equatable {
+    package let tip: GesturePoint2D?
+    package let base: GesturePoint2D?
+
+    package init(tip: GesturePoint2D?, base: GesturePoint2D?) {
+        self.tip = tip
+        self.base = base
+    }
+}
+
+package enum HandPoseGestureClassifier {
+    package static func isOpenPalm(
+        wrist: GesturePoint2D?,
+        fingers: [FingerGestureObservation]
+    ) -> Bool? {
+        guard let wrist else { return nil }
+
+        let knownExtensionStates = fingers.compactMap { finger -> Bool? in
+            guard let tip = finger.tip, let base = finger.base else {
+                return nil
+            }
+            return distance(tip, wrist) > distance(base, wrist) * 1.2
+        }
+
+        guard knownExtensionStates.count >= 3 else {
+            return nil
+        }
+
+        return knownExtensionStates.filter { $0 }.count >= 3
+    }
+
+    private static func distance(_ first: GesturePoint2D, _ second: GesturePoint2D) -> Double {
+        hypot(first.x - second.x, first.y - second.y)
+    }
+}
+
 package struct GestureRecognitionFrame: Sendable {
     package let timestamp: TimeInterval
     package let isOpenPalm: Bool?

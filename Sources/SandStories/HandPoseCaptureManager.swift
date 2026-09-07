@@ -65,7 +65,6 @@ actor HandPoseVisionProcessor {
 
         let wrist = recognizedLocation(.wrist, in: observation)
         let thumbTip = recognizedLocation(.thumbTip, in: observation)
-        let thumbIP = recognizedLocation(.thumbIP, in: observation)
         let indexTip = recognizedLocation(.indexTip, in: observation)
         let indexMCP = recognizedLocation(.indexMCP, in: observation)
         let middleTip = recognizedLocation(.middleTip, in: observation)
@@ -75,38 +74,23 @@ actor HandPoseVisionProcessor {
         let littleTip = recognizedLocation(.littleTip, in: observation)
         let littleMCP = recognizedLocation(.littleMCP, in: observation)
 
-        var isOpenPalm: Bool?
-        if let wrist,
-           let thumbTip,
-           let thumbIP,
-           let indexTip,
-           let indexMCP,
-           let middleTip,
-           let middleMCP,
-           let ringTip,
-           let ringMCP,
-           let littleTip,
-           let littleMCP {
-            let isThumbExtended = distance(thumbTip, wrist) > distance(thumbIP, wrist) * 1.1
-            let isIndexExtended = distance(indexTip, wrist) > distance(indexMCP, wrist) * 1.2
-            let isMiddleExtended = distance(middleTip, wrist) > distance(middleMCP, wrist) * 1.2
-            let isRingExtended = distance(ringTip, wrist) > distance(ringMCP, wrist) * 1.2
-            let isLittleExtended = distance(littleTip, wrist) > distance(littleMCP, wrist) * 1.2
-            isOpenPalm = isThumbExtended &&
-                isIndexExtended &&
-                isMiddleExtended &&
-                isRingExtended &&
-                isLittleExtended
-        } else {
-            isOpenPalm = nil
-        }
-
         let pinchDistance: Double?
         if let indexTip, let thumbTip {
             pinchDistance = Double(distance(indexTip, thumbTip))
         } else {
             pinchDistance = nil
         }
+
+        let isOpenPalm = HandPoseGestureClassifier.isOpenPalm(
+            wrist: gesturePoint(wrist),
+            fingers: [
+                FingerGestureObservation(tip: gesturePoint(indexTip), base: gesturePoint(indexMCP)),
+                FingerGestureObservation(tip: gesturePoint(middleTip), base: gesturePoint(middleMCP)),
+                FingerGestureObservation(tip: gesturePoint(ringTip), base: gesturePoint(ringMCP)),
+                FingerGestureObservation(tip: gesturePoint(littleTip), base: gesturePoint(littleMCP)),
+            ],
+            pinchDistance: pinchDistance
+        )
 
         let frame = GestureRecognitionFrame(
             timestamp: timestamp,
@@ -140,6 +124,10 @@ actor HandPoseVisionProcessor {
         return point.location
     }
 
+    private func gesturePoint(_ point: CGPoint?) -> GesturePoint2D? {
+        point.map { GesturePoint2D(x: Double($0.x), y: Double($0.y)) }
+    }
+
     private func distance(_ first: CGPoint, _ second: CGPoint) -> CGFloat {
         hypot(first.x - second.x, first.y - second.y)
     }
@@ -147,13 +135,7 @@ actor HandPoseVisionProcessor {
 
 final class HandPoseSceneRenderer: @unchecked Sendable {
     private weak var arView: ARView?
-    private var fingertipAnchor: AnchorEntity?
-    private var sphereEntity: ModelEntity?
     private var viewportSize: CGSize = .zero
-
-    // Stroke visualization
-    private var strokeAnchors: [AnchorEntity] = []
-    private var currentStrokeAnchor: AnchorEntity?
 
     @MainActor
     func setARView(_ arView: ARView) {
@@ -202,91 +184,6 @@ final class HandPoseSceneRenderer: @unchecked Sendable {
             return results.first?.worldTransform
         }
     }
-
-    /// Updates/creates the fingertip sphere using an ARKit world transform.
-    func renderFingertip(worldTransform: simd_float4x4) async {
-        await MainActor.run { [weak self] in
-            guard let self else { return }
-            guard let arView else { return }
-
-            let transform = Transform(matrix: worldTransform)
-
-            if let fingertipAnchor {
-                fingertipAnchor.transform = transform
-                return
-            }
-
-            let anchor = AnchorEntity(world: worldTransform)
-
-            if sphereEntity == nil {
-                let mesh = MeshResource.generateSphere(radius: 0.01)
-                let material = SimpleMaterial(color: .yellow, roughness: 0.35, isMetallic: false)
-                sphereEntity = ModelEntity(mesh: mesh, materials: [material])
-            }
-            if let sphereEntity {
-                anchor.addChild(sphereEntity)
-            }
-
-            arView.scene.addAnchor(anchor)
-            fingertipAnchor = anchor
-        }
-    }
-
-    func startStroke() async {
-        await MainActor.run { [weak self] in
-            self?.currentStrokeAnchor = AnchorEntity(world: matrix_identity_float4x4)
-        }
-    }
-
-    func appendStrokePoint(_ position: simd_float3) async {
-        // Stroke points are persisted in strokes.json; avoid spawning a RealityKit entity per point.
-        await renderFingertip(at: position)
-    }
-
-    private func renderFingertip(at position: simd_float3) async {
-        await MainActor.run { [weak self] in
-            guard let self, let arView else { return }
-
-            if let fingertipAnchor {
-                fingertipAnchor.transform.translation = position
-                return
-            }
-
-            let anchor = AnchorEntity(world: matrix_identity_float4x4)
-            anchor.transform.translation = position
-
-            if sphereEntity == nil {
-                let mesh = MeshResource.generateSphere(radius: 0.01)
-                let material = SimpleMaterial(color: .yellow, roughness: 0.35, isMetallic: false)
-                sphereEntity = ModelEntity(mesh: mesh, materials: [material])
-            }
-            if let sphereEntity {
-                anchor.addChild(sphereEntity)
-            }
-
-            arView.scene.addAnchor(anchor)
-            fingertipAnchor = anchor
-        }
-    }
-
-    func endStroke() async {
-        await MainActor.run { [weak self] in
-            self?.currentStrokeAnchor = nil
-        }
-    }
-
-    func clearStrokes() async {
-        await MainActor.run { [weak self] in
-            guard let self else { return }
-            guard let arView else { return }
-
-            for anchor in strokeAnchors {
-                arView.scene.removeAnchor(anchor)
-            }
-            strokeAnchors.removeAll()
-            currentStrokeAnchor = nil
-        }
-    }
 }
 
 @MainActor
@@ -332,7 +229,6 @@ final class HandPoseCaptureManager: NSObject, @preconcurrency ARSessionDelegate 
     }
 
     func clearStrokes() async {
-        await renderer.clearStrokes()
         await strokeRecorder.clearActiveStroke()
     }
 
@@ -389,20 +285,8 @@ final class HandPoseCaptureManager: NSObject, @preconcurrency ARSessionDelegate 
             }
 
             guard !self.isPaused else {
-                // Paused: Render tracker only, no stroke capture.
-                if let fingertip = result.fingertip {
-                    let screenPoint = CGPoint(
-                        x: fingertip.x * viewportSize.width,
-                        y: (1 - fingertip.y) * viewportSize.height
-                    )
-                    if let worldTransform = await renderer.raycastWorldTransform(from: screenPoint) {
-                        await renderer.renderFingertip(worldTransform: worldTransform)
-                    }
-                }
-                let missingEvent = await strokeRecorder.ingestMissing(timestamp: frameTimestamp)
-                if case .finished = missingEvent {
-                    await renderer.endStroke()
-                }
+                // Paused: keep gesture recognition active, but do not capture strokes.
+                _ = await strokeRecorder.ingestMissing(timestamp: frameTimestamp)
                 return
             }
 
@@ -413,14 +297,9 @@ final class HandPoseCaptureManager: NSObject, @preconcurrency ARSessionDelegate 
                 )
 
                 guard let worldTransform = await renderer.raycastWorldTransform(from: screenPoint) else {
-                    let missingEvent = await strokeRecorder.ingestMissing(timestamp: frameTimestamp)
-                    if case .finished = missingEvent {
-                        await renderer.endStroke()
-                    }
+                    _ = await strokeRecorder.ingestMissing(timestamp: frameTimestamp)
                     return
                 }
-
-                await renderer.renderFingertip(worldTransform: worldTransform)
 
                 let worldPosition = simd_float3(
                     worldTransform.columns.3.x,
@@ -428,21 +307,12 @@ final class HandPoseCaptureManager: NSObject, @preconcurrency ARSessionDelegate 
                     worldTransform.columns.3.z
                 )
 
-                let detectedEvent = await strokeRecorder.ingestDetected(position: worldPosition, timestamp: frameTimestamp)
-                switch detectedEvent {
-                case .started(let point):
-                    await renderer.startStroke()
-                    await renderer.appendStrokePoint(point.position)
-                case .appended(let point):
-                    await renderer.appendStrokePoint(point.position)
-                case .none:
-                    break
-                }
+                _ = await strokeRecorder.ingestDetected(
+                    position: worldPosition,
+                    timestamp: frameTimestamp
+                )
             } else {
-                let missingEvent = await strokeRecorder.ingestMissing(timestamp: frameTimestamp)
-                if case .finished = missingEvent {
-                    await renderer.endStroke()
-                }
+                _ = await strokeRecorder.ingestMissing(timestamp: frameTimestamp)
             }
         }
     }

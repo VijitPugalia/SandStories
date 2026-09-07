@@ -125,6 +125,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\record_azure_kinect.ps1 <para
 - Pause must actually pause depth/RGB, strokes, and audio; it must not be a blocking overlay while capture continues.
 - iPhone gesture timing is elapsed-time based so 8, 15, and 30 fps inputs behave consistently. Open Palm holds for 3 seconds and requires release to rearm; Wave stops after three qualified horizontal direction changes within four seconds; Pinch and Hold marks once after 2 seconds and requires finger separation to rearm.
 - Gesture recognition uses the current interface orientation. Accepted gestures show a two-second text-only glass popup; segment feedback is shown only after the manifest write succeeds.
+- Real-device validation showed that requiring every finger plus the thumb to pass continuously rejected normal open palms and waves. Open-palm classification now requires three reliable, extended non-thumb fingers, tolerates one unreliable or curled finger, and bridges a wrist-tracked landmark gap for at most 0.2 seconds. The camera viewfinder must not render a fingertip tracking dot.
 - Bottom controls must remain legible over the camera feed. Prefer stable APIs to decorative effects that reduce capture reliability.
 - The LiDAR mesh overlay is intentional. A picture-in-picture depth preview is not the selected design.
 - Regression to check whenever export UI changes: Export Session previously showed a blank grey screen on first open but worked after reopening.

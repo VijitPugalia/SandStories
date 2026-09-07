@@ -354,6 +354,147 @@ final class GestureRecognitionStateMachineTests: XCTestCase {
         }
     }
 
+    func testPalmClassifierToleratesOneMissingOrCurledFinger() {
+        let wrist = GesturePoint2D(x: 0.5, y: 0.1)
+        let open = [
+            openFinger(x: 0.35),
+            openFinger(x: 0.45),
+            openFinger(x: 0.55),
+            openFinger(x: 0.65),
+        ]
+
+        XCTAssertEqual(
+            HandPoseGestureClassifier.isOpenPalm(wrist: wrist, fingers: open),
+            true
+        )
+
+        XCTAssertEqual(
+            HandPoseGestureClassifier.isOpenPalm(
+                wrist: wrist,
+                fingers: open,
+                pinchDistance: 0.03
+            ),
+            false,
+            "A pinch must not also classify as an open palm"
+        )
+
+        var oneMissing = open
+        oneMissing[0] = FingerGestureObservation(tip: nil, base: nil)
+        XCTAssertEqual(
+            HandPoseGestureClassifier.isOpenPalm(wrist: wrist, fingers: oneMissing),
+            true
+        )
+
+        var oneCurled = open
+        oneCurled[3] = curledFinger(x: 0.65)
+        XCTAssertEqual(
+            HandPoseGestureClassifier.isOpenPalm(wrist: wrist, fingers: oneCurled),
+            true
+        )
+    }
+
+    func testPalmClassifierRejectsTwoFingerPoseAndInsufficientLandmarks() {
+        let wrist = GesturePoint2D(x: 0.5, y: 0.1)
+        let twoFingerPose = [
+            openFinger(x: 0.4),
+            openFinger(x: 0.5),
+            curledFinger(x: 0.6),
+            curledFinger(x: 0.7),
+        ]
+        XCTAssertEqual(
+            HandPoseGestureClassifier.isOpenPalm(wrist: wrist, fingers: twoFingerPose),
+            false
+        )
+
+        let insufficient = [
+            openFinger(x: 0.4),
+            openFinger(x: 0.5),
+            FingerGestureObservation(tip: nil, base: nil),
+            FingerGestureObservation(tip: nil, base: nil),
+        ]
+        XCTAssertNil(
+            HandPoseGestureClassifier.isOpenPalm(wrist: wrist, fingers: insufficient)
+        )
+    }
+
+    func testBriefPalmLandmarkDropoutsDoNotBreakTimingOrWave() {
+        for frameRate in frameRates {
+            let pauseOnly = GestureRecognitionSettings(
+                pauseEnabled: true,
+                stopEnabled: false,
+                markEnabled: false
+            )
+            var palm = GestureRecognitionStateMachine()
+            palm.reset(at: 0, initialCooldown: 0)
+            var palmCommands: [UIGestureCommand] = []
+            let palmFrameCount = Int(ceil(3.3 * Double(frameRate)))
+
+            for index in 0...palmFrameCount {
+                let timestamp = Double(index) / Double(frameRate)
+                let isBriefGap = index > 0 && index % 5 == 4
+                let frame = GestureRecognitionFrame(
+                    timestamp: timestamp,
+                    isOpenPalm: isBriefGap ? nil : true,
+                    wristX: 0.5,
+                    wristY: 0.5,
+                    pinchDistance: nil
+                )
+                if let command = palm.process(frame, settings: pauseOnly) {
+                    palmCommands.append(command)
+                }
+            }
+            XCTAssertEqual(
+                palmCommands,
+                [.pause],
+                "Brief palm landmark gaps broke hold timing at \(frameRate) fps"
+            )
+
+            let stopOnly = GestureRecognitionSettings(
+                pauseEnabled: false,
+                stopEnabled: true,
+                markEnabled: false
+            )
+            var wave = GestureRecognitionStateMachine()
+            wave.reset(at: 0, initialCooldown: 0)
+            var waveCommands: [UIGestureCommand] = []
+            let waveFrameCount = Int(ceil(2.0 * Double(frameRate)))
+
+            for index in 0...waveFrameCount {
+                let timestamp = Double(index) / Double(frameRate)
+                let isBriefGap = index > 0 && index % 5 == 4
+                let frame = GestureRecognitionFrame(
+                    timestamp: timestamp,
+                    isOpenPalm: isBriefGap ? nil : true,
+                    wristX: Self.waveX(at: timestamp),
+                    wristY: 0.5,
+                    pinchDistance: nil
+                )
+                if let command = wave.process(frame, settings: stopOnly) {
+                    waveCommands.append(command)
+                }
+            }
+            XCTAssertEqual(
+                waveCommands,
+                [.stop],
+                "Brief palm landmark gaps broke wave detection at \(frameRate) fps"
+            )
+        }
+    }
+
+    private func openFinger(x: Double) -> FingerGestureObservation {
+        FingerGestureObservation(
+            tip: GesturePoint2D(x: x, y: 0.78),
+            base: GesturePoint2D(x: x, y: 0.34)
+        )
+    }
+
+    private func curledFinger(x: Double) -> FingerGestureObservation {
+        FingerGestureObservation(
+            tip: GesturePoint2D(x: x + 0.01, y: 0.35),
+            base: GesturePoint2D(x: x, y: 0.34)
+        )
+    }
+
     private func feed(
         machine: inout GestureRecognitionStateMachine,
         time: inout TimeInterval,

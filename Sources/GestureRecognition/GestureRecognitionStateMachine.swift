@@ -98,6 +98,7 @@ package struct GestureRecognitionStateMachine: Sendable {
     private let pauseHoldDuration: TimeInterval = 3
     private let pauseStillnessLimit = 0.08
     private let pauseReleaseDuration: TimeInterval = 0.5
+    private let openPalmLandmarkGrace: TimeInterval = 0.2
     private let waveWindow: TimeInterval = 4
     private let waveMinimumHorizontalSpan = 0.12
     private let waveNoiseGate = 0.005
@@ -109,6 +110,7 @@ package struct GestureRecognitionStateMachine: Sendable {
     private var pauseSamples: [WristSample] = []
     private var pauseRequiresRelease = false
     private var pauseReleaseStartedAt: TimeInterval?
+    private var lastConfirmedOpenPalmAt: TimeInterval?
 
     private var waveSamples: [WristSample] = []
     private var waveRequiresRelease = false
@@ -126,6 +128,7 @@ package struct GestureRecognitionStateMachine: Sendable {
         pauseSamples.removeAll(keepingCapacity: true)
         pauseRequiresRelease = false
         pauseReleaseStartedAt = nil
+        lastConfirmedOpenPalmAt = nil
         waveSamples.removeAll(keepingCapacity: true)
         waveRequiresRelease = false
         pinchStartedAt = nil
@@ -144,8 +147,20 @@ package struct GestureRecognitionStateMachine: Sendable {
         }
         lastTimestamp = frame.timestamp
 
-        updatePauseState(frame, enabled: settings.pauseEnabled)
-        updateWaveState(frame, enabled: settings.stopEnabled)
+        let effectiveOpenPalm = resolvedOpenPalm(
+            for: frame,
+            enabled: settings.pauseEnabled || settings.stopEnabled
+        )
+        updatePauseState(
+            frame,
+            isOpenPalm: effectiveOpenPalm,
+            enabled: settings.pauseEnabled
+        )
+        updateWaveState(
+            frame,
+            isOpenPalm: effectiveOpenPalm,
+            enabled: settings.stopEnabled
+        )
         updatePinchState(frame, enabled: settings.markEnabled)
 
         guard frame.timestamp >= cooldownUntil else { return nil }
@@ -180,7 +195,43 @@ package struct GestureRecognitionStateMachine: Sendable {
         return nil
     }
 
-    private mutating func updatePauseState(_ frame: GestureRecognitionFrame, enabled: Bool) {
+    private mutating func resolvedOpenPalm(
+        for frame: GestureRecognitionFrame,
+        enabled: Bool
+    ) -> Bool? {
+        guard enabled else {
+            lastConfirmedOpenPalmAt = nil
+            return frame.isOpenPalm
+        }
+
+        if frame.isOpenPalm == true {
+            lastConfirmedOpenPalmAt = frame.timestamp
+            return true
+        }
+
+        if frame.isOpenPalm == false {
+            lastConfirmedOpenPalmAt = nil
+            return false
+        }
+
+        guard frame.wristX != nil, frame.wristY != nil else {
+            lastConfirmedOpenPalmAt = nil
+            return nil
+        }
+
+        if let lastConfirmedOpenPalmAt,
+           frame.timestamp - lastConfirmedOpenPalmAt <= openPalmLandmarkGrace {
+            return true
+        }
+
+        return nil
+    }
+
+    private mutating func updatePauseState(
+        _ frame: GestureRecognitionFrame,
+        isOpenPalm: Bool?,
+        enabled: Bool
+    ) {
         guard enabled else {
             pauseSamples.removeAll(keepingCapacity: true)
             pauseReleaseStartedAt = nil
@@ -188,7 +239,7 @@ package struct GestureRecognitionStateMachine: Sendable {
             return
         }
 
-        guard frame.isOpenPalm == true,
+        guard isOpenPalm == true,
               let wristX = frame.wristX,
               let wristY = frame.wristY else {
             pauseSamples.removeAll(keepingCapacity: true)
@@ -219,14 +270,18 @@ package struct GestureRecognitionStateMachine: Sendable {
         }
     }
 
-    private mutating func updateWaveState(_ frame: GestureRecognitionFrame, enabled: Bool) {
+    private mutating func updateWaveState(
+        _ frame: GestureRecognitionFrame,
+        isOpenPalm: Bool?,
+        enabled: Bool
+    ) {
         guard enabled else {
             waveSamples.removeAll(keepingCapacity: true)
             waveRequiresRelease = false
             return
         }
 
-        guard frame.isOpenPalm == true,
+        guard isOpenPalm == true,
               let wristX = frame.wristX,
               let wristY = frame.wristY else {
             waveSamples.removeAll(keepingCapacity: true)

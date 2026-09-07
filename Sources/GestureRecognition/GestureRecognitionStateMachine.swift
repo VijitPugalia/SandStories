@@ -48,7 +48,7 @@ package enum HandPoseGestureClassifier {
         little: FingerGestureObservation,
         pinchDistance: Double?
     ) -> Bool? {
-        if let pinchDistance, pinchDistance <= 0.05 {
+        if let pinchDistance, pinchDistance <= 0.07 {
             return false
         }
         guard let wrist else { return nil }

@@ -181,6 +181,20 @@ final class GestureRecognitionStateMachineTests: XCTestCase {
                 wrist: wrist,
                 thumb: thumb,
                 index: index,
+                middle: middle,
+                ring: ring,
+                little: little,
+                pinchDistance: 0.06
+            ),
+            false,
+            "Pinch hysteresis must remain excluded from Yo"
+        )
+
+        XCTAssertEqual(
+            HandPoseGestureClassifier.isYoGesture(
+                wrist: wrist,
+                thumb: thumb,
+                index: index,
                 middle: extendedFinger(baseX: 0.49, tipX: 0.49),
                 ring: ring,
                 little: little,

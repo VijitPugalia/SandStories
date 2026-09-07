@@ -191,9 +191,9 @@ struct SettingsTabView: View {
                 }
 
                 Section("Recording gestures") {
-                    Toggle("Open palm pauses or resumes", isOn: $recordingCoordinator.isPauseGestureEnabled)
-                    Toggle("Wave stops recording", isOn: $recordingCoordinator.isStopGestureEnabled)
-                    Toggle("One-finger triple tap marks a segment", isOn: $recordingCoordinator.isMarkGestureEnabled)
+                    Toggle("Yo gesture pauses or resumes", isOn: $recordingCoordinator.isPauseGestureEnabled)
+                    Toggle("Cover camera stops and saves", isOn: $recordingCoordinator.isStopGestureEnabled)
+                    Toggle("Pinch and hold marks a segment", isOn: $recordingCoordinator.isMarkGestureEnabled)
                 }
 
                 Section("Capture tools") {

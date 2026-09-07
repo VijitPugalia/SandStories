@@ -28,29 +28,72 @@ package struct FingerGestureObservation: Sendable, Equatable {
     }
 }
 
+package struct GestureLuminanceStatistics: Sendable, Equatable {
+    package let mean: Double
+    package let standardDeviation: Double
+
+    package init(mean: Double, standardDeviation: Double) {
+        self.mean = mean
+        self.standardDeviation = standardDeviation
+    }
+}
+
 package enum HandPoseGestureClassifier {
-    package static func isOpenPalm(
+    package static func isYoGesture(
         wrist: GesturePoint2D?,
-        fingers: [FingerGestureObservation],
-        pinchDistance: Double? = nil
+        thumb: FingerGestureObservation,
+        index: FingerGestureObservation,
+        middle: FingerGestureObservation,
+        ring: FingerGestureObservation,
+        little: FingerGestureObservation,
+        pinchDistance: Double?
     ) -> Bool? {
         if let pinchDistance, pinchDistance <= 0.05 {
             return false
         }
         guard let wrist else { return nil }
 
-        let knownExtensionStates = fingers.compactMap { finger -> Bool? in
-            guard let tip = finger.tip, let base = finger.base else {
-                return nil
-            }
-            return distance(tip, wrist) > distance(base, wrist) * 1.2
-        }
+        let thumbExtended = extensionState(
+            wrist: wrist,
+            finger: thumb,
+            extensionMultiplier: 1.15
+        )
+        let indexExtended = extensionState(wrist: wrist, finger: index)
+        let middleExtended = extensionState(wrist: wrist, finger: middle)
+        let ringExtended = extensionState(wrist: wrist, finger: ring)
+        let littleExtended = extensionState(wrist: wrist, finger: little)
 
-        guard knownExtensionStates.count >= 3 else {
+        let requiredExtended = [thumbExtended, indexExtended, littleExtended]
+        if requiredExtended.contains(where: { $0 == false }) {
+            return false
+        }
+        guard requiredExtended.allSatisfy({ $0 != nil }) else {
             return nil
         }
 
-        return knownExtensionStates.filter { $0 }.count >= 3
+        let foldedFingers = [middleExtended, ringExtended]
+        if foldedFingers.contains(where: { $0 == true }) {
+            return false
+        }
+        guard foldedFingers.contains(where: { $0 == false }) else {
+            return nil
+        }
+
+        return true
+    }
+
+    private static func extensionState(
+        wrist: GesturePoint2D,
+        finger: FingerGestureObservation,
+        extensionMultiplier: Double = 1.2
+    ) -> Bool? {
+        guard let tip = finger.tip, let base = finger.base else {
+            return nil
+        }
+
+        let baseDistance = distance(base, wrist)
+        guard baseDistance > 0.000_001 else { return nil }
+        return distance(tip, wrist) > baseDistance * extensionMultiplier
     }
 
     private static func distance(_ first: GesturePoint2D, _ second: GesturePoint2D) -> Double {
@@ -60,23 +103,23 @@ package enum HandPoseGestureClassifier {
 
 package struct GestureRecognitionFrame: Sendable {
     package let timestamp: TimeInterval
-    package let isOpenPalm: Bool?
-    package let wristX: Double?
-    package let wristY: Double?
+    package let isYoGesture: Bool?
+    package let hasTrackedWrist: Bool
     package let pinchDistance: Double?
+    package let luminance: GestureLuminanceStatistics?
 
     package init(
         timestamp: TimeInterval,
-        isOpenPalm: Bool?,
-        wristX: Double?,
-        wristY: Double?,
-        pinchDistance: Double?
+        isYoGesture: Bool?,
+        hasTrackedWrist: Bool,
+        pinchDistance: Double?,
+        luminance: GestureLuminanceStatistics?
     ) {
         self.timestamp = timestamp
-        self.isOpenPalm = isOpenPalm
-        self.wristX = wristX
-        self.wristY = wristY
+        self.isYoGesture = isYoGesture
+        self.hasTrackedWrist = hasTrackedWrist
         self.pinchDistance = pinchDistance
+        self.luminance = luminance
     }
 }
 
@@ -93,31 +136,34 @@ package struct GestureRecognitionSettings: Sendable {
 }
 
 package struct GestureRecognitionStateMachine: Sendable {
-    private struct WristSample: Sendable {
-        let timestamp: TimeInterval
-        let x: Double
-        let y: Double
-    }
+    private let yoHoldDuration: TimeInterval = 2
+    private let yoReleaseDuration: TimeInterval = 0.5
+    private let yoLandmarkGrace: TimeInterval = 0.2
 
-    private let pauseHoldDuration: TimeInterval = 3
-    private let pauseStillnessLimit = 0.08
-    private let pauseReleaseDuration: TimeInterval = 0.5
-    private let openPalmLandmarkGrace: TimeInterval = 0.2
-    private let waveWindow: TimeInterval = 4
-    private let waveMinimumHorizontalSpan = 0.12
-    private let waveNoiseGate = 0.005
+    private let coverCalibrationDuration: TimeInterval = 1
+    private let coverHoldDuration: TimeInterval = 3
+    private let coverReleaseDuration: TimeInterval = 0.5
+    private let coverAbsoluteMeanLimit = 0.12
+    private let coverBaselineFraction = 0.35
+    private let coverDeviationLimit = 0.08
+    private let coverBaselineAlpha = 0.05
+
     private let pinchHoldDuration: TimeInterval = 2
     private let pinchActiveThreshold = 0.05
     private let pinchReleaseThreshold = 0.07
     private let commandCooldown: TimeInterval = 2
 
-    private var pauseSamples: [WristSample] = []
-    private var pauseRequiresRelease = false
-    private var pauseReleaseStartedAt: TimeInterval?
-    private var lastConfirmedOpenPalmAt: TimeInterval?
+    private var yoStartedAt: TimeInterval?
+    private var yoRequiresRelease = false
+    private var yoReleaseStartedAt: TimeInterval?
+    private var lastConfirmedYoAt: TimeInterval?
 
-    private var waveSamples: [WristSample] = []
-    private var waveRequiresRelease = false
+    private var coverBaselineMean: Double?
+    private var coverCalibrationStartedAt: TimeInterval?
+    private var coverBaselineIsReady = false
+    private var coverStartedAt: TimeInterval?
+    private var coverRequiresRelease = false
+    private var coverReleaseStartedAt: TimeInterval?
 
     private var pinchStartedAt: TimeInterval?
     private var pinchIsActive = false
@@ -129,15 +175,9 @@ package struct GestureRecognitionStateMachine: Sendable {
     package init() {}
 
     package mutating func reset(at timestamp: TimeInterval, initialCooldown: TimeInterval = 2) {
-        pauseSamples.removeAll(keepingCapacity: true)
-        pauseRequiresRelease = false
-        pauseReleaseStartedAt = nil
-        lastConfirmedOpenPalmAt = nil
-        waveSamples.removeAll(keepingCapacity: true)
-        waveRequiresRelease = false
-        pinchStartedAt = nil
-        pinchIsActive = false
-        pinchRequiresSeparation = false
+        clearYoState()
+        clearCoverState()
+        clearPinchState()
         cooldownUntil = timestamp + initialCooldown
         lastTimestamp = timestamp
     }
@@ -151,36 +191,30 @@ package struct GestureRecognitionStateMachine: Sendable {
         }
         lastTimestamp = frame.timestamp
 
-        let effectiveOpenPalm = resolvedOpenPalm(
-            for: frame,
-            enabled: settings.pauseEnabled || settings.stopEnabled
-        )
-        updatePauseState(
-            frame,
-            isOpenPalm: effectiveOpenPalm,
-            enabled: settings.pauseEnabled
-        )
-        updateWaveState(
-            frame,
-            isOpenPalm: effectiveOpenPalm,
-            enabled: settings.stopEnabled
-        )
+        let effectiveYo = resolvedYoGesture(for: frame, enabled: settings.pauseEnabled)
+        updateYoState(frame, isYoGesture: effectiveYo, enabled: settings.pauseEnabled)
+        updateCoverState(frame, enabled: settings.stopEnabled)
         updatePinchState(frame, enabled: settings.markEnabled)
 
         guard frame.timestamp >= cooldownUntil else { return nil }
 
-        if settings.stopEnabled, waveIsComplete {
-            waveSamples.removeAll(keepingCapacity: true)
-            waveRequiresRelease = true
-            pauseSamples.removeAll(keepingCapacity: true)
+        if settings.stopEnabled, coverIsComplete(at: frame.timestamp) {
+            coverStartedAt = nil
+            coverRequiresRelease = true
+            coverReleaseStartedAt = nil
+            yoStartedAt = nil
+            pinchStartedAt = nil
+            pinchIsActive = false
             cooldownUntil = frame.timestamp + commandCooldown
             return .stop
         }
 
-        if settings.pauseEnabled, pauseIsComplete {
-            pauseSamples.removeAll(keepingCapacity: true)
-            pauseRequiresRelease = true
-            pauseReleaseStartedAt = nil
+        if settings.pauseEnabled, yoIsComplete(at: frame.timestamp) {
+            yoStartedAt = nil
+            yoRequiresRelease = true
+            yoReleaseStartedAt = nil
+            pinchStartedAt = nil
+            pinchIsActive = false
             cooldownUntil = frame.timestamp + commandCooldown
             return .pause
         }
@@ -192,6 +226,7 @@ package struct GestureRecognitionStateMachine: Sendable {
            frame.timestamp - pinchStartedAt >= pinchHoldDuration {
             self.pinchStartedAt = nil
             pinchRequiresSeparation = true
+            yoStartedAt = nil
             cooldownUntil = frame.timestamp + commandCooldown
             return .markSegment
         }
@@ -199,114 +234,140 @@ package struct GestureRecognitionStateMachine: Sendable {
         return nil
     }
 
-    private mutating func resolvedOpenPalm(
+    private mutating func resolvedYoGesture(
         for frame: GestureRecognitionFrame,
         enabled: Bool
     ) -> Bool? {
         guard enabled else {
-            lastConfirmedOpenPalmAt = nil
-            return frame.isOpenPalm
+            lastConfirmedYoAt = nil
+            return frame.isYoGesture
         }
 
-        if frame.isOpenPalm == true {
-            lastConfirmedOpenPalmAt = frame.timestamp
+        if frame.isYoGesture == true {
+            lastConfirmedYoAt = frame.timestamp
             return true
         }
 
-        if frame.isOpenPalm == false {
-            lastConfirmedOpenPalmAt = nil
+        if frame.isYoGesture == false {
+            lastConfirmedYoAt = nil
             return false
         }
 
-        guard frame.wristX != nil, frame.wristY != nil else {
-            lastConfirmedOpenPalmAt = nil
+        guard frame.hasTrackedWrist else {
+            lastConfirmedYoAt = nil
             return nil
         }
 
-        if let lastConfirmedOpenPalmAt,
-           frame.timestamp - lastConfirmedOpenPalmAt <= openPalmLandmarkGrace {
+        if let lastConfirmedYoAt,
+           frame.timestamp - lastConfirmedYoAt <= yoLandmarkGrace {
             return true
         }
 
         return nil
     }
 
-    private mutating func updatePauseState(
+    private mutating func updateYoState(
         _ frame: GestureRecognitionFrame,
-        isOpenPalm: Bool?,
+        isYoGesture: Bool?,
         enabled: Bool
     ) {
         guard enabled else {
-            pauseSamples.removeAll(keepingCapacity: true)
-            pauseReleaseStartedAt = nil
-            pauseRequiresRelease = false
+            clearYoState()
             return
         }
 
-        guard isOpenPalm == true,
-              let wristX = frame.wristX,
-              let wristY = frame.wristY else {
-            pauseSamples.removeAll(keepingCapacity: true)
-            if pauseRequiresRelease {
-                if pauseReleaseStartedAt == nil {
-                    pauseReleaseStartedAt = frame.timestamp
-                } else if frame.timestamp - (pauseReleaseStartedAt ?? frame.timestamp) >= pauseReleaseDuration {
-                    pauseRequiresRelease = false
-                    pauseReleaseStartedAt = nil
+        guard isYoGesture == true else {
+            yoStartedAt = nil
+            if yoRequiresRelease {
+                if yoReleaseStartedAt == nil {
+                    yoReleaseStartedAt = frame.timestamp
+                } else if frame.timestamp - (yoReleaseStartedAt ?? frame.timestamp) >= yoReleaseDuration {
+                    yoRequiresRelease = false
+                    yoReleaseStartedAt = nil
                 }
             }
             return
         }
 
-        pauseReleaseStartedAt = nil
-        guard !pauseRequiresRelease else {
-            pauseSamples.removeAll(keepingCapacity: true)
-            return
-        }
-
-        pauseSamples.append(WristSample(timestamp: frame.timestamp, x: wristX, y: wristY))
-        Self.prune(&pauseSamples, olderThan: frame.timestamp - pauseHoldDuration)
-
-        if Self.horizontalSpan(of: pauseSamples) >= pauseStillnessLimit ||
-            Self.verticalSpan(of: pauseSamples) >= pauseStillnessLimit {
-            pauseSamples.removeAll(keepingCapacity: true)
-            pauseSamples.append(WristSample(timestamp: frame.timestamp, x: wristX, y: wristY))
+        yoReleaseStartedAt = nil
+        guard !yoRequiresRelease else { return }
+        if yoStartedAt == nil {
+            yoStartedAt = frame.timestamp
         }
     }
 
-    private mutating func updateWaveState(
+    private mutating func updateCoverState(
         _ frame: GestureRecognitionFrame,
-        isOpenPalm: Bool?,
         enabled: Bool
     ) {
         guard enabled else {
-            waveSamples.removeAll(keepingCapacity: true)
-            waveRequiresRelease = false
+            clearCoverState()
             return
         }
 
-        guard isOpenPalm == true,
-              let wristX = frame.wristX,
-              let wristY = frame.wristY else {
-            waveSamples.removeAll(keepingCapacity: true)
-            waveRequiresRelease = false
+        guard let statistics = frame.luminance,
+              statistics.mean.isFinite,
+              statistics.standardDeviation.isFinite else {
+            coverStartedAt = nil
             return
         }
 
-        guard !waveRequiresRelease else {
-            waveSamples.removeAll(keepingCapacity: true)
+        let mean = min(max(statistics.mean, 0), 1)
+        let deviation = min(max(statistics.standardDeviation, 0), 1)
+
+        guard coverBaselineIsReady else {
+            if coverCalibrationStartedAt == nil {
+                coverCalibrationStartedAt = frame.timestamp
+                coverBaselineMean = mean
+            } else {
+                coverBaselineMean = blendedBaseline(current: coverBaselineMean ?? mean, sample: mean, alpha: 0.2)
+            }
+
+            if frame.timestamp - (coverCalibrationStartedAt ?? frame.timestamp) >= coverCalibrationDuration {
+                coverBaselineIsReady = true
+            }
+            coverStartedAt = nil
             return
         }
 
-        waveSamples.append(WristSample(timestamp: frame.timestamp, x: wristX, y: wristY))
-        Self.prune(&waveSamples, olderThan: frame.timestamp - waveWindow)
+        let baseline = coverBaselineMean ?? mean
+        let meanLimit = min(coverAbsoluteMeanLimit, baseline * coverBaselineFraction)
+        let isCovered = mean <= meanLimit && deviation <= coverDeviationLimit
+
+        if isCovered {
+            coverReleaseStartedAt = nil
+            guard !coverRequiresRelease else {
+                coverStartedAt = nil
+                return
+            }
+            if coverStartedAt == nil {
+                coverStartedAt = frame.timestamp
+            }
+            return
+        }
+
+        coverStartedAt = nil
+
+        if coverRequiresRelease {
+            if coverReleaseStartedAt == nil {
+                coverReleaseStartedAt = frame.timestamp
+            } else if frame.timestamp - (coverReleaseStartedAt ?? frame.timestamp) >= coverReleaseDuration {
+                coverRequiresRelease = false
+                coverReleaseStartedAt = nil
+            }
+            return
+        }
+
+        coverBaselineMean = blendedBaseline(
+            current: baseline,
+            sample: mean,
+            alpha: coverBaselineAlpha
+        )
     }
 
     private mutating func updatePinchState(_ frame: GestureRecognitionFrame, enabled: Bool) {
         guard enabled else {
-            pinchStartedAt = nil
-            pinchIsActive = false
-            pinchRequiresSeparation = false
+            clearPinchState()
             return
         }
 
@@ -332,56 +393,43 @@ package struct GestureRecognitionStateMachine: Sendable {
         }
     }
 
-    private var pauseIsComplete: Bool {
-        guard let first = pauseSamples.first,
-              let last = pauseSamples.last,
-              last.timestamp - first.timestamp >= pauseHoldDuration - 0.000_001 else {
-            return false
-        }
-        return Self.horizontalSpan(of: pauseSamples) < pauseStillnessLimit &&
-            Self.verticalSpan(of: pauseSamples) < pauseStillnessLimit
+    private func yoIsComplete(at timestamp: TimeInterval) -> Bool {
+        guard let yoStartedAt else { return false }
+        return timestamp - yoStartedAt >= yoHoldDuration
     }
 
-    private var waveIsComplete: Bool {
-        guard Self.horizontalSpan(of: waveSamples) >= waveMinimumHorizontalSpan else {
-            return false
-        }
-
-        var directionChanges = 0
-        var lastDirection = 0
-
-        for index in 1..<waveSamples.count {
-            let delta = waveSamples[index].x - waveSamples[index - 1].x
-            guard abs(delta) > waveNoiseGate else { continue }
-            let direction = delta > 0 ? 1 : -1
-            if lastDirection != 0, direction != lastDirection {
-                directionChanges += 1
-            }
-            lastDirection = direction
-        }
-
-        return directionChanges >= 3
+    private func coverIsComplete(at timestamp: TimeInterval) -> Bool {
+        guard let coverStartedAt else { return false }
+        return timestamp - coverStartedAt >= coverHoldDuration
     }
 
-    private static func horizontalSpan(of samples: [WristSample]) -> Double {
-        guard let minimum = samples.map(\.x).min(),
-              let maximum = samples.map(\.x).max() else {
-            return 0
-        }
-        return maximum - minimum
+    private func blendedBaseline(
+        current: Double,
+        sample: Double,
+        alpha: Double
+    ) -> Double {
+        current + (sample - current) * alpha
     }
 
-    private static func verticalSpan(of samples: [WristSample]) -> Double {
-        guard let minimum = samples.map(\.y).min(),
-              let maximum = samples.map(\.y).max() else {
-            return 0
-        }
-        return maximum - minimum
+    private mutating func clearYoState() {
+        yoStartedAt = nil
+        yoRequiresRelease = false
+        yoReleaseStartedAt = nil
+        lastConfirmedYoAt = nil
     }
 
-    private static func prune(_ samples: inout [WristSample], olderThan cutoff: TimeInterval) {
-        while let first = samples.first, first.timestamp < cutoff - 0.000_001 {
-            samples.removeFirst()
-        }
+    private mutating func clearCoverState() {
+        coverBaselineMean = nil
+        coverCalibrationStartedAt = nil
+        coverBaselineIsReady = false
+        coverStartedAt = nil
+        coverRequiresRelease = false
+        coverReleaseStartedAt = nil
+    }
+
+    private mutating func clearPinchState() {
+        pinchStartedAt = nil
+        pinchIsActive = false
+        pinchRequiresSeparation = false
     }
 }

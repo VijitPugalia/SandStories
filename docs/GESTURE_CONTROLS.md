@@ -1,38 +1,34 @@
 # UI Gestures and Control Heuristics
 
-SandStories uses touchless gestures while the iPhone is mounted out of reach. Vision hand-pose observations feed a separate, time-based state machine. Drawing strokes and UI-control gestures remain separate data paths.
+SandStories uses touchless controls while the iPhone is mounted out of reach. Vision hand-pose observations feed a separate, time-based state machine. Drawing strokes and UI-control gestures remain separate data paths.
 
-The normal hand-pose processing target is 15 fps and may reduce to 8 fps under thermal pressure. Gesture timing uses timestamps rather than frame counts, so the same holds and windows apply at either rate.
+The normal hand-pose processing target is 15 fps and may reduce to 8 fps under thermal pressure. Gesture timing uses timestamps rather than frame counts, so the same holds apply at either rate.
 
 Vision image orientation follows the active interface orientation. Portrait, upside-down portrait, landscape-left, and landscape-right frames are mapped before hand-pose detection.
 
 ## Gesture controls
 
-Operators can enable or disable each gesture in Settings. Disabling a gesture clears its partial recognition state.
+Operators can enable or disable each control in Settings. Disabling a control clears its partial recognition state.
 
-### Open Palm: Pause or Resume
+### Yo Gesture (2s): Pause or Resume
 
-Hold an open palm relatively still for 3 seconds.
+Hold the thumb, index finger, and little finger extended while keeping the middle and ring fingers folded for 2 seconds.
 
-At least three of the four non-thumb fingers must have reliable tip/base landmarks and be extended. The thumb is not part of the open-palm extension gate because its foreshortened camera angle made real palms fail continuously. One unreliable or curled non-thumb finger is tolerated. An active thumb/index pinch is explicitly excluded. A brief landmark dropout of up to 0.2 seconds is bridged only while the wrist remains tracked.
+Finger extension is measured relative to the wrist and each finger base, so the pose works with either hand and does not depend on screen rotation. An active thumb/index pinch is excluded. One missing folded-finger observation is tolerated, but the thumb, index, and little finger must be tracked.
 
-The wrist range during the hold must stay below 0.08 on both normalized image axes. A successful hold pauses an active recording or resumes a paused recording.
+A brief landmark dropout of up to 0.2 seconds is bridged only while the wrist remains tracked. A successful hold pauses an active recording or resumes a paused recording.
 
-The gesture fires once per hold. The hand must stop presenting an open palm for at least 0.5 seconds before another palm hold can trigger.
+The gesture fires once per hold. Stop presenting the pose for at least 0.5 seconds before it can trigger again.
 
-Pausing stops RGB/depth frame capture, stroke capture, and audio recording. Resuming restarts those streams.
+Pausing stops RGB/depth frame capture, stroke capture, and audio recording. Gesture recognition remains active so the same pose can resume capture.
 
-### Wave Hand: Stop Recording
+### Cover Camera (3s): Stop and Save
 
-Present an open palm and move the wrist horizontally back and forth.
+Cover the rear camera lens continuously for 3 seconds.
 
-The state machine keeps four seconds of timestamped wrist positions. It emits Stop when all of these are true:
+The app samples a 16 by 16 grid from the camera luminance plane. It calibrates an uncovered brightness baseline for one second, then treats the lens as covered only when the frame mean is at most 0.12 and at most 35 percent of the baseline, with normalized luminance deviation at most 0.08. Baseline updates stop while a cover candidate is active.
 
-- The horizontal span is at least 0.12 in normalized image coordinates.
-- Movement crosses the existing 0.005 per-sample noise gate.
-- The qualified horizontal direction changes at least three times.
-
-Three direction changes are the complete gesture. There is no second layer that asks for three complete wave detections. After Stop fires, the open palm must leave the frame or close before another wave can trigger.
+Brief shadows, textured dark scenes, and covers shorter than 3 seconds do not stop recording. Cover recognition stays active while recording is paused. Approximately three dark seconds will appear at the end of the RGB recording.
 
 ### Pinch and Hold (2s): Mark Segment
 
@@ -57,4 +53,6 @@ No fingertip or hand-tracking dot is rendered in the camera viewfinder.
 
 ## State clearing and cooldown
 
-Hand loss clears incomplete palm, wave, and pinch candidates. Invalid palm landmarks clear the candidate unless the wrist remains tracked and the gap lasts no more than 0.2 seconds. Each disabled setting also clears its candidate state. Accepted commands retain the existing two-second command cooldown, with release-to-rearm rules preventing repeated commands from a continuously held gesture.
+Camera cover has command priority, followed by Yo and pinch. At most one command is emitted for a frame.
+
+Hand loss clears incomplete Yo and pinch candidates. Invalid Yo landmarks clear the candidate unless the wrist remains tracked and the gap lasts no more than 0.2 seconds. Each disabled setting clears its candidate state and camera-cover calibration. Accepted commands retain the existing two-second command cooldown, with release-to-rearm rules preventing repeated commands from a continuously held control.

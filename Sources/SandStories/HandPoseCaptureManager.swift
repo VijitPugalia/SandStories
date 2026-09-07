@@ -39,6 +39,7 @@ actor HandPoseVisionProcessor {
             stopEnabled: stopEnabled,
             markEnabled: markEnabled
         )
+        let luminance = luminanceStatistics(in: pixelBufferBox.pixelBuffer)
         let handler = VNImageRequestHandler(
             cvPixelBuffer: pixelBufferBox.pixelBuffer,
             orientation: orientation
@@ -49,7 +50,7 @@ actor HandPoseVisionProcessor {
         } catch {
             print("HandPoseVisionProcessor perform error: \(error)")
             let command = gestureStateMachine.process(
-                emptyFrame(timestamp: timestamp),
+                emptyFrame(timestamp: timestamp, luminance: luminance),
                 settings: settings
             )
             return DetectionResult(fingertip: nil, command: command)
@@ -57,7 +58,7 @@ actor HandPoseVisionProcessor {
 
         guard let observation = request.results?.first else {
             let command = gestureStateMachine.process(
-                emptyFrame(timestamp: timestamp),
+                emptyFrame(timestamp: timestamp, luminance: luminance),
                 settings: settings
             )
             return DetectionResult(fingertip: nil, command: command)
@@ -65,6 +66,7 @@ actor HandPoseVisionProcessor {
 
         let wrist = recognizedLocation(.wrist, in: observation)
         let thumbTip = recognizedLocation(.thumbTip, in: observation)
+        let thumbMP = recognizedLocation(.thumbMP, in: observation)
         let indexTip = recognizedLocation(.indexTip, in: observation)
         let indexMCP = recognizedLocation(.indexMCP, in: observation)
         let middleTip = recognizedLocation(.middleTip, in: observation)
@@ -81,35 +83,52 @@ actor HandPoseVisionProcessor {
             pinchDistance = nil
         }
 
-        let isOpenPalm = HandPoseGestureClassifier.isOpenPalm(
+        let isYoGesture = HandPoseGestureClassifier.isYoGesture(
             wrist: gesturePoint(wrist),
-            fingers: [
-                FingerGestureObservation(tip: gesturePoint(indexTip), base: gesturePoint(indexMCP)),
-                FingerGestureObservation(tip: gesturePoint(middleTip), base: gesturePoint(middleMCP)),
-                FingerGestureObservation(tip: gesturePoint(ringTip), base: gesturePoint(ringMCP)),
-                FingerGestureObservation(tip: gesturePoint(littleTip), base: gesturePoint(littleMCP)),
-            ],
+            thumb: FingerGestureObservation(
+                tip: gesturePoint(thumbTip),
+                base: gesturePoint(thumbMP)
+            ),
+            index: FingerGestureObservation(
+                tip: gesturePoint(indexTip),
+                base: gesturePoint(indexMCP)
+            ),
+            middle: FingerGestureObservation(
+                tip: gesturePoint(middleTip),
+                base: gesturePoint(middleMCP)
+            ),
+            ring: FingerGestureObservation(
+                tip: gesturePoint(ringTip),
+                base: gesturePoint(ringMCP)
+            ),
+            little: FingerGestureObservation(
+                tip: gesturePoint(littleTip),
+                base: gesturePoint(littleMCP)
+            ),
             pinchDistance: pinchDistance
         )
 
         let frame = GestureRecognitionFrame(
             timestamp: timestamp,
-            isOpenPalm: isOpenPalm,
-            wristX: wrist.map { Double($0.x) },
-            wristY: wrist.map { Double($0.y) },
-            pinchDistance: pinchDistance
+            isYoGesture: isYoGesture,
+            hasTrackedWrist: wrist != nil,
+            pinchDistance: pinchDistance,
+            luminance: luminance
         )
         let command = gestureStateMachine.process(frame, settings: settings)
         return DetectionResult(fingertip: indexTip, command: command)
     }
 
-    private func emptyFrame(timestamp: TimeInterval) -> GestureRecognitionFrame {
+    private func emptyFrame(
+        timestamp: TimeInterval,
+        luminance: GestureLuminanceStatistics?
+    ) -> GestureRecognitionFrame {
         GestureRecognitionFrame(
             timestamp: timestamp,
-            isOpenPalm: nil,
-            wristX: nil,
-            wristY: nil,
-            pinchDistance: nil
+            isYoGesture: nil,
+            hasTrackedWrist: false,
+            pinchDistance: nil,
+            luminance: luminance
         )
     }
 
@@ -130,6 +149,59 @@ actor HandPoseVisionProcessor {
 
     private func distance(_ first: CGPoint, _ second: CGPoint) -> CGFloat {
         hypot(first.x - second.x, first.y - second.y)
+    }
+
+    private func luminanceStatistics(
+        in pixelBuffer: CVPixelBuffer
+    ) -> GestureLuminanceStatistics? {
+        guard CVPixelBufferGetPlaneCount(pixelBuffer) > 0 else {
+            return nil
+        }
+
+        let lockStatus = CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+        guard lockStatus == kCVReturnSuccess else {
+            return nil
+        }
+        defer {
+            CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly)
+        }
+
+        guard let baseAddress = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0) else {
+            return nil
+        }
+
+        let width = CVPixelBufferGetWidthOfPlane(pixelBuffer, 0)
+        let height = CVPixelBufferGetHeightOfPlane(pixelBuffer, 0)
+        let bytesPerRow = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0)
+        guard width > 0, height > 0, bytesPerRow >= width else {
+            return nil
+        }
+
+        let sampleColumns = min(16, width)
+        let sampleRows = min(16, height)
+        let bytes = baseAddress.assumingMemoryBound(to: UInt8.self)
+        var sum = 0.0
+        var sumOfSquares = 0.0
+        var sampleCount = 0
+
+        for row in 0..<sampleRows {
+            let y = min(height - 1, ((row * 2 + 1) * height) / (sampleRows * 2))
+            for column in 0..<sampleColumns {
+                let x = min(width - 1, ((column * 2 + 1) * width) / (sampleColumns * 2))
+                let value = Double(bytes[y * bytesPerRow + x]) / 255.0
+                sum += value
+                sumOfSquares += value * value
+                sampleCount += 1
+            }
+        }
+
+        guard sampleCount > 0 else { return nil }
+        let mean = sum / Double(sampleCount)
+        let variance = max(0, sumOfSquares / Double(sampleCount) - mean * mean)
+        return GestureLuminanceStatistics(
+            mean: mean,
+            standardDeviation: sqrt(variance)
+        )
     }
 }
 

@@ -72,3 +72,9 @@ node --test tests/remote_dashboard.test.cjs
 ```
 
 Test on a physical iPhone: off/on; both transport choices; 1/5/15 fps; rotation; slow or interrupted network; last viewer disconnect; switching transport during recording; and unchanged command responsiveness. The relay's tests use framed test bytes to verify delivery and backpressure; they do not replace real JPEG/ARKit validation.
+
+## Cloudflare stale JavaScript diagnosis
+
+The public site was observed serving new HTML with the old, LiveKit-only JavaScript at `/static/dashboard.js`. Cloudflare reported a cache HIT and a four-hour cache lifetime. A new query string returned the current Tunnel implementation, proving the origin had newer JavaScript while the cache retained the old URL.
+
+The root response now includes content-versioned JS/CSS URLs and is marked `Cache-Control: no-store`. Deploy the changed `server/app.py` and reload the page. `/api/health.dashboardVersion` identifies the current script's SHA256 prefix. This requires no new IPA. If necessary, purge the old `/static/dashboard.js` cache entry to repair already deployed unversioned pages. Refreshing a page with a new page query string alone is insufficient because its script URL is unchanged.

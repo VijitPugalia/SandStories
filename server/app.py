@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import os
 import time
@@ -147,9 +148,18 @@ async def broadcast_dashboard(message: dict[str, Any]) -> None:
         dashboard_sockets.discard(ws)
 
 
+def dashboard_asset_version(filename: str) -> str:
+    return hashlib.sha256((BASE_DIR / "static" / filename).read_bytes()).hexdigest()[:16]
+
+
 @app.get("/", response_class=HTMLResponse)
-def dashboard() -> str:
-    return (BASE_DIR / "static" / "dashboard.html").read_text(encoding="utf-8")
+def dashboard() -> HTMLResponse:
+    html = (BASE_DIR / "static" / "dashboard.html").read_text(encoding="utf-8")
+    for filename in ("dashboard.js", "dashboard.css"):
+        asset = f"/static/{filename}"
+        html = html.replace(f'"{asset}"', f'"{asset}?v={dashboard_asset_version(filename)}"')
+    # Each deployment must fetch fresh HTML, which references content-versioned assets.
+    return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/health")
@@ -158,6 +168,7 @@ def health() -> dict[str, Any]:
         "ok": True,
         "time": time.time(),
         "livekitUrl": livekit_url(),
+        "dashboardVersion": dashboard_asset_version("dashboard.js"),
         "any2full": current_completion_config().public_status(REPOSITORY_ROOT),
     }
 

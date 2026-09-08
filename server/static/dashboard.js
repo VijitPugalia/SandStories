@@ -124,6 +124,25 @@ async function sendCommand(type) {
   log('command sent', result);
 }
 
+let liveKitLoader = null;
+function loadLiveKit() {
+  if (window.LivekitClient) return Promise.resolve();
+  if (liveKitLoader) return liveKitLoader;
+  liveKitLoader = new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    const timeout = setTimeout(() => { script.remove(); reject(new Error('LiveKit SDK load timed out')); }, 15000);
+    script.src = 'https://cdn.jsdelivr.net/npm/livekit-client@2.22.2/dist/livekit-client.umd.min.js';
+    script.onload = () => {
+      clearTimeout(timeout);
+      if (window.LivekitClient) resolve();
+      else reject(new Error('LiveKit SDK unavailable'));
+    };
+    script.onerror = () => { clearTimeout(timeout); script.remove(); reject(new Error('LiveKit SDK could not be loaded')); };
+    document.head.appendChild(script);
+  }).catch(error => { liveKitLoader = null; throw error; });
+  return liveKitLoader;
+}
+
 function disconnectPreview() {
   previewGeneration++;
   clearTimeout(previewReconnectTimer);
@@ -191,7 +210,9 @@ async function connectPreview() {
     };
     return;
   }
-  if (!window.LivekitClient) throw new Error('LiveKit client unavailable');
+  await loadLiveKit();
+  if (generation !== previewGeneration) return;
+  const LivekitClient = window.LivekitClient;
   qs('#preview-status').textContent = 'Connecting to LiveKit…';
   const roomName = `device_${deviceId}`;
   const cfg = await api(`/api/livekit/token?room=${encodeURIComponent(roomName)}&identity=dashboard_${Date.now()}&role=viewer`);

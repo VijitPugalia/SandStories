@@ -15,6 +15,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import db
+from .preview_relay import router as preview_router
 from .any2full_worker import Any2FullConfig, run_completion
 from .livekit_tokens import create_livekit_token, livekit_url
 from .package_validator import sha256_hex, validate_package
@@ -22,6 +23,7 @@ from .storage import derived_dir, extracted_dir, safe_name, uploads_dir
 
 
 app = FastAPI(title="SandStories Field Console")
+app.include_router(preview_router)
 BASE_DIR = Path(__file__).resolve().parent
 REPOSITORY_ROOT = BASE_DIR.parent
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")

@@ -4,6 +4,11 @@ localStorage.setItem('sandstoriesToken', token);
 let devices = [];
 let selectedDeviceId = null;
 let livekitRoom = null;
+let previewSocket = null;
+let previewGeneration = 0;
+let previewImageURL = null;
+const previewImageURLs = new Set();
+let previewReconnectTimer = null;
 
 const qs = (s) => document.querySelector(s);
 const log = (msg, data) => {
@@ -119,23 +124,93 @@ async function sendCommand(type) {
   log('command sent', result);
 }
 
+function disconnectPreview() {
+  previewGeneration++;
+  clearTimeout(previewReconnectTimer);
+  previewReconnectTimer = null;
+  if (previewSocket) { previewSocket.onclose = null; previewSocket.close(); previewSocket = null; }
+  if (livekitRoom) { livekitRoom.disconnect(); livekitRoom = null; }
+  for (const url of previewImageURLs) URL.revokeObjectURL(url);
+  previewImageURLs.clear();
+  previewImageURL = null;
+  qs('#preview').innerHTML = '';
+  qs('#preview-status').textContent = 'Preview off';
+}
+
 async function connectPreview() {
-  if (!selectedDeviceId || !window.LivekitClient) return log('LiveKit client unavailable');
-  if (livekitRoom) await livekitRoom.disconnect();
-  const roomName = `device_${selectedDeviceId}`;
+  disconnectPreview();
+  if (!selectedDeviceId) return log('no device selected');
+  const generation = previewGeneration;
+  const deviceId = selectedDeviceId;
+  if (qs('#preview-transport').value !== 'liveKit') {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    const ws = new WebSocket(`${proto}://${location.host}/ws/preview/viewer/${encodeURIComponent(deviceId)}?token=${encodeURIComponent(token)}`);
+    previewSocket = ws;
+    ws.binaryType = 'blob';
+    const picture = document.createElement('img');
+    picture.alt = 'Live iPhone preview';
+    picture.style = 'width:100%;height:100%;object-fit:contain';
+    qs('#preview').appendChild(picture);
+    qs('#preview-status').textContent = 'Connecting to Console Tunnel…';
+    ws.onopen = () => {
+      if (generation !== previewGeneration) return;
+      qs('#preview-status').textContent = 'Waiting for iPhone preview…';
+      ws.send('ready');
+    };
+    ws.onmessage = (event) => {
+      if (generation !== previewGeneration) return;
+      if (typeof event.data === 'string') {
+        qs('#preview-status').textContent = 'Waiting for iPhone; enable Console Tunnel preview in the app';
+        ws.send('ready');
+        return;
+      }
+      const url = URL.createObjectURL(event.data);
+      previewImageURLs.add(url);
+      const previous = previewImageURL;
+      previewImageURL = url;
+      const complete = () => {
+        if (previous) { URL.revokeObjectURL(previous); previewImageURLs.delete(previous); }
+        if (generation === previewGeneration && ws.readyState === WebSocket.OPEN) ws.send('ready');
+      };
+      picture.onload = () => {
+        if (generation === previewGeneration) qs('#preview-status').textContent = 'Console Tunnel live';
+        complete();
+      };
+      picture.onerror = () => {
+        if (generation === previewGeneration) qs('#preview-status').textContent = 'Preview frame could not be decoded';
+        complete();
+      };
+      picture.src = url;
+    };
+    ws.onclose = () => {
+      if (generation !== previewGeneration) return;
+      qs('#preview-status').textContent = 'Preview disconnected; retrying…';
+      previewReconnectTimer = setTimeout(() => {
+        if (generation === previewGeneration) connectPreview().catch(err => log('preview failed', { error: String(err) }));
+      }, 2000);
+    };
+    return;
+  }
+  if (!window.LivekitClient) throw new Error('LiveKit client unavailable');
+  qs('#preview-status').textContent = 'Connecting to LiveKit…';
+  const roomName = `device_${deviceId}`;
   const cfg = await api(`/api/livekit/token?room=${encodeURIComponent(roomName)}&identity=dashboard_${Date.now()}&role=viewer`);
+  if (generation !== previewGeneration) return;
   if (location.protocol === 'https:' && !cfg.url.startsWith('wss://')) {
     throw new Error('HTTPS console requires a reachable wss:// LIVEKIT_URL on the server');
   }
   const room = new LivekitClient.Room();
+  livekitRoom = room;
   room.on(LivekitClient.RoomEvent.TrackSubscribed, (track) => {
-    if (track.kind === LivekitClient.Track.Kind.Video) {
+    if (generation === previewGeneration && track.kind === LivekitClient.Track.Kind.Video) {
       qs('#preview').innerHTML = '';
       qs('#preview').appendChild(track.attach());
+      qs('#preview-status').textContent = 'LiveKit live';
     }
   });
-  await room.connect(cfg.url, cfg.token);
-  livekitRoom = room;
+  try { await room.connect(cfg.url, cfg.token); }
+  catch (error) { await room.disconnect(); throw error; }
+  if (generation !== previewGeneration) { await room.disconnect(); return; }
   log('preview connected', { room: roomName });
 }
 
@@ -160,7 +235,7 @@ function connectDashboardSocket() {
   };
 }
 
-qs('#device-select').addEventListener('change', (e) => { selectedDeviceId = e.target.value; });
+qs('#device-select').addEventListener('change', (e) => { disconnectPreview(); selectedDeviceId = e.target.value; });
 document.querySelectorAll('[data-command]').forEach(btn => btn.addEventListener('click', () => sendCommand(btn.dataset.command).catch(err => log('command failed', { error: String(err) }))));
 qs('#refresh').addEventListener('click', async () => { await refreshDevices(); await refreshPackages(); });
 qs('#connect-preview').addEventListener('click', () => connectPreview().catch(err => log('preview failed', { error: String(err) })));
@@ -169,3 +244,7 @@ setInterval(() => { qs('#clock').textContent = new Date().toLocaleTimeString(); 
 refreshDevices().catch(err => log('devices error', { error: String(err) }));
 refreshPackages().catch(err => log('packages error', { error: String(err) }));
 connectDashboardSocket();
+
+qs('#disconnect-preview').addEventListener('click', disconnectPreview);
+qs('#preview-transport').addEventListener('change', disconnectPreview);
+document.addEventListener('visibilitychange', () => { if (document.hidden) disconnectPreview(); });

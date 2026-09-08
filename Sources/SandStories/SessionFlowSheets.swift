@@ -229,7 +229,23 @@ struct UploadSettingsSheet: View {
 
                 Section {
                     Toggle("Enable remote console", isOn: $experimentSettings.enabled)
-                    Toggle("Publish LiveKit preview", isOn: $experimentSettings.previewEnabled)
+                    Toggle("Enable remote preview", isOn: $experimentSettings.previewEnabled)
+                    if experimentSettings.previewEnabled {
+                        Picker("Preview transport", selection: $experimentSettings.previewTransport) {
+                            ForEach(PreviewTransport.allCases) { transport in
+                                Text(transport.label).tag(transport)
+                            }
+                        }
+                        Text("Refresh rate: \(Int(experimentSettings.previewFPS)) fps")
+                        Slider(value: $experimentSettings.previewFPS, in: 1...15, step: 1)
+                            .accessibilityLabel("Preview refresh rate")
+                            .accessibilityValue("\(Int(experimentSettings.previewFPS)) frames per second")
+                        Text(experimentSettings.previewTransport == .tunnel
+                             ? "Uses this console connection. Works through the 8080 Tunnel; LiveKit is off."
+                             : "Uses the server's LiveKit service, which needs a reachable media connection.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     TextField("Console server URL", text: $experimentSettings.serverURL)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()

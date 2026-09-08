@@ -28,6 +28,7 @@ final class RecordingCoordinator: ObservableObject {
     /// Mean absolute delta on 32×32 downsampled UInt16 depth; skip save when below this (configurable).
     var depthDeltaThresholdMeanU16: Float = 0
 
+    @Published private(set) var isStartingSession = false
     @Published private(set) var isCaptureRecording = false
     @Published private(set) var isCapturePaused = false
     @Published private(set) var isSavingSession = false
@@ -70,6 +71,7 @@ final class RecordingCoordinator: ObservableObject {
         }
     }
 
+    private var lastSaveError: String?
     private var externalScopedURL: URL?
     private var trayDetectionLocked = false
     private var auxiliaryFrameCounter = 0
@@ -205,6 +207,46 @@ final class RecordingCoordinator: ObservableObject {
         }
     }
 
+    func executeRemoteCommand(_ name: String, payload: [String: Any], uploadEndpoint: URL? = nil) async throws {
+        if name == "ping" { return }
+        guard !isStartingSession, !isSavingSession, !isBenchmarkRunning, !isDepthDiagnosticRunning else {
+            throw RemoteCommandError("Capture is busy starting, saving, or running a diagnostic")
+        }
+        switch name {
+        case "start_recording":
+            guard !isCaptureRecording else { throw RemoteCommandError("Already recording") }
+            if let value = payload["recordAudio"], !(value is Bool) { throw RemoteCommandError("recordAudio must be a boolean") }
+            await startFromRemote(recordAudio: (payload["recordAudio"] as? Bool) ?? true)
+            guard isCaptureRecording else { throw RemoteCommandError(warningBanner ?? "Could not start recording") }
+        case "stop_recording":
+            guard isCaptureRecording else { throw RemoteCommandError("No active recording") }
+            await stopFromRemote()
+            guard lastSaveError == nil, lastSessionFolderURL != nil else { throw RemoteCommandError(lastSaveError ?? warningBanner ?? "Session save failed") }
+        case "pause_recording":
+            guard isCaptureRecording, !isCapturePaused else { throw RemoteCommandError("Recording is not running") }
+            await pauseCaptureSession()
+            guard isCapturePaused else { throw RemoteCommandError("Could not pause") }
+        case "resume_recording":
+            guard isCaptureRecording, isCapturePaused else { throw RemoteCommandError("Recording is not paused") }
+            await resumeCaptureSession()
+            guard !isCapturePaused else { throw RemoteCommandError("Could not resume") }
+        case "mark_segment":
+            guard await markSegment() else { throw RemoteCommandError(warningBanner ?? "No active recording to mark") }
+        case "upload_last_session":
+            guard !isCaptureRecording else { throw RemoteCommandError("Stop recording before uploading") }
+            let configured = uploadSettings.endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+            let useConsole = configured.isEmpty || configured == "http://127.0.0.1:8080/upload?token=field-device"
+            let endpoint = useConsole ? uploadEndpoint : uploadSettings.endpointURL()
+            guard lastSessionFolderURL != nil, let endpoint else {
+                throw RemoteCommandError("No saved session or upload URL configured")
+            }
+            guard uploadStatus != "Uploading session..." else { throw RemoteCommandError("Upload already in progress") }
+            await uploadLastSessionFromRemote(to: endpoint)
+            guard uploadStatus == "Upload complete" else { throw RemoteCommandError(uploadStatus ?? "Upload failed") }
+        default: throw RemoteCommandError("Unknown command: \(name)")
+        }
+    }
+
     func startFromRemote(recordAudio: Bool = true) async {
         guard !isCaptureRecording, !isSavingSession, !isBenchmarkRunning, !isDepthDiagnosticRunning else { return }
         await startCaptureSession(recordAudio: recordAudio)
@@ -234,8 +276,8 @@ final class RecordingCoordinator: ObservableObject {
         await stopActiveCaptureSession(reason: .thermal)
     }
 
-    func uploadLastSessionFromRemote() async {
-        guard let folder = lastSessionFolderURL, let endpoint = uploadSettings.endpointURL() else { return }
+    func uploadLastSessionFromRemote(to overrideEndpoint: URL? = nil) async {
+        guard let folder = lastSessionFolderURL, let endpoint = overrideEndpoint ?? uploadSettings.endpointURL() else { return }
         uploadStatus = "Uploading session..."
         do {
             try await uploadManager.uploadSessionFolder(folder, to: endpoint)
@@ -347,7 +389,7 @@ final class RecordingCoordinator: ObservableObject {
     }
 
     func pauseCaptureSession() async {
-        guard isCaptureRecording, !isCapturePaused else { return }
+        guard isCaptureRecording, !isCapturePaused, !isSavingSession else { return }
 
         if let segmentStart = activeRecordingSegmentStartedUptime {
             accumulatedRecordingDuration += max(
@@ -365,7 +407,7 @@ final class RecordingCoordinator: ObservableObject {
     }
 
     func resumeCaptureSession() async {
-        guard isCaptureRecording, isCapturePaused else { return }
+        guard isCaptureRecording, isCapturePaused, !isSavingSession else { return }
 
         await depthCaptureManager.resumeRecording()
         audioRecorder.resumeRecording()
@@ -376,7 +418,7 @@ final class RecordingCoordinator: ObservableObject {
 
     @discardableResult
     func markSegment() async -> Bool {
-        guard isCaptureRecording else { return false }
+        guard isCaptureRecording, !isSavingSession else { return false }
         do {
             try await captureSession.markSegment()
             return true
@@ -401,7 +443,7 @@ final class RecordingCoordinator: ObservableObject {
     }
 
     func processAuxiliaryCaptureFrame(arTimestamp: TimeInterval, capturedImage: PixelBufferBox) async {
-        guard isCaptureRecording, !isCapturePaused else { return }
+        guard isCaptureRecording, !isCapturePaused, !isSavingSession else { return }
         await captureSession.noteFirstARFrameIfNeeded(arTimestamp)
         auxiliaryFrameCounter += 1
 
@@ -412,10 +454,11 @@ final class RecordingCoordinator: ObservableObject {
 
         if auxiliaryFrameCounter % 45 == 0 {
             let mono = await captureSession.monotonicElapsedSeconds()
-            if let tray = TrayBoundaryDetector.detectCorners(
-                pixelBuffer: capturedImage.pixelBuffer,
-                orientation: CGImagePropertyOrientation.right
-            ) {
+            let tray = await Task.detached(priority: .utility) {
+                TrayBoundaryDetector.detectCorners(pixelBuffer: capturedImage.pixelBuffer, orientation: .right)
+            }.value
+            guard isCaptureRecording, !isCapturePaused else { return }
+            if let tray {
                 try? await captureSession.appendBoundarySample(
                     .init(
                         arTimestamp: arTimestamp,
@@ -465,6 +508,9 @@ final class RecordingCoordinator: ObservableObject {
         captureProfile: String = "standard",
         diagnosticDurationSeconds: Double? = nil
     ) async {
+        guard !isStartingSession else { return }
+        isStartingSession = true
+        defer { isStartingSession = false }
         warningBanner = nil
         capturePerformanceMode = .fullQuality
         let sessionId = UUID()
@@ -537,7 +583,7 @@ final class RecordingCoordinator: ObservableObject {
             try fm.createDirectory(at: confidenceDir, withIntermediateDirectories: true)
 
             let session = captureSession
-            depthCaptureManager.configureSessionCapture(
+            await depthCaptureManager.configureSessionCapture(
                 depthDirectory: depthDir,
                 rgbDirectory: rgbDir,
                 confidenceDirectory: confidenceDir,
@@ -553,6 +599,7 @@ final class RecordingCoordinator: ObservableObject {
                 }
             )
 
+            if let error = await depthCaptureManager.captureError() { throw RemoteCommandError(error) }
             let strokesURL = sessionFolder.appendingPathComponent("strokes.json")
             await handPoseManager.setStrokeOutputURL(strokesURL)
             await handPoseManager.setPaused(false)
@@ -625,6 +672,7 @@ final class RecordingCoordinator: ObservableObject {
 
     private func stopCaptureSession() async {
         isSavingSession = true
+        lastSaveError = nil
         savingStatusMessage = "Finalizing capture..."
 
         if let segmentStart = activeRecordingSegmentStartedUptime {
@@ -642,7 +690,11 @@ final class RecordingCoordinator: ObservableObject {
 
         savingStatusMessage = "Saving video & LiDAR depth streams..."
         await depthCaptureManager.stopAndFinishRecording()
+        lastSaveError = await depthCaptureManager.captureError()
         let diagnosticSnapshot = await depthCaptureManager.benchmarkSnapshot()
+        if diagnosticSnapshot.framesWritten == 0, lastSaveError == nil {
+            lastSaveError = "No depth frames were saved"
+        }
 
         savingStatusMessage = "Saving audio & metadata..."
         let audioInfo = audioRecorder.stopRecording()
@@ -672,7 +724,9 @@ final class RecordingCoordinator: ObservableObject {
         }
 
         savingStatusMessage = "Writing session manifest to storage..."
-        let folder = try? await captureSession.stopSession()
+        let folder: URL?
+        do { folder = try await captureSession.stopSession() }
+        catch { folder = nil; lastSaveError = error.localizedDescription }
         lastSessionFolderURL = folder
         activeDepthDiagnosticProfile = nil
 
@@ -681,7 +735,7 @@ final class RecordingCoordinator: ObservableObject {
             try? await shareExportManager.writeROCrateMetadata(for: folder)
         }
 
-        if let folder, uploadSettings.isEnabled(), let endpoint = uploadSettings.endpointURL() {
+        if let folder, lastSaveError == nil, uploadSettings.isEnabled(), let endpoint = uploadSettings.endpointURL() {
             uploadStatus = "Uploading session..."
             Task {
                 do {
@@ -696,7 +750,7 @@ final class RecordingCoordinator: ObservableObject {
         await handPoseManager.setStrokeOutputURL(nil)
         await handPoseManager.setPaused(false)
 
-        depthCaptureManager.configureSessionCapture(
+        await depthCaptureManager.configureSessionCapture(
             depthDirectory: nil as URL?,
             rgbDirectory: nil as URL?,
             confidenceDirectory: nil as URL?,
@@ -722,7 +776,10 @@ final class RecordingCoordinator: ObservableObject {
             ? (storageStore.externalDisplayName().map { "External SSD (\($0))" } ?? "External SSD")
             : "On My iPhone"
 
-        if let folder {
+        if let error = lastSaveError {
+            savingStatusMessage = "Save incomplete"
+            warningBanner = "Session save incomplete: \(error)"
+        } else if let folder {
             savingStatusMessage = "Saved to \(destinationName)!"
             saveSuccessBanner = "Session automatically saved to \(destinationName): \(folder.lastPathComponent)"
         } else {

@@ -241,7 +241,7 @@ struct UploadSettingsSheet: View {
                 } header: {
                     Text("Field console")
                 } footer: {
-                    Text("For LAN: run the field console and LiveKit on your computer, then use http://YOUR-LAN-IP:8080.")
+                    Text("Use your HTTPS field console URL, or http://YOUR-LAN-IP:8080 on a local network. Localhost points to this iPhone. Changes reconnect automatically.")
                 }
             }
             .navigationTitle("Upload Settings")

@@ -32,7 +32,7 @@ final class UploadSettingsStore: ObservableObject {
 
     init() {
         enabled = defaults.bool(forKey: enabledKey)
-        endpoint = defaults.string(forKey: endpointKey) ?? "http://127.0.0.1:8080/upload?token=field-device"
+        endpoint = defaults.string(forKey: endpointKey) ?? ""
     }
 
     func isEnabled() -> Bool {
@@ -40,7 +40,11 @@ final class UploadSettingsStore: ObservableObject {
     }
 
     func endpointURL() -> URL? {
-        URL(string: endpoint.trimmingCharacters(in: .whitespacesAndNewlines))
+        guard let url = URL(string: endpoint.trimmingCharacters(in: .whitespacesAndNewlines)),
+              ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
+              let host = url.host, !host.isEmpty,
+              !["localhost", "127.0.0.1", "::1", "[::1]", "0.0.0.0"].contains(host.lowercased()) else { return nil }
+        return url
     }
 }
 

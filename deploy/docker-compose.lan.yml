@@ -1,7 +1,7 @@
 services:
   livekit:
     image: livekit/livekit-server:v1.8
-    command: --config /etc/livekit.yaml --node-ip ${LAN_IP:-127.0.0.1}
+    command: --config /etc/livekit.yaml --node-ip ${LAN_IP:?Set LAN_IP to the server address reachable by the iPhone}
     network_mode: host
     volumes:
       - ./livekit.yaml:/etc/livekit.yaml:ro
@@ -15,9 +15,9 @@ services:
       SANDSTORIES_OPERATOR_TOKEN: ${SANDSTORIES_OPERATOR_TOKEN:-field-console}
       SANDSTORIES_DEVICE_TOKEN: ${SANDSTORIES_DEVICE_TOKEN:-field-device}
       SANDSTORIES_DATA_DIR: /app/server_data
-      LIVEKIT_URL: ${LIVEKIT_URL:-ws://${LAN_IP:-127.0.0.1}:7880}
+      LIVEKIT_URL: ${LIVEKIT_URL:-ws://${LAN_IP:?Set LAN_IP to the server address reachable by the iPhone}:7880}
       LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-devkey}
-      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-secret}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-sandstories-livekit-development-secret-2026}
     volumes:
       - ..:/app
       - ../server_data:/app/server_data

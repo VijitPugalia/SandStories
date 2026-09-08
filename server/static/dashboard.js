@@ -8,7 +8,7 @@ let livekitRoom = null;
 const qs = (s) => document.querySelector(s);
 const log = (msg, data) => {
   const line = `[${new Date().toLocaleTimeString()}] ${msg}${data ? ' ' + JSON.stringify(data) : ''}\n`;
-  qs('#events').textContent = line + qs('#events').textContent;
+  qs('#events').textContent = (line + qs('#events').textContent).slice(0, 24000);
 };
 
 function headers() { return { 'X-SandStories-Token': token }; }
@@ -124,6 +124,9 @@ async function connectPreview() {
   if (livekitRoom) await livekitRoom.disconnect();
   const roomName = `device_${selectedDeviceId}`;
   const cfg = await api(`/api/livekit/token?room=${encodeURIComponent(roomName)}&identity=dashboard_${Date.now()}&role=viewer`);
+  if (location.protocol === 'https:' && !cfg.url.startsWith('wss://')) {
+    throw new Error('HTTPS console requires a reachable wss:// LIVEKIT_URL on the server');
+  }
   const room = new LivekitClient.Room();
   room.on(LivekitClient.RoomEvent.TrackSubscribed, (track) => {
     if (track.kind === LivekitClient.Track.Kind.Video) {
@@ -147,10 +150,10 @@ function connectDashboardSocket() {
     if (msg.type === 'devices_changed') await refreshDevices();
     if (msg.type === 'packages_changed') await refreshPackages();
     if (msg.type === 'completion_changed') await refreshPackages();
-    if (msg.type === 'device_message') {
+    if (msg.type === 'device_message' && msg.deviceId === selectedDeviceId && msg.message?.type === 'device_status') {
       const m = msg.message || {};
-      qs('#capture-state').textContent = m.recording ? 'recording' : (m.state || 'ready');
-      qs('#elapsed').textContent = m.elapsedSeconds ? `${Math.round(m.elapsedSeconds)}s` : '--';
+      qs('#capture-state').textContent = m.saving ? 'saving' : m.starting ? 'starting' : m.paused ? 'paused' : m.recording ? 'recording' : 'ready';
+      qs('#elapsed').textContent = m.elapsedSeconds != null ? `${Math.round(m.elapsedSeconds)}s` : '--';
       qs('#frames').textContent = m.savedFrames ?? '--';
       qs('#upload-state').textContent = m.uploadStatus || '--';
     }
@@ -158,9 +161,9 @@ function connectDashboardSocket() {
 }
 
 qs('#device-select').addEventListener('change', (e) => { selectedDeviceId = e.target.value; });
-document.querySelectorAll('[data-command]').forEach(btn => btn.addEventListener('click', () => sendCommand(btn.dataset.command)));
+document.querySelectorAll('[data-command]').forEach(btn => btn.addEventListener('click', () => sendCommand(btn.dataset.command).catch(err => log('command failed', { error: String(err) }))));
 qs('#refresh').addEventListener('click', async () => { await refreshDevices(); await refreshPackages(); });
-qs('#connect-preview').addEventListener('click', connectPreview);
+qs('#connect-preview').addEventListener('click', () => connectPreview().catch(err => log('preview failed', { error: String(err) })));
 
 setInterval(() => { qs('#clock').textContent = new Date().toLocaleTimeString(); }, 1000);
 refreshDevices().catch(err => log('devices error', { error: String(err) }));

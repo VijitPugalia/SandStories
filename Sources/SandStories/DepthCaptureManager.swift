@@ -114,6 +114,8 @@ final class PixelBufferBox: @unchecked Sendable {
 }
 
 actor DepthCaptureWriter {
+    private var recordingError: String?
+    func captureError() -> String? { recordingError }
     private var isRecording: Bool = false
     private var isWriting: Bool = false
 
@@ -162,6 +164,7 @@ actor DepthCaptureWriter {
         onV2Saved: (@Sendable (V2StreamFrameRecord) async -> Void)?
     ) async {
         await finishRecording()
+        recordingError = nil
         self.depthDirectory = depthDirectory
         self.rgbDirectory = rgbDirectory
         self.confidenceDirectory = confidenceDirectory
@@ -182,6 +185,7 @@ actor DepthCaptureWriter {
                 smoothedDepthStreamHandle = try Self.openStreamFile(streamsDirectory.appendingPathComponent("smoothed_depth.f32"))
                 confidenceStreamHandle = try Self.openStreamFile(streamsDirectory.appendingPathComponent("confidence.bin"))
             } catch {
+                recordingError = error.localizedDescription
                 print("DepthCaptureWriter stream configure error: \(error)")
             }
         }
@@ -201,19 +205,22 @@ actor DepthCaptureWriter {
     }
 
     func finishRecording() async {
-        try? depthStreamHandle?.close()
-        try? smoothedDepthStreamHandle?.close()
-        try? confidenceStreamHandle?.close()
+        for handle in [depthStreamHandle, smoothedDepthStreamHandle, confidenceStreamHandle] {
+            do { try handle?.close() } catch { recordingError = error.localizedDescription }
+        }
         depthStreamHandle = nil
         smoothedDepthStreamHandle = nil
         confidenceStreamHandle = nil
 
         if let videoWriter, let videoInput {
-            videoInput.markAsFinished()
-            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                videoWriter.finishWriting {
-                    continuation.resume()
+            if videoWriter.status == .writing {
+                videoInput.markAsFinished()
+                await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                    videoWriter.finishWriting { continuation.resume() }
                 }
+            }
+            if videoWriter.status != .completed {
+                recordingError = videoWriter.error?.localizedDescription ?? "RGB video finalization failed"
             }
         }
         videoWriter = nil
@@ -266,16 +273,19 @@ actor DepthCaptureWriter {
                 return
             }
 
-            let depthU16 = Self.depthFloat32ToUInt16(depthValues, maxDepthMeters: maxDepthMeters)
-            let down = Self.downsampleMean(depthU16, width: width, height: height, outW: 32, outH: 32)
-            if deltaThresholdMeanU16 > 0, let prev = lastDownsample {
-                let meanAbs = Self.meanAbsoluteDifference(down, prev)
-                if meanAbs < deltaThresholdMeanU16 {
-                    benchmarkMetrics.framesSkippedMotion += 1
-                    return
+            // The motion gate is off by default; skip its full-frame conversion and reduction.
+            if deltaThresholdMeanU16 > 0 {
+                let depthU16 = Self.depthFloat32ToUInt16(depthValues, maxDepthMeters: maxDepthMeters)
+                let down = Self.downsampleMean(depthU16, width: width, height: height, outW: 32, outH: 32)
+                if let prev = lastDownsample {
+                    let meanAbs = Self.meanAbsoluteDifference(down, prev)
+                    if meanAbs < deltaThresholdMeanU16 {
+                        benchmarkMetrics.framesSkippedMotion += 1
+                        return
+                    }
                 }
+                lastDownsample = down
             }
-            lastDownsample = down
 
             sequentialIndex += 1
             let idx = sequentialIndex
@@ -377,6 +387,7 @@ actor DepthCaptureWriter {
                 )
             }
         } catch {
+            recordingError = error.localizedDescription
             print("DepthCaptureWriter error: \(error)")
         }
     }
@@ -900,6 +911,8 @@ final class DepthCaptureManager: NSObject, @preconcurrency ARSessionDelegate {
         return snapshot
     }
 
+    func captureError() async -> String? { await writer.captureError() }
+
     func stopAndFinishRecording() async {
         isRecording = false
         await writer.setRecording(false)
@@ -982,7 +995,7 @@ final class DepthCaptureManager: NSObject, @preconcurrency ARSessionDelegate {
         enabledFrameSemantics: [String] = ["sceneDepth", "smoothedSceneDepth"],
         onSaved: (@Sendable (TimeInterval, String, String, String?, [Float]?, [Float]?) async -> Void)?,
         onV2Saved: (@Sendable (V2StreamFrameRecord) async -> Void)? = nil
-    ) {
+    ) async {
         let dd = depthDirectory
         let rd = rgbDirectory
         let cd = confidenceDirectory
@@ -995,19 +1008,17 @@ final class DepthCaptureManager: NSObject, @preconcurrency ARSessionDelegate {
         let semantics = enabledFrameSemantics
         let cb = onSaved
         let v2 = onV2Saved
-        Task {
-            await writer.configure(
-                depthDirectory: dd,
-                rgbDirectory: rd,
-                confidenceDirectory: cd,
-                streamsDirectory: sd,
-                deltaThresholdMeanU16: th,
-                captureProfile: profile,
-                enabledFrameSemantics: semantics,
-                onSaved: cb,
-                onV2Saved: v2
-            )
-        }
+        await writer.configure(
+            depthDirectory: dd,
+            rgbDirectory: rd,
+            confidenceDirectory: cd,
+            streamsDirectory: sd,
+            deltaThresholdMeanU16: th,
+            captureProfile: profile,
+            enabledFrameSemantics: semantics,
+            onSaved: cb,
+            onV2Saved: v2
+        )
     }
 
     func updateCapturePolicy(

@@ -6,6 +6,7 @@ import json
 import os
 import time
 import uuid
+from urllib.parse import urlsplit
 from pathlib import Path
 from typing import Any
 
@@ -182,13 +183,26 @@ def devices(request: Request) -> list[dict[str, Any]]:
 @app.post("/api/devices/{device_id}/commands")
 async def create_command(device_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
     check_operator(request)
+    command_type = payload.get("type", "ping")
+    allowed = {"start_recording", "stop_recording", "pause_recording", "resume_recording", "mark_segment", "upload_last_session", "ping"}
+    if not isinstance(command_type, str) or command_type not in allowed:
+        raise HTTPException(status_code=422, detail="unknown command")
+    arguments = payload.get("payload", {})
+    if not isinstance(arguments, dict):
+        raise HTTPException(status_code=422, detail="payload must be an object")
+    if set(arguments) - ({"recordAudio"} if command_type == "start_recording" else set()):
+        raise HTTPException(status_code=422, detail="unsupported command parameters")
+    if "recordAudio" in arguments and not isinstance(arguments["recordAudio"], bool):
+        raise HTTPException(status_code=422, detail="recordAudio must be a boolean")
     command_id = str(uuid.uuid4())
-    command_type = str(payload.get("type") or "ping")
     message = {"type": "command", "commandId": command_id, "name": command_type, "payload": payload.get("payload", {})}
     ws = device_sockets.get(device_id)
     if not ws:
         raise HTTPException(status_code=409, detail="device is not connected")
-    await ws.send_json(message)
+    try:
+        await ws.send_json(message)
+    except Exception as exc:
+        raise HTTPException(status_code=409, detail="device disconnected before command delivery") from exc
     await broadcast_dashboard({"type": "command_sent", "deviceId": device_id, "command": message})
     return {"ok": True, "commandId": command_id}
 
@@ -206,14 +220,17 @@ async def ws_device(websocket: WebSocket, device_id: str) -> None:
     try:
         while True:
             msg = await websocket.receive_json()
-            db.upsert_device(device_id, str(msg.get("deviceName") or device_id), "online", json.dumps(msg, separators=(",", ":")))
+            if device_sockets.get(device_id) is not websocket:
+                break
+            if msg.get("type") == "device_status":
+                db.upsert_device(device_id, str(msg.get("deviceName") or device_id), "online", json.dumps(msg, separators=(",", ":")))
             await broadcast_dashboard({"type": "device_message", "deviceId": device_id, "message": msg})
     except WebSocketDisconnect:
         pass
     finally:
         if device_sockets.get(device_id) is websocket:
             device_sockets.pop(device_id, None)
-        db.upsert_device(device_id, device_id, "offline")
+            db.upsert_device(device_id, device_id, "offline")
         await broadcast_dashboard({"type": "devices_changed"})
 
 
@@ -236,12 +253,17 @@ async def ws_dashboard(websocket: WebSocket) -> None:
 @app.get("/api/livekit/token")
 def livekit_token(request: Request, room: str, identity: str, role: str = "viewer") -> dict[str, Any]:
     supplied = request.headers.get("X-SandStories-Token") or request.query_params.get("token")
+    if role not in {"device", "viewer"}:
+        raise HTTPException(status_code=422, detail="invalid LiveKit role")
     if role == "device":
         check_device_token(supplied)
         can_publish, can_subscribe = True, False
     else:
         check_operator(request)
         can_publish, can_subscribe = False, True
+    endpoint = urlsplit(livekit_url())
+    if endpoint.scheme not in {"ws", "wss"} or not endpoint.hostname or endpoint.hostname.lower() in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}:
+        raise HTTPException(status_code=503, detail="Set LIVEKIT_URL to a ws/wss address reachable by the iPhone and browser")
     return {
         "url": livekit_url(),
         "token": create_livekit_token(room=room, identity=identity, can_publish=can_publish, can_subscribe=can_subscribe),

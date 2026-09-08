@@ -19,20 +19,33 @@ final class ExperimentServerSettings: ObservableObject {
 
     init() {
         enabled = defaults.bool(forKey: enabledKey)
-        serverURL = defaults.string(forKey: serverURLKey) ?? "http://127.0.0.1:8080"
+        serverURL = defaults.string(forKey: serverURLKey) ?? ""
         deviceToken = defaults.string(forKey: deviceTokenKey) ?? "field-device"
         deviceName = defaults.string(forKey: deviceNameKey) ?? UIDevice.current.name
         previewEnabled = defaults.object(forKey: previewEnabledKey) as? Bool ?? true
     }
 
     func baseURL() -> URL? {
-        URL(string: serverURL.trimmingCharacters(in: .whitespacesAndNewlines))
+        guard let url = URL(string: serverURL.trimmingCharacters(in: .whitespacesAndNewlines)),
+              ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
+              let host = url.host, !host.isEmpty,
+              !["localhost", "127.0.0.1", "::1", "[::1]", "0.0.0.0"].contains(host.lowercased()) else { return nil }
+        return url
+    }
+
+    func uploadURL() -> URL? {
+        guard let base = baseURL(),
+              var url = URLComponents(url: base.appendingPathComponent("upload"), resolvingAgainstBaseURL: false) else { return nil }
+        url.queryItems = [.init(name: "token", value: deviceToken)]
+        return url.url
     }
 
     func websocketURL(deviceId: String) -> URL? {
-        guard var components = URLComponents(string: serverURL.trimmingCharacters(in: .whitespacesAndNewlines)) else { return nil }
-        components.scheme = components.scheme == "https" ? "wss" : "ws"
-        components.path = "/ws/device/\(deviceId)"
+        guard let base = baseURL(),
+              var components = URLComponents(url: base, resolvingAgainstBaseURL: false) else { return nil }
+        components.scheme = components.scheme?.lowercased() == "https" ? "wss" : "ws"
+        let prefix = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        components.path = (prefix.isEmpty ? "" : "/" + prefix) + "/ws/device/\(deviceId)"
         components.queryItems = [
             .init(name: "token", value: deviceToken),
             .init(name: "name", value: deviceName)
@@ -43,116 +56,114 @@ final class ExperimentServerSettings: ObservableObject {
 
 @MainActor
 final class RemoteControlManager: ObservableObject {
-    @Published private(set) var status: String = "Remote off"
-
-    private var webSocket: URLSessionWebSocketTask?
+    @Published private(set) var status = "Remote off"
     private weak var coordinator: RecordingCoordinator?
-    private var settings: ExperimentServerSettings?
-    private var heartbeatTask: Task<Void, Never>?
+    private var connectionTask: Task<Void, Never>?
+    private var webSocket: URLSessionWebSocketTask?
+    private var generation = UUID()
+    private var completed: [String: [String: Any]] = [:]
+    private var completedOrder: [String] = []
 
     func start(settings: ExperimentServerSettings, coordinator: RecordingCoordinator) {
-        self.settings = settings
+        stop()
         self.coordinator = coordinator
-        guard settings.enabled else {
-            stop()
+        guard settings.enabled else { return }
+        guard let url = settings.websocketURL(deviceId: UIDevice.current.identifierForVendor?.uuidString ?? "sandstories-device") else {
+            status = "Enter the console computer's LAN address (not localhost)"
             return
         }
-        connect()
+        let current = generation
+        let name = settings.deviceName
+        let uploadEndpoint = settings.uploadURL()
+        connectionTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled, self.generation == current {
+                let socket = URLSession.shared.webSocketTask(with: url)
+                self.webSocket = socket
+                self.status = "Remote connecting"
+                socket.resume()
+                let heartbeat = Task { [weak self] in
+                    while !Task.isCancelled {
+                        do { try await Task.sleep(nanoseconds: 2_000_000_000) } catch { return }
+                        guard let self, self.generation == current else { return }
+                        do { try await self.sendStatus(on: socket, name: name) }
+                        catch { socket.cancel(with: .goingAway, reason: nil); return }
+                    }
+                }
+                do {
+                    try await self.sendStatus(on: socket, name: name)
+                    guard self.generation == current, !Task.isCancelled else { heartbeat.cancel(); return }
+                    self.status = "Remote connected"
+                    while !Task.isCancelled, self.generation == current {
+                        let message = try await socket.receive()
+                        guard self.generation == current, !Task.isCancelled else { break }
+                        if case .string(let text) = message {
+                            try await self.handleMessage(text, on: socket, name: name, uploadEndpoint: uploadEndpoint)
+                        }
+                    }
+                } catch {
+                    if self.generation == current, !Task.isCancelled { self.status = "Remote disconnected; retrying" }
+                }
+                heartbeat.cancel()
+                socket.cancel(with: .goingAway, reason: nil)
+                guard self.generation == current, !Task.isCancelled else { return }
+                do { try await Task.sleep(nanoseconds: 1_500_000_000) } catch { return }
+            }
+        }
     }
 
     func stop() {
-        heartbeatTask?.cancel()
-        heartbeatTask = nil
+        generation = UUID()
+        connectionTask?.cancel()
+        connectionTask = nil
         webSocket?.cancel(with: .goingAway, reason: nil)
         webSocket = nil
         status = "Remote off"
     }
 
-    func sendStatus() {
-        guard let coordinator, let settings else { return }
-        let payload: [String: Any] = [
-            "type": "device_status",
-            "deviceName": settings.deviceName,
-            "recording": coordinator.isCaptureRecording,
-            "paused": coordinator.isCapturePaused,
-            "uploadStatus": coordinator.uploadStatus ?? "",
-            "timestampUnix": Date().timeIntervalSince1970
-        ]
-        sendJSON(payload)
-    }
-
-    private func connect() {
-        guard let settings, let url = settings.websocketURL(deviceId: deviceId()) else { return }
-        webSocket?.cancel(with: .goingAway, reason: nil)
-        let task = URLSession.shared.webSocketTask(with: url)
-        webSocket = task
-        task.resume()
-        status = "Remote connected"
-        receiveLoop()
-        heartbeatTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
-                await MainActor.run { self?.sendStatus() }
-            }
-        }
-    }
-
-    private func receiveLoop() {
-        webSocket?.receive { [weak self] result in
-            Task { @MainActor in
-                guard let self else { return }
-                switch result {
-                case .success(let message):
-                    if case .string(let text) = message {
-                        await self.handleMessage(text)
-                    }
-                    self.receiveLoop()
-                case .failure(let error):
-                    self.status = "Remote disconnected: \(error.localizedDescription)"
-                    try? await Task.sleep(nanoseconds: 1_500_000_000)
-                    self.connect()
-                }
-            }
-        }
-    }
-
-    private func handleMessage(_ text: String) async {
-        guard let data = text.data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              json["type"] as? String == "command",
-              let commandId = json["commandId"] as? String,
-              let name = json["name"] as? String else { return }
-
-        sendJSON(["type": "command_ack", "commandId": commandId, "status": "accepted"])
-        do {
-            try await runCommand(name)
-            sendJSON(["type": "command_result", "commandId": commandId, "status": "completed"])
-        } catch {
-            sendJSON(["type": "command_result", "commandId": commandId, "status": "failed", "error": error.localizedDescription])
-        }
-    }
-
-    private func runCommand(_ name: String) async throws {
+    private func sendStatus(on socket: URLSessionWebSocketTask, name: String) async throws {
         guard let coordinator else { return }
-        switch name {
-        case "start_recording": await coordinator.startFromRemote(recordAudio: true)
-        case "stop_recording": await coordinator.stopFromRemote()
-        case "pause_recording": await coordinator.pauseCaptureSession()
-        case "resume_recording": await coordinator.resumeCaptureSession()
-        case "mark_segment": await coordinator.markSegment()
-        case "upload_last_session": await coordinator.uploadLastSessionFromRemote()
-        case "ping": sendStatus()
-        default: break
+        let snapshot = await coordinator.depthCaptureManager.benchmarkSnapshot()
+        try await send([
+            "type": "device_status", "deviceName": name,
+            "recording": coordinator.isCaptureRecording, "paused": coordinator.isCapturePaused,
+            "saving": coordinator.isSavingSession, "starting": coordinator.isStartingSession,
+            "elapsedSeconds": coordinator.recordingElapsedSeconds(), "savedFrames": snapshot.framesWritten,
+            "uploadStatus": coordinator.uploadStatus ?? "", "timestampUnix": Date().timeIntervalSince1970
+        ], on: socket)
+    }
+
+    private func handleMessage(_ text: String, on socket: URLSessionWebSocketTask, name: String, uploadEndpoint: URL?) async throws {
+        guard let data = text.data(using: .utf8),
+              let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              json["type"] as? String == "command",
+              let id = json["commandId"] as? String,
+              let command = json["name"] as? String else { return }
+        if let previous = completed[id] { try await send(previous, on: socket); return }
+        try await send(["type": "command_ack", "commandId": id, "status": "accepted"], on: socket)
+        var result: [String: Any] = ["type": "command_result", "commandId": id, "status": "completed"]
+        do {
+            guard let coordinator else { throw RemoteCommandError("Capture controller unavailable") }
+            try await coordinator.executeRemoteCommand(command, payload: (json["payload"] as? [String: Any]) ?? [:], uploadEndpoint: uploadEndpoint)
+        } catch {
+            result["status"] = "failed"
+            result["error"] = error.localizedDescription
         }
+        completed[id] = result
+        completedOrder.append(id)
+        if completedOrder.count > 128 { completed.removeValue(forKey: completedOrder.removeFirst()) }
+        try await send(result, on: socket)
+        try await sendStatus(on: socket, name: name)
     }
 
-    private func sendJSON(_ object: [String: Any]) {
-        guard let data = try? JSONSerialization.data(withJSONObject: object),
-              let text = String(data: data, encoding: .utf8) else { return }
-        webSocket?.send(.string(text)) { _ in }
+    private func send(_ object: [String: Any], on socket: URLSessionWebSocketTask) async throws {
+        let data = try JSONSerialization.data(withJSONObject: object)
+        try await socket.send(.string(String(decoding: data, as: UTF8.self)))
     }
+}
 
-    private func deviceId() -> String {
-        UIDevice.current.identifierForVendor?.uuidString ?? "sandstories-device"
-    }
+struct RemoteCommandError: LocalizedError {
+    let message: String
+    init(_ message: String) { self.message = message }
+    var errorDescription: String? { message }
 }

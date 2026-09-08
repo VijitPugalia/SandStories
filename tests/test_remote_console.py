@@ -74,3 +74,35 @@ def test_livekit_development_key_matches_server_yaml(client):
     claims = jwt.decode(response.json()['token'], secret, algorithms=['HS256'])
     assert claims['video']['canPublish'] is True
     assert claims['video']['canSubscribe'] is False
+
+
+def test_dashboard_versions_assets_and_disables_html_cache(client):
+    import hashlib
+    response = client.get('/')
+    assert response.status_code == 200
+    assert response.headers['cache-control'] == 'no-store'
+    for filename in ['dashboard.js', 'dashboard.css']:
+        content = Path('server/static', filename).read_bytes()
+        digest = hashlib.sha256(content).hexdigest()[:16]
+        url = f'/static/{filename}?v={digest}'
+        assert f'"{url}"' in response.text
+        assert client.get(url).content == content
+    assert client.get('/api/health').json()['dashboardVersion'] == server.dashboard_asset_version('dashboard.js')
+
+
+def test_asset_url_changes_when_deployed_script_changes(client, tmp_path, monkeypatch):
+    static = tmp_path / 'static'
+    static.mkdir()
+    for filename in ['dashboard.html', 'dashboard.js', 'dashboard.css']:
+        (static / filename).write_bytes(Path('server/static', filename).read_bytes())
+    monkeypatch.setattr(server, 'BASE_DIR', tmp_path)
+    old_page = client.get('/').text
+    old_version = client.get('/api/health').json()['dashboardVersion']
+    with (static / 'dashboard.js').open('ab') as script:
+        script.write(b'\n// new deployment\n')
+    new_page = client.get('/').text
+    new_version = client.get('/api/health').json()['dashboardVersion']
+    assert old_version != new_version
+    assert f'dashboard.js?v={old_version}' in old_page
+    assert f'dashboard.js?v={new_version}' in new_page
+    assert f'dashboard.js?v={old_version}' not in new_page

@@ -49,3 +49,26 @@ All 20 backend and 3 dashboard tests passed at implementation time. Swift syntax
 On an iPhone, verify: connect with actual hosted credentials; preview joins/leaves and phone rotation; start (with and without audio), pause, resume, mark, stop/save, and upload; verify manifest/streams and server validation; repeat disconnect/reconnect and settings changes; confirm remote off stays off. Test with two dashboard devices so one cannot overwrite the other's status. Test failed storage/upload to confirm failed results. The duplicate-result cache covers 128 IDs during this manager's lifetime and is not persisted across process restarts.
 
 Compare identical fixed-rig recordings for 10 minutes with preview off, viewer connected, and viewer disconnected. Keep ambient temperature, screen brightness, power source, device, and recording settings fixed. Record thermal state, battery delta, saved-frame retention, UI responsiveness, and Instruments Energy/Time Profiler on macOS. Check actual recording quality and synchronization before accepting the performance changes.
+
+## Preview controls and single-port Tunnel mode
+
+In iPhone **Settings > Upload Settings > Field console**:
+
+- **Enable remote preview** turns all preview networking/encoding off without disabling remote commands.
+- **Preview transport** selects **Console Tunnel** (default) or **LiveKit**. Tunnel mode never starts LiveKit or requests a LiveKit token.
+- **Refresh rate** selects 1-15 fps, default 5. This is a maximum rate; backpressure can lower delivery. Preview changes do not reconnect the command socket.
+
+In the web console choose the matching transport and click **Connect Preview**. **Disconnect** stops viewing; hiding the browser tab also disconnects it. Reconnect explicitly after returning. The iPhone only encodes when a viewer is connected. Turning its preview switch off stops encoding and closes the selected transport. Recording file quality and remote commands remain independent.
+
+Deploy `server/preview_relay.py`, updated `server/app.py`, and both dashboard assets together with the updated IPA. The existing Cloudflare hostname may continue routing only to port **8080**; no additional LiveKit/TURN/media ports are used in Console Tunnel mode. Use the existing device and operator credentials. Serve one application worker, as for the current process-local device control registry.
+
+Tunnel mode carries JPEG images with a maximum 640-pixel long edge, quality 0.65, and no audio. It uses a separate WebSocket from commands, a single in-flight publisher frame, bounded latest-frame queues, and browser decode acknowledgements. Max frame size is 512 KiB; max viewers per device is eight. Client heartbeats and generation-guarded reconnects handle idle tunnels and settings changes. The separate connection prevents frame backlog in the command socket, though both still share network bandwidth.
+
+Additional regression checks:
+
+```sh
+python -m pytest tests/test_remote_console.py tests/test_preview_relay.py -q
+node --test tests/remote_dashboard.test.cjs
+```
+
+Test on a physical iPhone: off/on; both transport choices; 1/5/15 fps; rotation; slow or interrupted network; last viewer disconnect; switching transport during recording; and unchanged command responsiveness. The relay's tests use framed test bytes to verify delivery and backpressure; they do not replace real JPEG/ARKit validation.

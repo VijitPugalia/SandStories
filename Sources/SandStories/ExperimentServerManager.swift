@@ -2,6 +2,13 @@ import Combine
 import Foundation
 import UIKit
 
+enum PreviewTransport: String, CaseIterable, Identifiable {
+    case tunnel
+    case liveKit
+    var id: String { rawValue }
+    var label: String { self == .tunnel ? "Console Tunnel" : "LiveKit" }
+}
+
 @MainActor
 final class ExperimentServerSettings: ObservableObject {
     private let defaults = UserDefaults.standard
@@ -11,6 +18,9 @@ final class ExperimentServerSettings: ObservableObject {
     private let deviceNameKey = "experiment.deviceName"
     private let previewEnabledKey = "experiment.previewEnabled"
 
+    @Published var previewTransport: PreviewTransport { didSet { defaults.set(previewTransport.rawValue, forKey: "experiment.previewTransport") } }
+    @Published var previewFPS: Double { didSet { defaults.set(previewFPS, forKey: "experiment.previewFPS") } }
+
     @Published var enabled: Bool { didSet { defaults.set(enabled, forKey: enabledKey) } }
     @Published var serverURL: String { didSet { defaults.set(serverURL, forKey: serverURLKey) } }
     @Published var deviceToken: String { didSet { defaults.set(deviceToken, forKey: deviceTokenKey) } }
@@ -18,6 +28,9 @@ final class ExperimentServerSettings: ObservableObject {
     @Published var previewEnabled: Bool { didSet { defaults.set(previewEnabled, forKey: previewEnabledKey) } }
 
     init() {
+        previewTransport = PreviewTransport(rawValue: defaults.string(forKey: "experiment.previewTransport") ?? "") ?? .tunnel
+        let storedFPS = (defaults.object(forKey: "experiment.previewFPS") as? Double) ?? 5
+        previewFPS = storedFPS.isFinite ? min(15, max(1, storedFPS)) : 5
         enabled = defaults.bool(forKey: enabledKey)
         serverURL = defaults.string(forKey: serverURLKey) ?? ""
         deviceToken = defaults.string(forKey: deviceTokenKey) ?? "field-device"
@@ -31,6 +44,14 @@ final class ExperimentServerSettings: ObservableObject {
               let host = url.host, !host.isEmpty,
               !["localhost", "127.0.0.1", "::1", "[::1]", "0.0.0.0"].contains(host.lowercased()) else { return nil }
         return url
+    }
+
+    func previewWebSocketURL(deviceId: String) -> URL? {
+        guard let base = baseURL(),
+              var url = URLComponents(url: base.appendingPathComponent("ws/preview/device/\(deviceId)"), resolvingAgainstBaseURL: false) else { return nil }
+        url.scheme = base.scheme?.lowercased() == "https" ? "wss" : "ws"
+        url.queryItems = [.init(name: "token", value: deviceToken)]
+        return url.url
     }
 
     func uploadURL() -> URL? {

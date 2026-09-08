@@ -2,11 +2,24 @@
 import ARKit
 import Combine
 import Foundation
+import ImageIO
 import UIKit
 
 @MainActor
 final class LiveKitPreviewManager: ObservableObject {
     @Published private(set) var status: String = "Preview off"
+
+    private let tunnel = TunnelPreviewManager()
+    private var tunnelStatus: AnyCancellable?
+    private var transport: PreviewTransport = .tunnel
+    private var targetFPS: Double = 5
+
+    init() {
+        tunnelStatus = tunnel.$status.sink { [weak self] value in
+            guard let self, self.transport == .tunnel else { return }
+            self.status = value
+        }
+    }
 
     private var generation = UUID()
     private var thermalSuspended = false
@@ -27,6 +40,17 @@ final class LiveKitPreviewManager: ObservableObject {
         guard !thermalSuspended else { return }
         disconnect()
         let current = generation
+        transport = settings.previewTransport
+        targetFPS = min(15, max(1, settings.previewFPS))
+        if transport == .tunnel {
+            let deviceId = UIDevice.current.identifierForVendor?.uuidString ?? "sandstories-device"
+            guard let url = settings.previewWebSocketURL(deviceId: deviceId) else {
+                status = "Invalid console preview URL"
+                return
+            }
+            tunnel.start(url: url, fps: targetFPS)
+            return
+        }
 
         do {
             let deviceId = UIDevice.current.identifierForVendor?.uuidString ?? "sandstories-device"
@@ -55,7 +79,7 @@ final class LiveKitPreviewManager: ObservableObject {
                   ["ws", "wss"].contains(endpoint.scheme ?? ""),
                   let host = endpoint.host,
                   !["localhost", "127.0.0.1", "::1", "[::1]", "0.0.0.0"].contains(host.lowercased()) else {
-                status = "Set LIVEKIT_URL to the server's reachable LAN address"
+                status = "Set LIVEKIT_URL to the server's reachable public or LAN address"
                 return
             }
             let room = Room()
@@ -66,7 +90,7 @@ final class LiveKitPreviewManager: ObservableObject {
             let track = LocalVideoTrack.createBufferTrack(
                 name: "SandStories AR preview",
                 source: .camera,
-                options: BufferCaptureOptions(dimensions: Dimensions(width: 640, height: 480), fps: 10)
+                options: BufferCaptureOptions(dimensions: Dimensions(width: 640, height: 480), fps: Int(targetFPS))
             )
             guard let capturer = track.capturer as? BufferCapturer else {
                 await room.disconnect()
@@ -85,15 +109,19 @@ final class LiveKitPreviewManager: ObservableObject {
         }
     }
 
-    /// Reuses ARKit's camera frame at 10 fps instead of opening a second AVCaptureSession.
-    func capture(pixelBuffer: CVPixelBuffer, timestamp: TimeInterval) {
+    /// Both transports reuse ARKit frames; recording files retain their original quality.
+    func capture(pixelBuffer: CVPixelBuffer, timestamp: TimeInterval, orientation: CGImagePropertyOrientation) {
+        if transport == .tunnel {
+            tunnel.capture(pixelBuffer, timestamp: timestamp, orientation: orientation)
+            return
+        }
         guard let room, let bufferCapturer, let videoTrack else { return }
         guard !room.remoteParticipants.isEmpty else {
             if status != "Preview waiting for viewer" { status = "Preview waiting for viewer" }
             return
         }
         if isPublished, status != "Preview live" { status = "Preview live" }
-        guard timestamp - lastFrameTimestamp >= 0.1 else { return }
+        guard timestamp - lastFrameTimestamp >= 1 / targetFPS else { return }
         lastFrameTimestamp = timestamp
 
         bufferCapturer.capture(pixelBuffer, timeStampNs: Int64(timestamp * 1_000_000_000))
@@ -126,6 +154,7 @@ final class LiveKitPreviewManager: ObservableObject {
 
     func disconnect() {
         generation = UUID()
+        tunnel.stop()
         nextPublishAttempt = 0
         let roomToClose = room
         Task {
@@ -152,6 +181,15 @@ final class ARFramePreviewForwarder: NSObject, @preconcurrency ARSessionDelegate
     }
 
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
-        previewManager?.capture(pixelBuffer: frame.capturedImage, timestamp: frame.timestamp)
+        let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive }
+        let orientation: CGImagePropertyOrientation
+        switch scene?.interfaceOrientation {
+        case .portraitUpsideDown: orientation = .left
+        case .landscapeLeft: orientation = .up
+        case .landscapeRight: orientation = .down
+        default: orientation = .right
+        }
+        previewManager?.capture(pixelBuffer: frame.capturedImage, timestamp: frame.timestamp, orientation: orientation)
     }
 }

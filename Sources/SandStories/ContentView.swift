@@ -100,10 +100,14 @@ struct ContentView: View {
             .onAppear { diagnostics.recordLaunchContext() }
             .task(id: networkConfiguration) {
                 remoteControlManager.stop()
-                liveKitPreviewManager.disconnect()
                 guard scenePhase == .active else { return }
                 do { try await Task.sleep(nanoseconds: 400_000_000) } catch { return }
                 remoteControlManager.start(settings: experimentSettings, coordinator: recordingCoordinator)
+            }
+            .task(id: previewConfiguration) {
+                liveKitPreviewManager.disconnect()
+                guard scenePhase == .active else { return }
+                do { try await Task.sleep(nanoseconds: 400_000_000) } catch { return }
                 await liveKitPreviewManager.connect(settings: experimentSettings)
             }
             .onDisappear {
@@ -118,7 +122,12 @@ struct ContentView: View {
     private var networkConfiguration: String {
         [String(experimentSettings.enabled), experimentSettings.serverURL,
          experimentSettings.deviceToken, experimentSettings.deviceName,
-         String(experimentSettings.previewEnabled), String(describing: scenePhase)].joined(separator: "\n")
+         String(describing: scenePhase)].joined(separator: "\n")
+    }
+
+    private var previewConfiguration: String {
+        [networkConfiguration, String(experimentSettings.previewEnabled),
+         experimentSettings.previewTransport.rawValue, String(experimentSettings.previewFPS)].joined(separator: "\n")
     }
 
     @ViewBuilder

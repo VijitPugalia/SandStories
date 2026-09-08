@@ -24,11 +24,17 @@
       <section class="panel preview-panel">
         <div class="panel-head">
           <div>
-            <div class="eyebrow">LiveKit WebRTC</div>
+            <div class="eyebrow">Remote camera</div>
             <h2>Live Preview</h2>
           </div>
+          <select id="preview-transport" aria-label="Preview transport">
+            <option value="tunnel">Console Tunnel</option>
+            <option value="liveKit">LiveKit</option>
+          </select>
           <button id="connect-preview" class="secondary">Connect Preview</button>
+          <button id="disconnect-preview" class="secondary">Disconnect</button>
         </div>
+        <p id="preview-status" role="status">Preview off. Select the same transport as the iPhone.</p>
         <div id="preview" class="preview">
           <div class="preview-empty">NO VIDEO SIGNAL</div>
         </div>

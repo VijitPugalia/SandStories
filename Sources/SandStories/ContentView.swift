@@ -8,6 +8,7 @@ private struct ExportRequest: Identifiable {
 }
 
 struct ContentView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var recordingCoordinator = RecordingCoordinator()
     @StateObject private var experimentSettings = ExperimentServerSettings()
     @StateObject private var remoteControlManager = RemoteControlManager()
@@ -93,23 +94,31 @@ struct ContentView: View {
                     thermalMonitor.evaluateForActiveSession()
                 } else {
                     thermalMonitor.resetForNextSession()
+                    liveKitPreviewManager.resetThermalSuspension()
                 }
             }
-            .onAppear {
-                diagnostics.recordLaunchContext()
+            .onAppear { diagnostics.recordLaunchContext() }
+            .task(id: networkConfiguration) {
+                remoteControlManager.stop()
+                liveKitPreviewManager.disconnect()
+                guard scenePhase == .active else { return }
+                do { try await Task.sleep(nanoseconds: 400_000_000) } catch { return }
                 remoteControlManager.start(settings: experimentSettings, coordinator: recordingCoordinator)
-                Task { await liveKitPreviewManager.connect(settings: experimentSettings) }
+                await liveKitPreviewManager.connect(settings: experimentSettings)
             }
-            .onChange(of: experimentSettings.enabled) { _, _ in
-                remoteControlManager.start(settings: experimentSettings, coordinator: recordingCoordinator)
-                Task { await liveKitPreviewManager.connect(settings: experimentSettings) }
-            }
-            .onChange(of: experimentSettings.previewEnabled) { _, _ in
-                Task { await liveKitPreviewManager.connect(settings: experimentSettings) }
+            .onDisappear {
+                remoteControlManager.stop()
+                liveKitPreviewManager.disconnect()
             }
             .onChange(of: selectedAppTab) { _, tab in
                 diagnostics.record("Selected tab: \(tab.diagnosticsName)", category: "Navigation")
             }
+    }
+
+    private var networkConfiguration: String {
+        [String(experimentSettings.enabled), experimentSettings.serverURL,
+         experimentSettings.deviceToken, experimentSettings.deviceName,
+         String(experimentSettings.previewEnabled), String(describing: scenePhase)].joined(separator: "\n")
     }
 
     @ViewBuilder
@@ -878,13 +887,13 @@ struct ARViewContainer: UIViewRepresentable {
         let supportsSceneDepth = ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth)
         let supportsSmoothedSceneDepth = ARWorldTrackingConfiguration.supportsFrameSemantics(.smoothedSceneDepth)
 
-        if supportsSceneDepth {
+        if isCaptureRecording, supportsSceneDepth {
             configuration.frameSemantics.insert(.sceneDepth)
         }
-        if performanceMode == .fullQuality, supportsSmoothedSceneDepth {
+        if isCaptureRecording, performanceMode == .fullQuality, supportsSmoothedSceneDepth {
             configuration.frameSemantics.insert(.smoothedSceneDepth)
         }
-        if !supportsSceneDepth, supportsSmoothedSceneDepth {
+        if isCaptureRecording, !supportsSceneDepth, supportsSmoothedSceneDepth {
             configuration.frameSemantics.insert(.smoothedSceneDepth)
         }
 

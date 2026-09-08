@@ -17,7 +17,7 @@ def livekit_url() -> str:
 
 def create_livekit_token(room: str, identity: str, can_publish: bool, can_subscribe: bool) -> str:
     api_key = os.environ.get("LIVEKIT_API_KEY", "devkey")
-    api_secret = os.environ.get("LIVEKIT_API_SECRET", "secret")
+    api_secret = os.environ.get("LIVEKIT_API_SECRET", "sandstories-livekit-development-secret-2026")
     now = int(time.time())
     payload = {
         "iss": api_key,

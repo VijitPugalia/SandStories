@@ -90,6 +90,13 @@ SandStories/
 
 ---
 
+## Contact
+
+For questions about this software or the SandStories research, contact
+Vijit Vijay Pugalia at [VijitPugalia@gmail.com](mailto:VijitPugalia@gmail.com).
+
+---
+
 ## 📄 License
 
 This repository is maintained for SandStories development. Source code is licensed under the [MIT License](LICENSE).
